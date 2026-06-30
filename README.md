@@ -1,12 +1,10 @@
-# Agama Finance — Soroban Contracts
+# Agama Finance Soroban Contracts
 
-Private Credit Yield Vaults on Stellar · **[Try the app →](https://app.agama.finance/stellar)**
+Private Credit Yield Vaults on Stellar · **[Try the app](https://app.agama.finance/stellar)**
 
 Users deposit USDC into curated vaults and receive **agUSD**, a composable synthetic dollar backed by diversified real-world credit pools. Staking agUSD produces **sagUSD**, a yield-bearing token that appreciates as private credit repayments and on-chain strategies generate returns.
 
 All contracts are written in Rust for the [Soroban](https://soroban.stellar.org) smart contract platform.
-
----
 
 ## Live on Testnet
 
@@ -14,15 +12,13 @@ Network: **Stellar Testnet** · RPC: `https://soroban-testnet.stellar.org`
 
 | Contract | Address |
 |---|---|
-| USDC (Circle) | `CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA` |
-| agUSD | `CCXEP6QAAYEMFMV2JGBULD2NS6AQB6KQSBHLPPBJSDBCN6HOYIHNQ6H3` |
-| sagUSD Staking | `CABPYD4U5FAYLBEBMY2MVGVF7BILXTNPWGLOPIXCMUK3QQGIAE2XTALX` |
+| USDC (Circle) | [`CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA`](https://testnet.stellar.expert/explorer/testnet/contract/CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA) |
+| agUSD | [`CCXEP6QAAYEMFMV2JGBULD2NS6AQB6KQSBHLPPBJSDBCN6HOYIHNQ6H3`](https://testnet.stellar.expert/explorer/testnet/contract/CCXEP6QAAYEMFMV2JGBULD2NS6AQB6KQSBHLPPBJSDBCN6HOYIHNQ6H3) |
+| sagUSD | [`CABPYD4U5FAYLBEBMY2MVGVF7BILXTNPWGLOPIXCMUK3QQGIAE2XTALX`](https://testnet.stellar.expert/explorer/testnet/contract/CABPYD4U5FAYLBEBMY2MVGVF7BILXTNPWGLOPIXCMUK3QQGIAE2XTALX) |
 
-The protocol uses native Circle USDC on Stellar (issuer `GBBD47IF...`), not a wrapped or synthetic asset. Verify contracts on [Stellar Expert (Testnet)](https://testnet.stellar.expert).
+The protocol uses native Circle USDC on Stellar (issuer `GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5`), not a wrapped or synthetic asset.
 
 **[Test the app at app.agama.finance/stellar](https://app.agama.finance/stellar)**
-
----
 
 ## Repository Structure
 
@@ -30,8 +26,7 @@ The protocol uses native Circle USDC on Stellar (issuer `GBBD47IF...`), not a wr
 agama-soroban/
 ├── contracts/
 │   ├── agusd/              ✅ agUSD SEP-41 token — deployed testnet
-│   ├── staking/            ✅ sagUSD staking vault — deployed testnet
-│   ├── mock_usdc/          local test helper (unit tests only)
+│   ├── staking/            ✅ sagUSD — deployed testnet
 │   ├── vault/              🔧 Vault Contract (T1.1 — Aug 2026)
 │   ├── allocation-engine/  🔧 Allocation Engine (T2.1 — Sep 2026)
 │   └── oracle-adapter/     🔧 Oracle Adapter (T2.2 — Oct 2026)
@@ -46,19 +41,17 @@ agama-soroban/
 └── scripts/                Deploy and test scripts
 ```
 
----
-
 ## Contracts
 
 ### agUSD (`contracts/agusd`)
 
 Composable synthetic dollar minted 1:1 against USDC deposits. Full [SEP-41](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0041.md) token interface: `transfer`, `approve`, `transfer_from`, `balance`, `allowance`. Mint and burn are restricted to the Vault Contract address.
 
-### sagUSD Staking (`contracts/staking`)
+### sagUSD (`contracts/staking`)
 
 Yield-bearing staked agUSD. Share-based vault accounting compatible with the DeFindex standard: yield accrues by increasing the sagUSD/agUSD exchange rate via `distribute_yield()`, no claiming or rebasing needed. Two-step unstake with configurable cooldown.
 
-**DeFindex compatibility note:** sagUSD adopts the DeFindex `distribute_yield()` / assets-per-share model, making sagUSD positions natively readable by any DeFindex-integrated wallet or protocol without additional integration work.
+**DeFindex compatibility:** sagUSD adopts the DeFindex `distribute_yield()` / assets-per-share model, making sagUSD positions natively readable by any DeFindex-integrated wallet or protocol without additional integration work.
 
 ### Vault Contract (`contracts/vault`) — T1.1, August 2026
 
@@ -80,8 +73,6 @@ Multi-source NAV pipeline:
 
 Validates caller authorization, timestamp freshness, and deviation bounds on every update. Vault reverts with `OracleStale` if a feed is expired.
 
----
-
 ## Adapter Interface
 
 All pool types share the same interface, keeping the Allocation Engine pool-agnostic:
@@ -98,9 +89,7 @@ fn get_exposure() -> i128     // Current allocated amount
 | Etherfuse | Stablebond contracts | Instant (on-chain) | Etherfuse feed (48h) |
 | Private Credit | Off-chain originator | D+15 to D+90 | Custom reporter (7d) |
 
----
-
-## Build & Test
+## Build and Test
 
 Requirements: [Rust](https://rustup.rs) + [Stellar CLI](https://developers.stellar.org/docs/tools/developer-tools/stellar-cli)
 
@@ -120,19 +109,15 @@ cp .env.example .env
 bash scripts/deploy.sh
 ```
 
----
-
 ## Roadmap
 
 | Deliverable | Contracts | ETA | Status |
 |---|---|---|---|
 | T1.1 Core Contracts | Vault, agUSD, sagUSD | August 2026 | agUSD + sagUSD live on testnet |
 | T2.1 Allocation Engine | Allocation Engine, Blend v2, Private credit adapters | September 2026 | In development |
-| T2.2 RWA + Oracle | Oracle Adapter, Etherfuse adapter | October 2026 | In development |
+| T2.2 RWA and Oracle | Oracle Adapter, Etherfuse adapter | October 2026 | In development |
 | T2.3 Stress Testing | All contracts | October 2026 | Pending |
-| T3.1 Mainnet + Audit | All contracts | November 2026 | Pending |
-
----
+| T3.1 Mainnet and Audit | All contracts | November 2026 | Pending |
 
 ## Ecosystem Integrations
 
@@ -146,8 +131,6 @@ From the [SCF Integration List](https://communityfund.stellar.org/integration-li
 | [Etherfuse](https://etherfuse.com) | Stellar-native government bond RWA collateral |
 | [Reflector](https://reflector.network) | Decentralized XLM/USD and USDC/USD price feeds |
 
----
-
 ## Security
 
 - `mint` / `burn` restricted to Vault Contract via `require_auth()`
@@ -158,15 +141,11 @@ From the [SCF Integration List](https://communityfund.stellar.org/integration-li
 - Admin: 2-of-3 multi-sig in V1, governance + 48h timelock in V2
 - V1 contracts are immutable, upgrades require redeployment + migration
 
----
-
 ## License
 
 Apache 2.0 — see [LICENSE](./LICENSE)
 
 All Soroban contracts are open-sourced from day one. Contracts deployed on Stellar Testnet are available for public review now.
-
----
 
 ## Links
 
