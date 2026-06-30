@@ -25,15 +25,15 @@ The protocol uses native Circle USDC on Stellar (issuer `GBBD47IF6LWK7P7MDEVSCWR
 ```
 agama-soroban/
 ├── contracts/
-│   ├── agusd/              ✅ agUSD SEP-41 token — deployed testnet
-│   ├── staking/            ✅ sagUSD — deployed testnet
-│   ├── vault/              🔧 Vault Contract (T1.1 — Aug 2026)
-│   ├── allocation-engine/  🔧 Allocation Engine (T2.1 — Sep 2026)
-│   └── oracle-adapter/     🔧 Oracle Adapter (T2.2 — Oct 2026)
+│   ├── agusd/              ✅ agUSD SEP-41 token (deployed testnet)
+│   ├── staking/            ✅ sagUSD (deployed testnet)
+│   ├── vault/              🔧 Vault Contract (T1.1, Aug 2026)
+│   ├── allocation-engine/  🔧 Allocation Engine (T2.1, Sep 2026)
+│   └── oracle-adapter/     🔧 Oracle Adapter (T2.2, Oct 2026)
 ├── adapters/
-│   ├── blend-v2/           🔧 Blend v2 pool adapter (T2.1 — Sep 2026)
-│   ├── etherfuse/          🔧 Etherfuse Stablebond adapter (T2.2 — Oct 2026)
-│   └── private-credit/     🔧 Private credit pool adapter (T2.1 — Sep 2026)
+│   ├── blend-v2/           🔧 Blend v2 adapter (T2.1, Sep 2026)
+│   ├── etherfuse/          🔧 Etherfuse adapter (T2.2, Oct 2026)
+│   └── private-credit/     🔧 Private credit adapter (T2.1, Sep 2026)
 ├── crates/
 │   └── token/              Shared SEP-41 token utilities
 ├── deployments/
@@ -53,15 +53,15 @@ Yield-bearing staked agUSD. Share-based vault accounting compatible with the DeF
 
 **DeFindex compatibility:** sagUSD adopts the DeFindex `distribute_yield()` / assets-per-share model, making sagUSD positions natively readable by any DeFindex-integrated wallet or protocol without additional integration work.
 
-### Vault Contract (`contracts/vault`) — T1.1, August 2026
+### Vault Contract (`contracts/vault`) (T1.1, August 2026)
 
 USDC entry point. Accepts deposits, mints agUSD 1:1, routes capital through the Allocation Engine, and manages a two-step FIFO withdrawal queue (`request_withdrawal` / `claim_withdrawal`). Queries Oracle Adapter for NAV. Includes a circuit-breaker (`set_paused`).
 
-### Allocation Engine (`contracts/allocation-engine`) — T2.1, September 2026
+### Allocation Engine (`contracts/allocation-engine`) (T2.1, September 2026)
 
 Routes vault capital across registered pool adapters with on-chain concentration caps (per pool, per originator, per jurisdiction). All pool types implement a uniform adapter interface so the Engine stays agnostic to pool type. Admin-gated in V1, off-chain optimizer in V2.
 
-### Oracle Adapter (`contracts/oracle-adapter`) — T2.2, October 2026
+### Oracle Adapter (`contracts/oracle-adapter`) (T2.2, October 2026)
 
 Multi-source NAV pipeline:
 
@@ -143,7 +143,7 @@ From the [SCF Integration List](https://communityfund.stellar.org/integration-li
 
 ## License
 
-Apache 2.0 — see [LICENSE](./LICENSE)
+Apache 2.0 ([LICENSE](./LICENSE))
 
 All Soroban contracts are open-sourced from day one. Contracts deployed on Stellar Testnet are available for public review now.
 
