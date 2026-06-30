@@ -4,7 +4,7 @@ Private Credit Yield Vaults on Stellar · **[Try the app](https://app.agama.fina
 
 Users deposit USDC into curated vaults and receive **agUSD**, a composable synthetic dollar backed by diversified real-world credit pools. Staking agUSD produces **sagUSD**, a yield-bearing token that appreciates as private credit repayments and on-chain strategies generate returns.
 
-All contracts are written in Rust for the [Soroban](https://soroban.stellar.org) smart contract platform.
+All contracts are written in Rust for the Soroban smart contract platform.
 
 ## Live on Testnet
 
