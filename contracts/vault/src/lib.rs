@@ -49,6 +49,15 @@ const DAY_LEDGERS: u32 = 17_280;
 const INSTANCE_BUMP: u32 = 30 * DAY_LEDGERS;
 const INSTANCE_LIFETIME: u32 = INSTANCE_BUMP - DAY_LEDGERS;
 
+/// agUSD, as seen from the Vault. The Vault is the token's admin, so it is the
+/// only address that can mint against a deposit or burn against a withdrawal.
+#[contractclient(name = "AgUsdClient")]
+pub trait ShareToken {
+    fn mint(e: Env, to: Address, amount: i128);
+    fn burn(e: Env, from: Address, amount: i128);
+    fn balance(e: Env, id: Address) -> i128;
+}
+
 /// The Allocation Engine, as seen from the Vault.
 #[contractclient(name = "EngineClient")]
 pub trait AllocationEngineInterface {
@@ -192,6 +201,39 @@ impl Vault {
         Ok(())
     }
 
+    /// Deposit USDC and receive agUSD 1:1. Returns the amount minted.
+    ///
+    /// The USDC lands before the agUSD is minted, so a token transfer that
+    /// fails for any reason (insufficient balance, missing trustline, a frozen
+    /// account) fails the whole call rather than minting against money that
+    /// never arrived.
+    ///
+    /// 1:1 is the right rate because agUSD is a synthetic dollar, not a share
+    /// in the book. Yield reaches holders through sagUSD's share price, not
+    /// through a moving deposit rate, which is what keeps agUSD usable as a
+    /// unit of account in the pools it is composed into.
+    pub fn deposit(e: Env, from: Address, amount: i128) -> Result<i128, VaultError> {
+        Self::require_not_paused(&e)?;
+        from.require_auth();
+        if amount <= 0 {
+            return Err(VaultError::InvalidAmount);
+        }
+        let usdc = Self::usdc(e.clone())?;
+        let agusd = Self::agusd(e.clone())?;
+
+        TokenClient::new(&e, &usdc).transfer(&from, &e.current_contract_address(), &amount);
+        AgUsdClient::new(&e, &agusd).mint(&from, &amount);
+        Self::bump_instance(&e);
+
+        Deposit {
+            user: from,
+            amount,
+            minted: amount,
+        }
+        .publish(&e);
+        Ok(amount)
+    }
+
     /// Release idle USDC to a pool. Callable only by the Allocation Engine,
     /// which has already checked the concentration caps and the reserve floor.
     /// The Vault does not re-derive those limits: duplicating them here would
@@ -310,6 +352,15 @@ impl Vault {
             .instance()
             .extend_ttl(INSTANCE_LIFETIME, INSTANCE_BUMP);
     }
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Deposit {
+    #[topic]
+    pub user: Address,
+    pub amount: i128,
+    pub minted: i128,
 }
 
 #[contractevent]
