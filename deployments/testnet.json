@@ -9,7 +9,10 @@
   "contracts": {
     "usdc": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
     "agusd": "CCXEP6QAAYEMFMV2JGBULD2NS6AQB6KQSBHLPPBJSDBCN6HOYIHNQ6H3",
-    "staking": "CABPYD4U5FAYLBEBMY2MVGVF7BILXTNPWGLOPIXCMUK3QQGIAE2XTALX"
+    "staking": "CABPYD4U5FAYLBEBMY2MVGVF7BILXTNPWGLOPIXCMUK3QQGIAE2XTALX",
+    "vault": "CAVKHGBQUEPVTWHFJGU42ZVZA6VZSM6RZXFHCUXTT72JFRWNPF5OFJW3",
+    "allocationEngine": "CANDJEHBZUPGBWQMWM567Z3NQR4AHJKJSMWB4LTXPT6SC7GSRKSL2SGS",
+    "oracleAdapter": "CDV5BC4XCNT5ASOZNFXBQXRGKVXGKHLRVK5EDX6XP5J6EBIZWSXCSV7G"
   },
   "creditVaults": {
     "payment-financing": "CAUFXVGKB2OKEDDO6SDWH4ZSWXJ37T2WYKEVUTBOCWZAFEUTGCFYQEF4",
@@ -20,5 +23,42 @@
     "dealvaults": "CBXKGXB46PD2NDGPS6YRIWJ33A5YEJP5YPYGRBJZTTGWBQ7ASY2IDO5G"
   },
   "usdcIssuer": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
-  "usdcReal": true
+  "usdcReal": true,
+  "poolAdapters": {
+    "private-credit": "CCDZRKZDCWJWTFMLVJFW4LRALZEWRDKWOOD727EDO3EFFKLNDKCXT3VZ",
+    "etherfuse": "CBS3OGCVYMI3XQN2ORZZNE2WKGYK24VSTVDUB3QS5HCZHBQQFWKFLYKK"
+  },
+  "engineConfig": {
+    "poolCapBps": 3000,
+    "originatorCapBps": 4000,
+    "jurisdictionCapBps": 5000,
+    "reserveFloorBps": 2000,
+    "pools": {
+      "private-credit": {
+        "originator": "QIRO",
+        "jurisdiction": "LU",
+        "capBps": 3000
+      },
+      "etherfuse": {
+        "originator": "ETHERFUS",
+        "jurisdiction": "MX",
+        "capBps": 3000
+      }
+    }
+  },
+  "oracleFeeds": {
+    "USDC_USD": {
+      "stalenessSecs": 3600,
+      "deviationBps": 200
+    },
+    "PC_NAV": {
+      "stalenessSecs": 604800,
+      "deviationBps": 500
+    },
+    "EF_BOND": {
+      "stalenessSecs": 172800,
+      "deviationBps": 0
+    }
+  },
+  "vaultOracleFeed": "PC_NAV"
 }
