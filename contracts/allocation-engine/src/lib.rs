@@ -58,6 +58,10 @@ const BPS: i128 = 10_000;
 const DAY_LEDGERS: u32 = 17_280;
 const INSTANCE_BUMP: u32 = 30 * DAY_LEDGERS;
 const INSTANCE_LIFETIME: u32 = INSTANCE_BUMP - DAY_LEDGERS;
+// Exposure records outlive settlement cycles, so they get the longest TTL the
+// protocol uses anywhere: a private credit position can be open for 90 days.
+const EXPOSURE_BUMP: u32 = 90 * DAY_LEDGERS;
+const EXPOSURE_LIFETIME: u32 = EXPOSURE_BUMP - DAY_LEDGERS;
 
 /// The part of the Vault the Engine talks to. Declared here rather than taken
 /// as a crate dependency so the two contracts stay independently deployable.
@@ -172,6 +176,27 @@ pub struct CapsUpdated {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReserveFloorUpdated {
     pub floor_bps: u32,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Allocated {
+    #[topic]
+    pub pool: Address,
+    pub amount: i128,
+    pub pool_exposure: i128,
+    /// Idle USDC left in the Vault after the release, so the reserve position
+    /// after every allocation is in the event stream and not only derivable.
+    pub idle_after: i128,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Deallocated {
+    #[topic]
+    pub pool: Address,
+    pub amount: i128,
+    pub pool_exposure: i128,
 }
 
 #[contract]
@@ -300,7 +325,151 @@ impl AllocationEngine {
         Ok(())
     }
 
+    /// Route `amount` of Vault capital into `pool_id`.
+    ///
+    /// Admin directed and admin authorized: the operator chooses the pool and
+    /// the size, the Engine decides whether that is allowed. Four limits are
+    /// checked against total assets (idle reserves plus everything already
+    /// deployed), and any one of them failing reverts the whole call, so a
+    /// rejected allocation moves no funds and books no exposure.
+    ///
+    /// Total assets are the denominator on purpose. Allocating moves value
+    /// from idle to deployed without changing the total, so the caps measure a
+    /// share of the book rather than a share of whatever happens to be liquid,
+    /// and cannot be gamed by allocating in small pieces.
+    ///
+    /// The reserve floor is checked last and is the guard that replaces the
+    /// removed Blend liquidity buffer: whatever the caps allow, the Vault has
+    /// to be left holding at least `floor_bps` of total assets in idle USDC.
+    ///
+    /// On success the Vault releases the USDC to the pool and the adapter
+    /// books it, in the same transaction as the check. There is no window in
+    /// which the Engine has approved an allocation that has not settled.
+    pub fn allocate(
+        e: Env,
+        admin: Address,
+        pool_id: Address,
+        amount: i128,
+    ) -> Result<(), EngineError> {
+        Self::require_admin(&e, &admin)?;
+        if amount <= 0 {
+            return Err(EngineError::InvalidAmount);
+        }
+        let pools = Self::pool_map(&e);
+        let pool = pools
+            .get(pool_id.clone())
+            .ok_or(EngineError::PoolNotRegistered)?;
+
+        let vault_address = Self::vault(e.clone())?;
+        let vault = VaultClient::new(&e, &vault_address);
+        let idle = vault.idle_reserves();
+        let deployed = Self::total_allocated(e.clone());
+        let total_assets = idle + deployed;
+        if amount > idle {
+            return Err(EngineError::InsufficientReserves);
+        }
+
+        let caps = Self::caps(e.clone());
+
+        // Per pool: the tighter of the pool's own cap and the global one.
+        let pool_cap_bps = pool.cap_bps.min(caps.pool_bps) as i128;
+        let pool_exposure = Self::get_exposure(e.clone(), pool_id.clone()) + amount;
+        if pool_exposure * BPS > pool_cap_bps * total_assets {
+            return Err(EngineError::PoolCapExceeded);
+        }
+
+        // Per originator: summed across every pool that counterparty fronts.
+        let originator_exposure =
+            Self::exposure_where_originator(&e, &pools, &pool.originator) + amount;
+        if originator_exposure * BPS > caps.originator_bps as i128 * total_assets {
+            return Err(EngineError::OriginatorCapExceeded);
+        }
+
+        // Per jurisdiction: summed across every pool under that legal regime.
+        let jurisdiction_exposure =
+            Self::exposure_where_jurisdiction(&e, &pools, &pool.jurisdiction) + amount;
+        if jurisdiction_exposure * BPS > caps.jurisdiction_bps as i128 * total_assets {
+            return Err(EngineError::JurisdictionCapExceeded);
+        }
+
+        // Reserve floor: what the Vault is left holding as instantly available
+        // cash once this release settles.
+        let idle_after = idle - amount;
+        if idle_after * BPS < Self::reserve_floor_bps(e.clone()) as i128 * total_assets {
+            return Err(EngineError::ReserveFloorBreached);
+        }
+
+        Self::write_exposure(&e, &pool_id, pool_exposure);
+        Self::write_total_allocated(&e, deployed + amount);
+        Self::bump_instance(&e);
+
+        vault.settle_allocation(&pool_id, &amount);
+        PoolAdapterClient::new(&e, &pool_id).allocate(&amount);
+
+        Allocated {
+            pool: pool_id,
+            amount,
+            pool_exposure,
+            idle_after,
+        }
+        .publish(&e);
+        Ok(())
+    }
+
+    /// Record capital returning from a pool to the Vault.
+    ///
+    /// Authorized by the stored admin rather than by an address argument: the
+    /// signature carries no admin parameter, and letting anyone trigger a
+    /// repayment would let a third party force an early unwind. The adapter
+    /// moves the USDC back to the Vault in the same call that reduces the
+    /// exposure, so the book and the cash cannot diverge.
+    ///
+    /// No cap is checked here. Deallocating always moves the book towards the
+    /// reserve floor and away from every concentration limit, so it can never
+    /// be the operation that breaches one.
+    pub fn deallocate(e: Env, pool_id: Address, amount: i128) -> Result<(), EngineError> {
+        Self::admin(e.clone())?.require_auth();
+        if amount <= 0 {
+            return Err(EngineError::InvalidAmount);
+        }
+        if !Self::pool_map(&e).contains_key(pool_id.clone()) {
+            return Err(EngineError::PoolNotRegistered);
+        }
+        let exposure = Self::get_exposure(e.clone(), pool_id.clone());
+        if amount > exposure {
+            return Err(EngineError::ExposureUnderflow);
+        }
+
+        PoolAdapterClient::new(&e, &pool_id).deallocate(&amount);
+
+        let pool_exposure = exposure - amount;
+        Self::write_exposure(&e, &pool_id, pool_exposure);
+        Self::write_total_allocated(&e, Self::total_allocated(e.clone()) - amount);
+        Self::bump_instance(&e);
+
+        Deallocated {
+            pool: pool_id,
+            amount,
+            pool_exposure,
+        }
+        .publish(&e);
+        Ok(())
+    }
+
     // ---- views ----
+
+    /// Idle Vault reserves as a share of total assets, in bps. This is the
+    /// number `set_reserve_floor` sets a lower bound on.
+    pub fn get_reserve_ratio(e: Env) -> Result<u32, EngineError> {
+        let vault_address = Self::vault(e.clone())?;
+        let idle = VaultClient::new(&e, &vault_address).idle_reserves();
+        let total_assets = idle + Self::total_allocated(e.clone());
+        if total_assets <= 0 {
+            // No assets means nothing is at risk, so the reserve is complete.
+            return Ok(BPS as u32);
+        }
+        Ok((idle * BPS / total_assets) as u32)
+    }
 
     /// Capital currently deployed into `pool_id`, in USDC.
     pub fn get_exposure(e: Env, pool_id: Address) -> i128 {
@@ -381,6 +550,55 @@ impl AllocationEngine {
         }
         admin.require_auth();
         Ok(())
+    }
+
+    /// Exposure summed across every registered pool fronted by `originator`.
+    /// The cap is on the counterparty, not on the contract, so three pools
+    /// from the same originator count as one position.
+    fn exposure_where_originator(
+        e: &Env,
+        pools: &Map<Address, Pool>,
+        originator: &Symbol,
+    ) -> i128 {
+        let mut total: i128 = 0;
+        for (pool_id, pool) in pools.iter() {
+            if pool.originator == *originator {
+                total += Self::get_exposure(e.clone(), pool_id);
+            }
+        }
+        total
+    }
+
+    /// Exposure summed across every registered pool in `jurisdiction`.
+    fn exposure_where_jurisdiction(
+        e: &Env,
+        pools: &Map<Address, Pool>,
+        jurisdiction: &Symbol,
+    ) -> i128 {
+        let mut total: i128 = 0;
+        for (pool_id, pool) in pools.iter() {
+            if pool.jurisdiction == *jurisdiction {
+                total += Self::get_exposure(e.clone(), pool_id);
+            }
+        }
+        total
+    }
+
+    fn write_exposure(e: &Env, pool_id: &Address, value: i128) {
+        let key = Store::Exposure(pool_id.clone());
+        e.storage().persistent().set(&key, &value);
+        e.storage()
+            .persistent()
+            .extend_ttl(&key, EXPOSURE_LIFETIME, EXPOSURE_BUMP);
+    }
+
+    fn write_total_allocated(e: &Env, value: i128) {
+        e.storage().persistent().set(&Store::TotalAllocated, &value);
+        e.storage().persistent().extend_ttl(
+            &Store::TotalAllocated,
+            EXPOSURE_LIFETIME,
+            EXPOSURE_BUMP,
+        );
     }
 
     fn pool_map(e: &Env) -> Map<Address, Pool> {
