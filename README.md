@@ -33,7 +33,7 @@ Network: **Stellar Testnet** · RPC: `https://soroban-testnet.stellar.org`
 | High Yield | [Tenka](https://tenka.fi/) | ABF Mezzanine · 15-20% APY | tHY | [`CCWXOUPQ...NHOPG`](https://stellar.expert/explorer/testnet/contract/CCWXOUPQFZLGENWWT3JLMXOBDE6N6EE5STS7IHESCADX72DDFUSNHOPG) |
 | Deal Vaults | [Tenka](https://tenka.fi/) | Deal-by-Deal · 7-15% APY | tDEAL | [`CBXKGXB4...2IDO5G`](https://stellar.expert/explorer/testnet/contract/CBXKGXB46PD2NDGPS6YRIWJ33A5YEJP5YPYGRBJZTTGWBQ7ASY2IDO5G) |
 
-Each credit vault is an independent Soroban contract with its own share token. The on-chain Allocation Engine with concentration caps is in development (T2.1, September 2026).
+Each credit vault is an independent Soroban contract with its own share token. The on-chain Allocation Engine, with concentration caps and a minimum idle USDC reserve floor, is in development (Tranche 2, December 2026).
 
 The protocol uses native Circle USDC on Stellar (issuer `GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5`), not a wrapped or synthetic asset. All contracts are verifiable on [Stellar Expert](https://stellar.expert/explorer/testnet).
 
@@ -44,13 +44,12 @@ agama-soroban/
 ├── contracts/
 │   ├── agusd/              ✅ agUSD SEP-41 token (deployed testnet)
 │   ├── staking/            ✅ sagUSD (deployed testnet)
-│   ├── vault/              🔧 Vault Contract (T1.1, Aug 2026)
-│   ├── allocation-engine/  🔧 Allocation Engine (T2.1, Sep 2026)
-│   └── oracle-adapter/     🔧 Oracle Adapter (T2.2, Oct 2026)
+│   ├── vault/              🔧 Vault Contract (Tranche 1, Nov 2026)
+│   ├── allocation-engine/  🔧 Allocation Engine (Tranche 2, Dec 2026)
+│   └── oracle-adapter/     🔧 Oracle Adapter (Tranche 2, Dec 2026)
 ├── adapters/
-│   ├── blend-v2/           🔧 Blend v2 adapter (T2.1, Sep 2026)
-│   ├── etherfuse/          🔧 Etherfuse adapter (T2.2, Oct 2026)
-│   └── private-credit/     🔧 Private credit adapter (T2.1, Sep 2026)
+│   ├── etherfuse/          🔧 Etherfuse adapter (Tranche 2, Dec 2026)
+│   └── private-credit/     🔧 Private credit adapter (Tranche 2, Dec 2026)
 ├── crates/
 │   └── token/              Shared SEP-41 token utilities
 ├── deployments/
@@ -70,15 +69,15 @@ Yield-bearing staked agUSD. Share-based vault accounting compatible with the DeF
 
 **DeFindex compatibility:** sagUSD adopts the DeFindex `distribute_yield()` / assets-per-share model, making sagUSD positions natively readable by any DeFindex-integrated wallet or protocol without additional integration work.
 
-### Vault Contract (`contracts/vault`) (T1.1, August 2026)
+### Vault Contract (`contracts/vault`) (Tranche 1, November 2026)
 
 USDC entry point. Accepts deposits, mints agUSD 1:1, routes capital through the Allocation Engine, and manages a two-step FIFO withdrawal queue (`request_withdrawal` / `claim_withdrawal`). Queries Oracle Adapter for NAV. Includes a circuit-breaker (`set_paused`).
 
-### Allocation Engine (`contracts/allocation-engine`) (T2.1, September 2026)
+### Allocation Engine (`contracts/allocation-engine`) (Tranche 2, December 2026)
 
 Routes vault capital across registered pool adapters with on-chain concentration caps (per pool, per originator, per jurisdiction). All pool types implement a uniform adapter interface so the Engine stays agnostic to pool type. Admin-gated in V1, off-chain optimizer in V2.
 
-### Oracle Adapter (`contracts/oracle-adapter`) (T2.2, October 2026)
+### Oracle Adapter (`contracts/oracle-adapter`) (Tranche 2, December 2026)
 
 Multi-source NAV pipeline:
 
@@ -102,7 +101,6 @@ fn get_exposure() -> i128     // Current allocated amount
 
 | Adapter | Underlying | Settlement | Oracle |
 |---|---|---|---|
-| Blend v2 | Blend lending pool | Instant (on-chain) | Not needed (on-chain accrual) |
 | Etherfuse | Stablebond contracts | Instant (on-chain) | Etherfuse feed (48h) |
 | Private Credit | Off-chain originator | D+15 to D+90 | Custom reporter (7d) |
 
@@ -130,11 +128,9 @@ bash scripts/deploy.sh
 
 | Deliverable | Contracts | ETA | Status |
 |---|---|---|---|
-| T1.1 Core Contracts | Vault, agUSD, sagUSD | August 2026 | agUSD + sagUSD live on testnet |
-| T2.1 Allocation Engine | Allocation Engine, Blend v2, Private credit adapters | September 2026 | In development |
-| T2.2 RWA and Oracle | Oracle Adapter, Etherfuse adapter | October 2026 | In development |
-| T2.3 Stress Testing | All contracts | October 2026 | Pending |
-| T3.1 Mainnet and Audit | All contracts | November 2026 | Pending |
+| Tranche 1, MVP | Vault, agUSD, sagUSD | November 2026 | agUSD + sagUSD live on testnet |
+| Tranche 2, Testnet | Allocation Engine, Etherfuse and private credit adapters, Oracle Adapter | December 2026 | In development |
+| Tranche 3, Mainnet | All contracts, audit remediation | February 2027 | Pending |
 
 ## Ecosystem Integrations
 
@@ -142,11 +138,12 @@ From the [SCF Integration List](https://communityfund.stellar.org/integration-li
 
 | Protocol | Role |
 |---|---|
-| [Blend v2](https://blend.capital) | On-chain yield and instant withdrawal liquidity buffer |
 | [DeFindex](https://defindex.io) | sagUSD share-price accounting convention |
 | [Soroswap](https://soroswap.finance) | agUSD/USDC and sagUSD/agUSD AMM pools |
 | [Etherfuse](https://etherfuse.com) | Stellar-native government bond RWA collateral |
 | [Reflector](https://reflector.network) | Decentralized XLM/USD and USDC/USD price feeds |
+
+> **Revision, September 2026.** Blend v2 was previously an allocation target for idle capital and the instant-withdrawal liquidity buffer. It has been removed following the Comet BLND-USDC exploit and Blend's removal from the SCF Integration List. It is not replaced by another protocol: fast-exit liquidity is now a minimum idle USDC reserve floor enforced by the Allocation Engine, where `allocate()` reverts if a call would push vault reserves below the floor.
 
 ## Security
 
