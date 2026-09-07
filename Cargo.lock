@@ -600,6 +600,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2bfcf67fea2815c2fc3b90873fae90957be12ff417335dfadc7f52927feb03b2"
 
 [[package]]
+name = "etherfuse"
+version = "0.0.0"
+dependencies = [
+ "mock_usdc",
+ "soroban-sdk",
+]
+
+[[package]]
 name = "ethnum"
 version = "1.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1035,6 +1043,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "353e1ca18966c16d9deb1c69278edbc5f194139612772bd9537af60ac231e1e6"
 dependencies = [
  "elliptic-curve",
+]
+
+[[package]]
+name = "private-credit"
+version = "0.0.0"
+dependencies = [
+ "mock_usdc",
+ "soroban-sdk",
 ]
 
 [[package]]
