@@ -292,6 +292,59 @@ impl Vault {
         Ok(claim_id)
     }
 
+    /// Pay a claim that is at the head of the queue and covered by idle
+    /// reserves.
+    ///
+    /// Four checks, and the third is the one that matters: the claim must be
+    /// at `queue_head`. Not "near the head", not "the oldest ready claim", not
+    /// "the head unless the admin says otherwise". There is no privileged path
+    /// through this function, which is the only version of a FIFO queue worth
+    /// having: one that cannot be reordered by whoever is running the protocol
+    /// on the day it is under stress.
+    ///
+    /// The head advances only when a claim is paid, so a queue does stall if
+    /// the owner of the head claim never returns. That is the deliberate cost
+    /// of the guarantee: paying around them would be exactly the queue jumping
+    /// the ordering exists to prevent.
+    pub fn claim_withdrawal(e: Env, from: Address, claim_id: u64) -> Result<(), VaultError> {
+        Self::require_not_paused(&e)?;
+        from.require_auth();
+
+        let mut claim = Self::read_claim(&e, claim_id)?;
+        if claim.owner != from {
+            return Err(VaultError::NotClaimOwner);
+        }
+        if claim.claimed {
+            return Err(VaultError::AlreadyClaimed);
+        }
+        if claim_id != Self::queue_head(e.clone()) {
+            return Err(VaultError::NotAtQueueHead);
+        }
+        if Self::idle_reserves(e.clone()) < claim.amount {
+            return Err(VaultError::InsufficientLiquidity);
+        }
+
+        let usdc = Self::usdc(e.clone())?;
+        TokenClient::new(&e, &usdc).transfer(
+            &e.current_contract_address(),
+            &claim.owner,
+            &claim.amount,
+        );
+
+        claim.claimed = true;
+        Self::write_claim(&e, claim_id, &claim);
+        e.storage().instance().set(&Cfg::QueueHead, &(claim_id + 1));
+        Self::bump_instance(&e);
+
+        WithdrawalClaimed {
+            user: from,
+            claim_id,
+            amount: claim.amount,
+        }
+        .publish(&e);
+        Ok(())
+    }
+
     /// Release idle USDC to a pool. Callable only by the Allocation Engine,
     /// which has already checked the concentration caps and the reserve floor.
     /// The Vault does not re-derive those limits: duplicating them here would
@@ -353,6 +406,27 @@ impl Vault {
 
     pub fn get_claim(e: Env, claim_id: u64) -> Result<Claim, VaultError> {
         Self::read_claim(&e, claim_id)
+    }
+
+    /// Where a claim stands right now.
+    ///
+    /// `Ready` is computed rather than stored, because both conditions for it
+    /// change without anyone touching the claim: the queue reaches it when the
+    /// claim in front is paid, and the Vault becomes able to cover it when a
+    /// pool repays. Storing a flag would mean someone has to remember to
+    /// refresh it, and a claim that is payable but marked pending is worse
+    /// than no status at all.
+    pub fn claim_status(e: Env, claim_id: u64) -> Result<ClaimStatus, VaultError> {
+        let claim = Self::read_claim(&e, claim_id)?;
+        if claim.claimed {
+            return Ok(ClaimStatus::Claimed);
+        }
+        if claim_id == Self::queue_head(e.clone())
+            && Self::idle_reserves(e.clone()) >= claim.amount
+        {
+            return Ok(ClaimStatus::Ready);
+        }
+        Ok(ClaimStatus::Pending)
     }
 
     /// Next claim id that may be paid. Nothing behind it can be paid first.
@@ -465,6 +539,16 @@ pub struct WithdrawalRequested {
     pub amount: i128,
     /// How many claims are ahead of this one at request time.
     pub queue_position: u64,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WithdrawalClaimed {
+    #[topic]
+    pub user: Address,
+    #[topic]
+    pub claim_id: u64,
+    pub amount: i128,
 }
 
 #[contractevent]
