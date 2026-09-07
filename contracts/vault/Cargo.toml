@@ -1,0 +1,19 @@
+[package]
+name = "vault"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["lib", "cdylib"]
+doctest = false
+
+[dependencies]
+soroban-sdk = { workspace = true }
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }
+mock_usdc = { path = "../mock_usdc" }
+allocation-engine = { path = "../allocation-engine" }
+oracle-adapter = { path = "../oracle-adapter" }
+private-credit = { path = "../../adapters/private-credit" }
