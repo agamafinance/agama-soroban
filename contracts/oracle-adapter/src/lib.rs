@@ -497,3 +497,5 @@ impl OracleAdapter {
             .unwrap_or(Map::new(e))
     }
 }
+
+mod test;
