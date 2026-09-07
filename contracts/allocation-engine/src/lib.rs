@@ -614,3 +614,5 @@ impl AllocationEngine {
             .extend_ttl(INSTANCE_LIFETIME, INSTANCE_BUMP);
     }
 }
+
+mod test;
