@@ -556,3 +556,5 @@ pub struct WithdrawalClaimed {
 pub struct PauseToggled {
     pub paused: bool,
 }
+
+mod test;
