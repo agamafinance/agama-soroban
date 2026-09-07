@@ -1,11 +1,13 @@
-// Oracle Adapter Contract — T2.2 (ETA: October 2026)
-//
-// Multi-source NAV pipeline:
-//   - Reflector feeds: XLM/USD and USDC/USD (1h staleness, 2% deviation bound)
-//   - Custom reporter: private credit NAV (7d staleness, 5% deviation bound)
-//   - Etherfuse API: Stablebond pricing (48h staleness, deterministic)
-//
-// Validates caller authorization, timestamp freshness, and deviation bounds.
-// Vault calls get_nav(); reverts with OracleStale if feed is expired.
-//
-// Status: in development
+#![no_std]
+//! Oracle Adapter, the single source of truth for NAV.
+//!
+//! Bridges several feed types (Reflector price feeds, an off-chain private
+//! credit reporter, Etherfuse bond pricing) behind one validated interface.
+
+use soroban_sdk::{contract, contractimpl};
+
+#[contract]
+pub struct OracleAdapter;
+
+#[contractimpl]
+impl OracleAdapter {}

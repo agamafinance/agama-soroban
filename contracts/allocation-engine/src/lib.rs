@@ -1,9 +1,13 @@
-// Allocation Engine Contract — T2.1 (ETA: September 2026)
-//
-// Routes vault capital across registered pool adapters (Blend v2, Etherfuse,
-// private credit) while enforcing on-chain concentration caps per pool,
-// originator, and jurisdiction.
-//
-// Key functions: register_pool, set_caps, allocate, deallocate, get_exposure
-//
-// Status: in development
+#![no_std]
+//! Allocation Engine, routes vault capital across registered pool adapters.
+//!
+//! Enforces on-chain concentration caps (per pool, per originator, per
+//! jurisdiction) and a minimum idle USDC reserve floor in the Vault.
+
+use soroban_sdk::{contract, contractimpl};
+
+#[contract]
+pub struct AllocationEngine;
+
+#[contractimpl]
+impl AllocationEngine {}
