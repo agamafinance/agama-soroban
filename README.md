@@ -39,7 +39,7 @@ Network: **Stellar Testnet** · RPC: `https://soroban-testnet.stellar.org`
 | High Yield | [Tenka](https://tenka.fi/) | ABF Mezzanine · 15-20% APY | tHY | [`CCWXOUPQ...NHOPG`](https://stellar.expert/explorer/testnet/contract/CCWXOUPQFZLGENWWT3JLMXOBDE6N6EE5STS7IHESCADX72DDFUSNHOPG) |
 | Deal Vaults | [Tenka](https://tenka.fi/) | Deal-by-Deal · 7-15% APY | tDEAL | [`CBXKGXB4...2IDO5G`](https://stellar.expert/explorer/testnet/contract/CBXKGXB46PD2NDGPS6YRIWJ33A5YEJP5YPYGRBJZTTGWBQ7ASY2IDO5G) |
 
-Each credit vault is an independent Soroban contract with its own share token. The on-chain Allocation Engine, with concentration caps and a minimum idle USDC reserve floor, is in development (Tranche 2, December 2026).
+Each credit vault is an independent Soroban contract with its own share token. The on-chain Allocation Engine, with concentration caps and a minimum idle USDC reserve floor, is implemented and covered by tests; testnet deployment lands with Tranche 2 (December 2026).
 
 The protocol uses native Circle USDC on Stellar (issuer `GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5`), not a wrapped or synthetic asset. All contracts are verifiable on [Stellar Expert](https://stellar.expert/explorer/testnet).
 
@@ -50,12 +50,13 @@ agama-soroban/
 ├── contracts/
 │   ├── agusd/              ✅ agUSD SEP-41 token (deployed testnet)
 │   ├── staking/            ✅ sagUSD (deployed testnet)
-│   ├── vault/              🔧 Vault Contract (Tranche 1, Nov 2026)
-│   ├── allocation-engine/  🔧 Allocation Engine (Tranche 2, Dec 2026)
-│   └── oracle-adapter/     🔧 Oracle Adapter (Tranche 2, Dec 2026)
+│   ├── vault/              ✅ Vault Contract (implemented, tested)
+│   ├── allocation-engine/  ✅ Allocation Engine (implemented, tested)
+│   ├── oracle-adapter/     ✅ Oracle Adapter (implemented, tested)
+│   └── mock_usdc/          Test USDC faucet, used by the test suites
 ├── adapters/
-│   ├── etherfuse/          🔧 Etherfuse adapter (Tranche 2, Dec 2026)
-│   └── private-credit/     🔧 Private credit adapter (Tranche 2, Dec 2026)
+│   ├── etherfuse/          ✅ Etherfuse adapter (implemented, tested)
+│   └── private-credit/     ✅ Private credit adapter (implemented, tested)
 ├── crates/
 │   └── token/              Shared SEP-41 token utilities
 ├── deployments/
@@ -75,15 +76,19 @@ Yield-bearing staked agUSD. Share-based vault accounting compatible with the DeF
 
 **DeFindex compatibility:** sagUSD adopts the DeFindex `distribute_yield()` / assets-per-share model, making sagUSD positions natively readable by any DeFindex-integrated wallet or protocol without additional integration work.
 
-### Vault Contract (`contracts/vault`) (Tranche 1, November 2026)
+### Vault Contract (`contracts/vault`) (implemented, deploys with Tranche 1)
 
 USDC entry point. Accepts deposits, mints agUSD 1:1, routes capital through the Allocation Engine, and manages a two-step FIFO withdrawal queue (`request_withdrawal` / `claim_withdrawal`). Queries Oracle Adapter for NAV. Includes a circuit-breaker (`set_paused`).
 
-### Allocation Engine (`contracts/allocation-engine`) (Tranche 2, December 2026)
+The queue is paid strictly in order and there is no admin path around it: `claim_withdrawal` refuses any claim that is not at the head. agUSD is burned when the withdrawal is requested, not when it is claimed, so a queued position cannot be sold or re-requested while it waits. A minimum withdrawal of 1 agUSD keeps dust requests from crowding the queue.
+
+### Allocation Engine (`contracts/allocation-engine`) (implemented, deploys with Tranche 2)
 
 Routes vault capital across registered pool adapters with on-chain concentration caps (per pool, per originator, per jurisdiction). All pool types implement a uniform adapter interface so the Engine stays agnostic to pool type. Admin-gated in V1, off-chain optimizer in V2.
 
-### Oracle Adapter (`contracts/oracle-adapter`) (Tranche 2, December 2026)
+A fourth guard, `set_reserve_floor`, holds a minimum share of total assets as idle USDC in the Vault. `allocate()` reverts if a call would push reserves below it, which is where fast-exit liquidity now lives. Caps and floor start fully closed at deployment, so an Engine that has not been configured cannot deploy capital.
+
+### Oracle Adapter (`contracts/oracle-adapter`) (implemented, deploys with Tranche 2)
 
 Multi-source NAV pipeline:
 
@@ -93,7 +98,9 @@ Multi-source NAV pipeline:
 | Private credit NAV | Off-chain reporter via Backend | 7 days | 5% |
 | Etherfuse bond price | Etherfuse API / on-chain | 48 hours | Deterministic |
 
-Validates caller authorization, timestamp freshness, and deviation bounds on every update. Vault reverts with `OracleStale` if a feed is expired.
+Validates caller authorization, timestamp freshness, and deviation bounds on every update. Vault reverts with `OracleStale` if a feed is expired. Timestamps must be strictly increasing per feed and never ahead of ledger time, so a stale feed cannot be made to look fresh.
+
+Two report paths share one validation. `push_nav()` fails the transaction on a deviation breach; `submit_nav()` returns a rejection outcome and emits `nav_rejected` instead. The split exists because Soroban discards the events of an invocation that errors, so a single entry point cannot both fail the caller and leave the refusal in the ledger event stream.
 
 ## Adapter Interface
 
@@ -118,9 +125,11 @@ Requirements: [Rust](https://rustup.rs) + [Stellar CLI](https://developers.stell
 # Install Stellar CLI
 cargo install --locked stellar-cli --features opt
 
-# Build contracts
-cd contracts/agusd && cargo build --target wasm32-unknown-unknown --release
-cd contracts/staking && cargo build --target wasm32-unknown-unknown --release
+# Build every contract to wasm
+cargo build --target wasm32-unknown-unknown --release --workspace
+
+# Or a single one
+cargo build --target wasm32-unknown-unknown --release -p vault
 
 # Run tests
 cargo test --workspace
@@ -134,8 +143,8 @@ bash scripts/deploy.sh
 
 | Deliverable | Contracts | ETA | Status |
 |---|---|---|---|
-| Tranche 1, MVP | Vault, agUSD, sagUSD | November 2026 | agUSD + sagUSD live on testnet |
-| Tranche 2, Testnet | Allocation Engine, Etherfuse and private credit adapters, Oracle Adapter | December 2026 | In development |
+| Tranche 1, MVP | Vault, agUSD, sagUSD | November 2026 | agUSD + sagUSD live on testnet, Vault implemented |
+| Tranche 2, Testnet | Allocation Engine, Etherfuse and private credit adapters, Oracle Adapter | December 2026 | Implemented and tested, testnet deployment pending |
 | Tranche 3, Mainnet | All contracts, audit remediation | February 2027 | Pending |
 
 ## Ecosystem Integrations
