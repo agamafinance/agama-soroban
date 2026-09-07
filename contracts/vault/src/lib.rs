@@ -48,6 +48,18 @@ use soroban_sdk::{
 const DAY_LEDGERS: u32 = 17_280;
 const INSTANCE_BUMP: u32 = 30 * DAY_LEDGERS;
 const INSTANCE_LIFETIME: u32 = INSTANCE_BUMP - DAY_LEDGERS;
+// Claims sit in the queue until the positions behind them settle, which for
+// private credit runs to 90 days, so they get the longest TTL in the protocol.
+const CLAIM_BUMP: u32 = 90 * DAY_LEDGERS;
+const CLAIM_LIFETIME: u32 = CLAIM_BUMP - DAY_LEDGERS;
+
+/// Anti-dust floor on withdrawals: 1 agUSD, at 7 decimals.
+///
+/// Every request costs a persistent storage entry and a slot in a queue that
+/// is paid strictly in order, so a stream of one-stroop requests is a cheap
+/// way to push real withdrawals behind thousands of dust claims. The floor
+/// makes that attack cost the attacker as much as it costs everyone else.
+pub const MIN_WITHDRAWAL: i128 = 10_000_000;
 
 /// agUSD, as seen from the Vault. The Vault is the token's admin, so it is the
 /// only address that can mint against a deposit or burn against a withdrawal.
@@ -234,6 +246,52 @@ impl Vault {
         Ok(amount)
     }
 
+    /// Burn agUSD now, join the withdrawal queue, and return the claim id.
+    ///
+    /// The agUSD is burned at request time rather than at claim time. That is
+    /// what makes the queue meaningful: once the tokens are gone the holder
+    /// cannot sell, stake or re-request the same position while waiting, and
+    /// the supply already reflects the exit. The claim record is from then on
+    /// the user's only title to the USDC, which is why it is persistent and
+    /// TTL bumped for 90 days rather than kept in temporary storage.
+    ///
+    /// The queue is a pair of monotonic pointers rather than a list: `tail` is
+    /// the next id to hand out, `head` is the next id that may be paid. Two
+    /// integers cannot be reordered, which is a cheaper guarantee of FIFO than
+    /// any structure that would have to be walked.
+    pub fn request_withdrawal(e: Env, from: Address, amount: i128) -> Result<u64, VaultError> {
+        Self::require_not_paused(&e)?;
+        from.require_auth();
+        if amount <= 0 {
+            return Err(VaultError::InvalidAmount);
+        }
+        if amount < MIN_WITHDRAWAL {
+            return Err(VaultError::BelowMinWithdrawal);
+        }
+        let agusd = Self::agusd(e.clone())?;
+        AgUsdClient::new(&e, &agusd).burn(&from, &amount);
+
+        let claim_id = Self::queue_tail(e.clone());
+        let claim = Claim {
+            owner: from.clone(),
+            amount,
+            requested_at: e.ledger().timestamp(),
+            claimed: false,
+        };
+        Self::write_claim(&e, claim_id, &claim);
+        e.storage().instance().set(&Cfg::QueueTail, &(claim_id + 1));
+        Self::bump_instance(&e);
+
+        WithdrawalRequested {
+            user: from,
+            claim_id,
+            amount,
+            queue_position: claim_id - Self::queue_head(e.clone()),
+        }
+        .publish(&e);
+        Ok(claim_id)
+    }
+
     /// Release idle USDC to a pool. Callable only by the Allocation Engine,
     /// which has already checked the concentration caps and the reserve floor.
     /// The Vault does not re-derive those limits: duplicating them here would
@@ -293,6 +351,25 @@ impl Vault {
         Ok(OracleClient::new(&e, &oracle).get_nav(&feed_id))
     }
 
+    pub fn get_claim(e: Env, claim_id: u64) -> Result<Claim, VaultError> {
+        Self::read_claim(&e, claim_id)
+    }
+
+    /// Next claim id that may be paid. Nothing behind it can be paid first.
+    pub fn queue_head(e: Env) -> u64 {
+        e.storage().instance().get(&Cfg::QueueHead).unwrap_or(1)
+    }
+
+    /// Next claim id to be handed out.
+    pub fn queue_tail(e: Env) -> u64 {
+        e.storage().instance().get(&Cfg::QueueTail).unwrap_or(1)
+    }
+
+    /// Claims requested and not yet paid.
+    pub fn queue_length(e: Env) -> u64 {
+        Self::queue_tail(e.clone()) - Self::queue_head(e)
+    }
+
     pub fn paused(e: Env) -> bool {
         e.storage().instance().get(&Cfg::Paused).unwrap_or(false)
     }
@@ -347,6 +424,21 @@ impl Vault {
         Ok(())
     }
 
+    fn read_claim(e: &Env, claim_id: u64) -> Result<Claim, VaultError> {
+        e.storage()
+            .persistent()
+            .get(&Store::Claim(claim_id))
+            .ok_or(VaultError::ClaimNotFound)
+    }
+
+    fn write_claim(e: &Env, claim_id: u64, claim: &Claim) {
+        let key = Store::Claim(claim_id);
+        e.storage().persistent().set(&key, claim);
+        e.storage()
+            .persistent()
+            .extend_ttl(&key, CLAIM_LIFETIME, CLAIM_BUMP);
+    }
+
     fn bump_instance(e: &Env) {
         e.storage()
             .instance()
@@ -361,6 +453,18 @@ pub struct Deposit {
     pub user: Address,
     pub amount: i128,
     pub minted: i128,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WithdrawalRequested {
+    #[topic]
+    pub user: Address,
+    #[topic]
+    pub claim_id: u64,
+    pub amount: i128,
+    /// How many claims are ahead of this one at request time.
+    pub queue_position: u64,
 }
 
 #[contractevent]
