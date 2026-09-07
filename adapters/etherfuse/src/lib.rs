@@ -1,9 +1,194 @@
-// Etherfuse Stablebond Adapter — T2.2 (ETA: October 2026)
-//
-// Implements the uniform pool adapter interface for Etherfuse Stablebonds.
-// Allows the Allocation Engine to purchase and redeem Stellar-native
-// government-bond tokens as a low-risk RWA yield source.
-//
-// Oracle: Etherfuse pricing feed, 48h staleness threshold, deterministic NAV.
-//
-// Status: in development
+#![no_std]
+//! Etherfuse Stablebond adapter.
+//!
+//! Exposes the same three calls as every other pool type, so the Allocation
+//! Engine can route to a tokenized government bond and to an off-chain credit
+//! facility through identical code:
+//!
+//! ```text
+//! allocate(amount)      deploy capital into the pool
+//! deallocate(amount)    return capital to the Vault
+//! get_exposure()        capital currently deployed
+//! ```
+//!
+//! What differs from the private credit adapter is not the interface, it is the
+//! settlement and the valuation. Stablebond positions are on-chain and redeem
+//! in a block, so `deallocate` returns the USDC to the Vault immediately rather
+//! than waiting on an originator. Pricing is deterministic and comes from the
+//! Etherfuse feed, registered in the Oracle Adapter with a 48 hour staleness
+//! window and no deviation bound: a bond revaluation is not an anomaly to be
+//! bounded, it is the instrument doing what it is supposed to do.
+//!
+//! That difference is why this adapter is the low-risk leg of the book, and why
+//! the Engine can size it against a short withdrawal queue while sizing private
+//! credit against a long one.
+//!
+//! Only the Engine can move capital: an admin path here would bypass the
+//! concentration caps and the reserve floor the Engine exists to enforce.
+
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, symbol_short, token::TokenClient, Address,
+    Env, Symbol,
+};
+
+const DAY_LEDGERS: u32 = 17_280;
+const INSTANCE_BUMP: u32 = 30 * DAY_LEDGERS;
+const INSTANCE_LIFETIME: u32 = INSTANCE_BUMP - DAY_LEDGERS;
+
+/// Identifies the pool type to anything reading the adapter generically.
+pub const POOL_KIND: Symbol = symbol_short!("ETHERFUS");
+/// Oracle Adapter feed this pool is valued from.
+pub const ORACLE_FEED: Symbol = symbol_short!("EF_BOND");
+/// Stablebond redemptions are on-chain, so capital comes back in the same call.
+pub const SETTLEMENT_DAYS: u32 = 0;
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum AdapterError {
+    AlreadyInitialized = 700,
+    NotInitialized = 701,
+    InvalidAmount = 702,
+    /// Deallocating more than is currently deployed.
+    ExposureUnderflow = 703,
+}
+
+#[derive(Clone)]
+#[contracttype]
+enum Cfg {
+    Admin,
+    Engine,
+    Vault,
+    Usdc,
+    Exposure,
+}
+
+#[contract]
+pub struct EtherfuseAdapter;
+
+#[contractimpl]
+impl EtherfuseAdapter {
+    pub fn initialize(
+        e: Env,
+        admin: Address,
+        engine: Address,
+        vault: Address,
+        usdc: Address,
+    ) -> Result<(), AdapterError> {
+        if e.storage().instance().has(&Cfg::Engine) {
+            return Err(AdapterError::AlreadyInitialized);
+        }
+        admin.require_auth();
+        e.storage().instance().set(&Cfg::Admin, &admin);
+        e.storage().instance().set(&Cfg::Engine, &engine);
+        e.storage().instance().set(&Cfg::Vault, &vault);
+        e.storage().instance().set(&Cfg::Usdc, &usdc);
+        e.storage().instance().set(&Cfg::Exposure, &0i128);
+        Self::bump(&e);
+        Ok(())
+    }
+
+    /// Book capital released by the Vault into Stablebond exposure. Called by
+    /// the Engine, which has already checked it against the concentration caps
+    /// and the reserve floor.
+    pub fn allocate(e: Env, amount: i128) -> Result<(), AdapterError> {
+        Self::require_engine(&e)?;
+        if amount <= 0 {
+            return Err(AdapterError::InvalidAmount);
+        }
+        let exposure = Self::get_exposure(e.clone()) + amount;
+        e.storage().instance().set(&Cfg::Exposure, &exposure);
+        Self::bump(&e);
+        Ok(())
+    }
+
+    /// Redeem and return capital to the Vault, reducing the exposure by the
+    /// same amount in the same call so the two cannot disagree.
+    pub fn deallocate(e: Env, amount: i128) -> Result<(), AdapterError> {
+        Self::require_engine(&e)?;
+        if amount <= 0 {
+            return Err(AdapterError::InvalidAmount);
+        }
+        let exposure = Self::get_exposure(e.clone());
+        if amount > exposure {
+            return Err(AdapterError::ExposureUnderflow);
+        }
+        let usdc: Address = e
+            .storage()
+            .instance()
+            .get(&Cfg::Usdc)
+            .ok_or(AdapterError::NotInitialized)?;
+        let vault: Address = e
+            .storage()
+            .instance()
+            .get(&Cfg::Vault)
+            .ok_or(AdapterError::NotInitialized)?;
+        TokenClient::new(&e, &usdc).transfer(&e.current_contract_address(), &vault, &amount);
+        e.storage()
+            .instance()
+            .set(&Cfg::Exposure, &(exposure - amount));
+        Self::bump(&e);
+        Ok(())
+    }
+
+    /// Capital currently deployed into this pool, in USDC.
+    pub fn get_exposure(e: Env) -> i128 {
+        e.storage().instance().get(&Cfg::Exposure).unwrap_or(0)
+    }
+
+    // ---- metadata, read by the Engine and the UI ----
+
+    pub fn pool_kind(_e: Env) -> Symbol {
+        POOL_KIND
+    }
+
+    pub fn oracle_feed(_e: Env) -> Symbol {
+        ORACLE_FEED
+    }
+
+    /// Days from `deallocate` to cash in the Vault. Zero: on-chain redemption.
+    pub fn settlement_days(_e: Env) -> u32 {
+        SETTLEMENT_DAYS
+    }
+
+    pub fn engine(e: Env) -> Result<Address, AdapterError> {
+        e.storage()
+            .instance()
+            .get(&Cfg::Engine)
+            .ok_or(AdapterError::NotInitialized)
+    }
+
+    pub fn vault(e: Env) -> Result<Address, AdapterError> {
+        e.storage()
+            .instance()
+            .get(&Cfg::Vault)
+            .ok_or(AdapterError::NotInitialized)
+    }
+
+    pub fn admin(e: Env) -> Result<Address, AdapterError> {
+        e.storage()
+            .instance()
+            .get(&Cfg::Admin)
+            .ok_or(AdapterError::NotInitialized)
+    }
+
+    // ---- internals ----
+
+    fn require_engine(e: &Env) -> Result<(), AdapterError> {
+        let engine: Address = e
+            .storage()
+            .instance()
+            .get(&Cfg::Engine)
+            .ok_or(AdapterError::NotInitialized)?;
+        engine.require_auth();
+        Ok(())
+    }
+
+    fn bump(e: &Env) {
+        e.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME, INSTANCE_BUMP);
+    }
+}
+
+mod test;
