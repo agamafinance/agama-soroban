@@ -1,0 +1,144 @@
+#![cfg(test)]
+use super::*;
+use mock_usdc::{MockUsdc, MockUsdcClient};
+use soroban_sdk::testutils::Address as _;
+use soroban_sdk::{Address, Env, String};
+
+const USDC: i128 = 10_000_000; // 1 USDC at 7 decimals
+
+struct Fix {
+    e: Env,
+    usdc: MockUsdcClient<'static>,
+    adapter: PrivateCreditAdapterClient<'static>,
+    adapter_id: Address,
+    vault: Address,
+    admin: Address,
+}
+
+/// The Engine and the Vault are plain addresses here: this crate is testing the
+/// adapter's own guards, and the Engine to adapter wiring is covered end to end
+/// in the allocation-engine tests.
+fn setup() -> Fix {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let admin = Address::generate(&e);
+    let engine = Address::generate(&e);
+    let vault = Address::generate(&e);
+
+    let usdc_id = e.register(MockUsdc, ());
+    let usdc = MockUsdcClient::new(&e, &usdc_id);
+    usdc.initialize(
+        &admin,
+        &7u32,
+        &String::from_str(&e, "USD Coin"),
+        &String::from_str(&e, "USDC"),
+    );
+
+    let adapter_id = e.register(PrivateCreditAdapter, ());
+    let adapter = PrivateCreditAdapterClient::new(&e, &adapter_id);
+    adapter.initialize(&admin, &engine, &vault, &usdc_id);
+
+    Fix {
+        e,
+        usdc,
+        adapter,
+        adapter_id,
+        vault,
+        admin,
+    }
+}
+
+#[test]
+fn allocate_books_exposure() {
+    let f = setup();
+    assert_eq!(f.adapter.get_exposure(), 0);
+    f.adapter.allocate(&(500 * USDC));
+    assert_eq!(f.adapter.get_exposure(), 500 * USDC);
+    f.adapter.allocate(&(250 * USDC));
+    assert_eq!(f.adapter.get_exposure(), 750 * USDC);
+}
+
+#[test]
+fn deallocate_returns_capital_and_reduces_exposure_together() {
+    let f = setup();
+    // The Vault has released 500 USDC to the adapter, the Engine books it.
+    f.usdc.faucet(&f.adapter_id, &(500 * USDC));
+    f.adapter.allocate(&(500 * USDC));
+
+    // A 200 USDC repayment: the cash reaches the Vault and the exposure drops
+    // by the same amount in the same call, so the two cannot drift apart.
+    f.adapter.deallocate(&(200 * USDC));
+    assert_eq!(f.adapter.get_exposure(), 300 * USDC);
+    assert_eq!(f.usdc.balance(&f.vault), 200 * USDC);
+    assert_eq!(f.usdc.balance(&f.adapter_id), 300 * USDC);
+}
+
+#[test]
+fn deallocate_beyond_exposure_is_rejected() {
+    let f = setup();
+    f.usdc.faucet(&f.adapter_id, &(500 * USDC));
+    f.adapter.allocate(&(100 * USDC));
+
+    // The adapter holds more USDC than it has booked exposure for, and must
+    // still refuse to return capital it never recorded as deployed.
+    assert_eq!(
+        f.adapter.try_deallocate(&(200 * USDC)),
+        Err(Ok(AdapterError::ExposureUnderflow))
+    );
+    assert_eq!(f.adapter.get_exposure(), 100 * USDC);
+    assert_eq!(f.usdc.balance(&f.vault), 0);
+}
+
+#[test]
+fn non_positive_amounts_are_rejected() {
+    let f = setup();
+    assert_eq!(
+        f.adapter.try_allocate(&0),
+        Err(Ok(AdapterError::InvalidAmount))
+    );
+    assert_eq!(
+        f.adapter.try_allocate(&(-100 * USDC)),
+        Err(Ok(AdapterError::InvalidAmount))
+    );
+    assert_eq!(
+        f.adapter.try_deallocate(&0),
+        Err(Ok(AdapterError::InvalidAmount))
+    );
+}
+
+#[test]
+fn only_the_engine_can_move_capital() {
+    let f = setup();
+    f.usdc.faucet(&f.adapter_id, &(500 * USDC));
+    f.adapter.allocate(&(500 * USDC));
+
+    // Drop the blanket auth mock: without the Engine's authorization neither
+    // side of the interface moves, so no admin or third party can allocate
+    // around the concentration caps or drain the position.
+    f.e.mock_auths(&[]);
+    assert!(f.adapter.try_allocate(&(100 * USDC)).is_err());
+    assert!(f.adapter.try_deallocate(&(100 * USDC)).is_err());
+    assert_eq!(f.adapter.get_exposure(), 500 * USDC);
+}
+
+#[test]
+fn cannot_be_reinitialized() {
+    let f = setup();
+    let attacker = Address::generate(&f.e);
+    assert!(f
+        .adapter
+        .try_initialize(&attacker, &attacker, &attacker, &attacker)
+        .is_err());
+    assert_eq!(f.adapter.admin(), f.admin);
+}
+
+#[test]
+fn metadata_matches_the_feed_the_pool_is_priced_from() {
+    let f = setup();
+    assert_eq!(f.adapter.pool_kind(), POOL_KIND);
+    // The Oracle Adapter registers PC_NAV with a 7 day staleness window, which
+    // is the on-chain counterpart of this settlement window.
+    assert_eq!(f.adapter.oracle_feed(), ORACLE_FEED);
+    assert_eq!(f.adapter.settlement_window(), (15, 90));
+}
