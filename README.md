@@ -6,6 +6,12 @@ Users deposit USDC into curated vaults and receive **agUSD**, a composable synth
 
 All contracts are written in Rust for the Soroban smart contract platform.
 
+## Architecture
+
+![Agama on Stellar](docs/architecture.png)
+
+Entry ramps, the dApp, the Soroban contract set, allocation targets and the off-chain indexer, with the parameters each component enforces. Source: [`docs/architecture.svg`](docs/architecture.svg).
+
 ## Live on Testnet
 
 Network: **Stellar Testnet** · RPC: `https://soroban-testnet.stellar.org`
