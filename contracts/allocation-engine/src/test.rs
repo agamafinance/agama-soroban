@@ -10,11 +10,22 @@ const USDC: i128 = 10_000_000; // 1 USDC at 7 decimals
 const FUNDING: i128 = 1_000 * USDC;
 
 // Caps chosen so each one binds on its own in some scenario, which is the only
-// way to prove all three are actually evaluated.
+// way to prove all three are actually evaluated. Three pools share a
+// jurisdiction here and two share an originator, which is what makes the
+// aggregate caps reachable in a fixture this small.
 const POOL_CAP: u32 = 3_000; // 30%
 const ORIGINATOR_CAP: u32 = 4_000; // 40%
 const JURISDICTION_CAP: u32 = 5_000; // 50%
 const RESERVE_FLOOR: u32 = 2_000; // 20%
+
+// The limits the testnet deployment actually runs with, on two pools with one
+// originator and one jurisdiction each. They live here so the arithmetic that
+// makes the reserve floor reachable is checked by the test suite rather than
+// asserted in a deploy script.
+const DEPLOYED_POOL_CAP: u32 = 4_000; // 40% in any single pool
+const DEPLOYED_ORIGINATOR_CAP: u32 = 4_500; // 45% behind any single originator
+const DEPLOYED_JURISDICTION_CAP: u32 = 5_000; // 50% under any single legal regime
+const DEPLOYED_RESERVE_FLOOR: u32 = 2_500; // 25% stays as idle USDC
 
 /// Minimal stand-in for the Vault: it custodies the USDC and implements the two
 /// calls the Engine makes. The real Vault has its own test suite; wiring it in
@@ -515,4 +526,106 @@ fn cannot_be_reinitialized() {
     );
     assert_eq!(f.engine.admin(), f.admin);
     assert_eq!(f.engine.vault(), f.vault_id);
+}
+
+#[test]
+fn the_deployed_limits_leave_the_reserve_floor_able_to_bind() {
+    // The configuration this Engine is deployed with, on the two pools it is
+    // deployed with: private credit fronted by Qiro through a Luxembourg SPV,
+    // and tokenized Mexican government debt through Etherfuse. One originator
+    // and one jurisdiction each, so neither aggregate cap is reachable and the
+    // per-pool cap is the tightest concentration limit in play.
+    let e = Env::default();
+    e.mock_all_auths();
+    let admin = Address::generate(&e);
+
+    let usdc_id = e.register(MockUsdc, ());
+    let usdc = MockUsdcClient::new(&e, &usdc_id);
+    usdc.initialize(
+        &admin,
+        &7u32,
+        &String::from_str(&e, "USD Coin"),
+        &String::from_str(&e, "USDC"),
+    );
+    let vault_id = e.register(MockVault, ());
+    MockVaultClient::new(&e, &vault_id).initialize(&usdc_id);
+    usdc.faucet(&vault_id, &FUNDING);
+
+    let engine_id = e.register(AllocationEngine, ());
+    let engine = AllocationEngineClient::new(&e, &engine_id);
+    engine.initialize(&admin, &vault_id);
+
+    let pc = e.register(PrivateCreditAdapter, ());
+    PrivateCreditAdapterClient::new(&e, &pc).initialize(&admin, &engine_id, &vault_id, &usdc_id);
+    let ef = e.register(EtherfuseAdapter, ());
+    EtherfuseAdapterClient::new(&e, &ef).initialize(&admin, &engine_id, &vault_id, &usdc_id);
+
+    engine.register_pool(
+        &admin,
+        &pc,
+        &symbol_short!("QIRO"),
+        &symbol_short!("LU"),
+        &DEPLOYED_POOL_CAP,
+    );
+    engine.register_pool(
+        &admin,
+        &ef,
+        &symbol_short!("ETHERFUS"),
+        &symbol_short!("MX"),
+        &DEPLOYED_POOL_CAP,
+    );
+    engine.set_caps(
+        &admin,
+        &DEPLOYED_POOL_CAP,
+        &DEPLOYED_ORIGINATOR_CAP,
+        &DEPLOYED_JURISDICTION_CAP,
+    );
+    engine.set_reserve_floor(&admin, &DEPLOYED_RESERVE_FLOOR);
+
+    // The property the previous configuration did not have. Two pools capped
+    // at 30% each could deploy at most 60% of the book, so a 20% floor was
+    // arithmetically unreachable: 40% stayed idle whatever the operator did
+    // and the pool cap fired first every time. Here the pools can absorb 80%
+    // and the floor will only release 75%, so the last 5% belongs to the floor
+    // alone.
+    assert!(2 * DEPLOYED_POOL_CAP > 10_000 - DEPLOYED_RESERVE_FLOOR);
+
+    // Fill the book the way an operator would. 40% into private credit is
+    // exactly its cap and leaves 60% idle.
+    engine.allocate(&admin, &pc, &(400 * USDC));
+    assert_eq!(engine.get_reserve_ratio(), 6_000);
+    // 35% into Etherfuse brings idle reserves to the floor, to the stroop.
+    engine.allocate(&admin, &ef, &(350 * USDC));
+    assert_eq!(engine.get_reserve_ratio(), DEPLOYED_RESERVE_FLOOR);
+
+    // Now the state this configuration exists to produce. 5% more into
+    // Etherfuse would take it to 40%: inside its own cap, inside the global
+    // pool cap, inside the originator cap and inside the jurisdiction cap.
+    // Every concentration limit says yes and the allocation is still refused,
+    // because the floor is what is left.
+    assert_eq!(
+        engine.try_allocate(&admin, &ef, &(50 * USDC)),
+        Err(Ok(EngineError::ReserveFloorBreached))
+    );
+    assert_eq!(engine.get_exposure(&ef), 350 * USDC);
+    assert_eq!(usdc.balance(&vault_id), 250 * USDC);
+
+    // And it is the floor, not something else wearing its error code: drop the
+    // floor and the identical call goes through.
+    engine.set_reserve_floor(&admin, &2_000);
+    engine.allocate(&admin, &ef, &(50 * USDC));
+    assert_eq!(engine.get_exposure(&ef), 400 * USDC);
+    assert_eq!(engine.get_reserve_ratio(), 2_000);
+
+    // The pool cap has not stopped binding for the sake of it. One more stroop
+    // into either pool is refused by the concentration limit, not by the floor.
+    engine.set_reserve_floor(&admin, &0);
+    assert_eq!(
+        engine.try_allocate(&admin, &ef, &(1 * USDC)),
+        Err(Ok(EngineError::PoolCapExceeded))
+    );
+    assert_eq!(
+        engine.try_allocate(&admin, &pc, &(1 * USDC)),
+        Err(Ok(EngineError::PoolCapExceeded))
+    );
 }

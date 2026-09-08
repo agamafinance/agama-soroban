@@ -34,6 +34,17 @@
 //! utilization on the day you need it; USDC that never left the Vault has no
 //! such dependency.
 //!
+//! A floor is only a constraint if the caps can reach it, and that is a
+//! property of the configuration rather than of the code. Two pools capped at
+//! 30% of total assets can between them deploy at most 60%, so a 20% floor can
+//! never be the reason an allocation is refused: 40% stays idle whatever the
+//! operator does, the pool cap always fires first, and the floor passes its own
+//! unit test while doing nothing on-chain. The deployed configuration is chosen
+//! the other way round, with the registered pool caps summing to more than the
+//! floor is willing to release, so there are states reachable by ordinary
+//! allocations in which every concentration cap is satisfied and the floor is
+//! the only thing saying no. That case is a test, not an assertion.
+//!
 //! # Fail closed
 //!
 //! `initialize` leaves every cap at zero and the reserve floor at 100%, so an
