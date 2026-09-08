@@ -417,6 +417,58 @@ fn only_the_admin_directs_capital() {
         f.engine.try_set_reserve_floor(&stranger, &0u32),
         Err(Ok(EngineError::NotAdmin))
     );
+    // Which Vault the Engine can instruct to release USDC is the single most
+    // consequential setting it has, so it is gated with the rest of them.
+    assert_eq!(
+        f.engine.try_set_vault(&stranger, &stranger),
+        Err(Ok(EngineError::NotAdmin))
+    );
+    assert_eq!(f.engine.vault(), f.vault_id);
+}
+
+#[test]
+fn the_vault_pointer_moves_while_the_book_is_empty() {
+    let f = setup();
+    // A replacement Vault, funded and wired the same way. This is the live
+    // failure: the Engine was initialized against a Vault that has since been
+    // superseded, and until it follows, every cap it enforces is measured on a
+    // balance sheet nobody is depositing into any more.
+    let replacement = f.e.register(MockVault, ());
+    MockVaultClient::new(&f.e, &replacement).initialize(&f.usdc.address);
+    f.usdc.faucet(&replacement, &FUNDING);
+
+    f.engine.set_vault(&f.admin, &replacement);
+    assert_eq!(f.engine.vault(), replacement);
+
+    // Allocations now draw on the new Vault and leave the old one alone.
+    f.engine.allocate(&f.admin, &f.pool_a, &(200 * USDC));
+    assert_eq!(f.usdc.balance(&replacement), 800 * USDC);
+    assert_eq!(f.usdc.balance(&f.vault_id), FUNDING);
+    assert_eq!(f.engine.get_reserve_ratio(), 8_000);
+}
+
+#[test]
+fn the_vault_pointer_is_frozen_while_capital_is_deployed() {
+    let f = setup();
+    f.engine.allocate(&f.admin, &f.pool_a, &(200 * USDC));
+
+    // 200 USDC of the current Vault's money is booked here. Repointing now
+    // would leave the caps measured against one Vault's assets and the
+    // exposure funded by another's, which is a ratio of two unrelated numbers.
+    let replacement = f.e.register(MockVault, ());
+    MockVaultClient::new(&f.e, &replacement).initialize(&f.usdc.address);
+    assert_eq!(
+        f.engine.try_set_vault(&f.admin, &replacement),
+        Err(Ok(EngineError::CapitalDeployed))
+    );
+    assert_eq!(f.engine.vault(), f.vault_id);
+
+    // Unwound to zero, the two halves of the ratio can belong to the same book
+    // again and the pointer opens.
+    f.engine.deallocate(&f.pool_a, &(200 * USDC));
+    assert_eq!(f.engine.total_allocated(), 0);
+    f.engine.set_vault(&f.admin, &replacement);
+    assert_eq!(f.engine.vault(), replacement);
 }
 
 #[test]

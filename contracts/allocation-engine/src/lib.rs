@@ -108,6 +108,8 @@ pub enum EngineError {
     InsufficientReserves = 411,
     /// Deallocating more than the pool has booked as deployed.
     ExposureUnderflow = 412,
+    /// The Vault pointer cannot move while the exposure book is non-empty.
+    CapitalDeployed = 413,
 }
 
 /// Whitelist entry for a pool. `originator` and `jurisdiction` are the keys the
@@ -178,6 +180,16 @@ pub struct ReserveFloorUpdated {
     pub floor_bps: u32,
 }
 
+/// Emitted when the Engine is repointed at a different Vault. Which Vault an
+/// Engine governs is the most consequential thing about it, so the move is in
+/// the event stream rather than only readable from state.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VaultRepointed {
+    #[topic]
+    pub vault: Address,
+}
+
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Allocated {
@@ -232,6 +244,34 @@ impl AllocationEngine {
             .instance()
             .set(&Cfg::Pools, &Map::<Address, Pool>::new(&e));
         Self::bump_instance(&e);
+        Ok(())
+    }
+
+    /// Point the Engine at a different Vault, while its book is empty.
+    ///
+    /// `initialize` wrote the Vault address and there was no way back, which is
+    /// how the live Engine came to be guarding a Vault that had already been
+    /// superseded: the Vault that replaced it took deposits and paid its queue
+    /// while the Engine went on measuring caps against the old one's balance
+    /// sheet and could deploy nothing at all. Two contracts, both working, both
+    /// pointed at the wrong counterparty, and no transaction that could fix it.
+    ///
+    /// The guard is the exposure book. Every cap and the reserve floor are
+    /// measured against total assets, which is the Vault's idle USDC plus what
+    /// this Engine has booked as deployed. Moving the Vault while anything is
+    /// deployed would leave exposure recorded here that was funded by a balance
+    /// sheet the Engine no longer reads, so the caps would be enforced against
+    /// one Vault's assets and the exposure would belong to another's. Unwinding
+    /// to zero first is not a formality; it is what makes the two halves of the
+    /// ratio belong to the same book again.
+    pub fn set_vault(e: Env, admin: Address, vault: Address) -> Result<(), EngineError> {
+        Self::require_admin(&e, &admin)?;
+        if Self::total_allocated(e.clone()) > 0 {
+            return Err(EngineError::CapitalDeployed);
+        }
+        e.storage().instance().set(&Cfg::Vault, &vault);
+        Self::bump_instance(&e);
+        VaultRepointed { vault }.publish(&e);
         Ok(())
     }
 
