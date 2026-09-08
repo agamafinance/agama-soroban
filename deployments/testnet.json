@@ -9,11 +9,11 @@
   "contracts": {
     "usdc": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
     "agusd": "CCXEP6QAAYEMFMV2JGBULD2NS6AQB6KQSBHLPPBJSDBCN6HOYIHNQ6H3",
-    "staking": "CABPYD4U5FAYLBEBMY2MVGVF7BILXTNPWGLOPIXCMUK3QQGIAE2XTALX",
-    "vault": "CDQP7L5RZ6AM4J2PZETMG7TC4M3CDTVQ6QAMYPLG43Z6GAOCB4TR3KS4",
-    "allocationEngine": "CANDJEHBZUPGBWQMWM567Z3NQR4AHJKJSMWB4LTXPT6SC7GSRKSL2SGS",
+    "staking": "CDY3ED6T72VJDX5RCMQOZNCV5XKJBHQVAYPNOXTWB66RNBVOS5BTC345",
+    "vault": "CAU54R4PIHZXGCRZMJJCCIOFNMVXZHZF6BBNNSGWJT6A4UZ32MA33AFY",
+    "allocationEngine": "CBCLMUK4R2CW3YVCX3OQ3GMGAXUNKA6JQWXH2AG3JW7U35FBNFHEAMKE",
     "oracleAdapter": "CDV5BC4XCNT5ASOZNFXBQXRGKVXGKHLRVK5EDX6XP5J6EBIZWSXCSV7G",
-    "agusdCore": "CCFICOHAC4V6M5CDI62O5SWCZR43XG6JXNYFBZ4HAVQJBUCR4V6H54WV"
+    "agusdCore": "CD6OX76FZ54SNOKNR4D3JLHTVS5IO3TNVBE4WSSLR4DIS5VW3O2TGYSK"
   },
   "creditVaults": {
     "payment-financing": "CAUFXVGKB2OKEDDO6SDWH4ZSWXJ37T2WYKEVUTBOCWZAFEUTGCFYQEF4",
@@ -26,24 +26,25 @@
   "usdcIssuer": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
   "usdcReal": true,
   "poolAdapters": {
-    "private-credit": "CCDZRKZDCWJWTFMLVJFW4LRALZEWRDKWOOD727EDO3EFFKLNDKCXT3VZ",
-    "etherfuse": "CBS3OGCVYMI3XQN2ORZZNE2WKGYK24VSTVDUB3QS5HCZHBQQFWKFLYKK"
+    "private-credit": "CDKLN4NBLLHYUOQEDLSKWM6BI7HSN4NL3W5B2MB4DUAPJG4IKA2RSMEV",
+    "etherfuse": "CCFYYCIHEKQLFN5TZKGFBW3GAH6SBXA7YEWMETTR62TWPEC43X2H6KGO"
   },
   "engineConfig": {
-    "poolCapBps": 3000,
-    "originatorCapBps": 4000,
+    "poolCapBps": 4000,
+    "originatorCapBps": 4500,
     "jurisdictionCapBps": 5000,
-    "reserveFloorBps": 2000,
+    "reserveFloorBps": 2500,
+    "floorBinds": "The registered pool caps sum to 8000 bps and the floor releases 7500 bps, so there are states reachable by ordinary allocations in which every concentration cap is satisfied and the reserve floor is the only limit refusing the call.",
     "pools": {
       "private-credit": {
         "originator": "QIRO",
         "jurisdiction": "LU",
-        "capBps": 3000
+        "capBps": 4000
       },
       "etherfuse": {
         "originator": "ETHERFUS",
         "jurisdiction": "MX",
-        "capBps": 3000
+        "capBps": 4000
       }
     }
   },
@@ -62,16 +63,62 @@
     }
   },
   "vaultOracleFeed": "PC_NAV",
-  "superseded": {
-    "agusd": {
+  "superseded": [
+    {
+      "contract": "agusd",
+      "generation": 1,
       "address": "CCXEP6QAAYEMFMV2JGBULD2NS6AQB6KQSBHLPPBJSDBCN6HOYIHNQ6H3",
       "supersededBy": "agusdCore",
       "reason": "Generation 1 agUSD is a self contained vault, not a plain token: it mints only inside its own deposit() and exposes no mint entry point, so the Vault cannot mint against a deposit. It stays deployed, it keeps its holders, and it is still the token the deployed sagUSD staking contract accepts."
     },
-    "vault": {
+    {
+      "contract": "vault",
+      "generation": 1,
       "address": "CAVKHGBQUEPVTWHFJGU42ZVZA6VZSM6RZXFHCUXTT72JFRWNPF5OFJW3",
       "supersededBy": "vault",
       "reason": "Initialized against generation 1 agUSD with no setter for the token address and no upgrade entry point, so its deposit() could never mint. The Allocation Engine still points at it, because the Engine stores the Vault address at initialize() and cannot be repointed either."
+    },
+    {
+      "contract": "vault",
+      "generation": 2,
+      "address": "CDQP7L5RZ6AM4J2PZETMG7TC4M3CDTVQ6QAMYPLG43Z6GAOCB4TR3KS4",
+      "supersededBy": "vault",
+      "reason": "Initialized with the generation 1 Allocation Engine as its allocation counterparty, and settle_allocation authorizes that address and no other. The Engine it names governs a different Vault, so this one can take deposits and pay its withdrawal queue but can never release capital to a pool: 100% idle for the life of the contract. It carries set_agusd but not set_engine, so the pointer that matters could not be corrected."
+    },
+    {
+      "contract": "agusdCore",
+      "generation": 1,
+      "address": "CCFICOHAC4V6M5CDI62O5SWCZR43XG6JXNYFBZ4HAVQJBUCR4V6H54WV",
+      "supersededBy": "agusdCore",
+      "reason": "Names the generation 2 Vault as its only minter and has no set_minter, so issuance could not follow the Vault to its replacement. Superseded with a zero supply: every unit it issued was redeemed for USDC through the Vault before the handover, so it strands no holders."
+    },
+    {
+      "contract": "allocationEngine",
+      "generation": 1,
+      "address": "CANDJEHBZUPGBWQMWM567Z3NQR4AHJKJSMWB4LTXPT6SC7GSRKSL2SGS",
+      "supersededBy": "allocationEngine",
+      "reason": "Stores the Vault it governs at initialize() with no setter, and the Vault it names was superseded, so every cap it enforced was measured against a balance sheet nobody was depositing into any more. This is the contract the whole incident is named after."
+    },
+    {
+      "contract": "poolAdapters.private-credit",
+      "generation": 1,
+      "address": "CCDZRKZDCWJWTFMLVJFW4LRALZEWRDKWOOD727EDO3EFFKLNDKCXT3VZ",
+      "supersededBy": "poolAdapters.private-credit",
+      "reason": "Stores both the Engine and the Vault at initialize() with no setters, and both of the addresses it stores were superseded."
+    },
+    {
+      "contract": "poolAdapters.etherfuse",
+      "generation": 1,
+      "address": "CBS3OGCVYMI3XQN2ORZZNE2WKGYK24VSTVDUB3QS5HCZHBQQFWKFLYKK",
+      "supersededBy": "poolAdapters.etherfuse",
+      "reason": "Stores both the Engine and the Vault at initialize() with no setters, and both of the addresses it stores were superseded."
+    },
+    {
+      "contract": "staking",
+      "generation": 1,
+      "address": "CABPYD4U5FAYLBEBMY2MVGVF7BILXTNPWGLOPIXCMUK3QQGIAE2XTALX",
+      "supersededBy": "staking",
+      "reason": "Accepts the generation 1 agUSD, stores it at initialize() with no setter, and has no re-initialization guard. A holder of the agUSD the protocol now issues could not stake at all, and the refusal read as an insufficient balance rather than as a wiring mistake."
     }
-  }
+  ]
 }
