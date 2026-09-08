@@ -109,6 +109,81 @@ fn full_yield_flow() {
 }
 
 #[test]
+fn cannot_be_reinitialized() {
+    let f = setup();
+    let attacker = Address::generate(&f.e);
+    // The attack this blocks is naming yourself admin, repointing the staked
+    // asset and resetting the NAV, which is the denominator every share is
+    // redeemed against.
+    assert_eq!(
+        f.vault.try_initialize(
+            &attacker,
+            &attacker,
+            &COOLDOWN,
+            &7u32,
+            &String::from_str(&f.e, "Staked agUSD"),
+            &String::from_str(&f.e, "sagUSD"),
+        ),
+        Err(Ok(StakingError::AlreadyInitialized))
+    );
+    assert_eq!(f.vault.admin(), f.admin);
+    assert_eq!(f.vault.agusd(), f.ag.address);
+}
+
+#[test]
+fn the_agusd_pointer_moves_before_the_first_stake_and_never_after() {
+    let f = setup();
+    assert_eq!(f.vault.stakes(), 0);
+
+    // The live failure: this contract was initialized against the agUSD the
+    // protocol used to issue, and the Vault now mints a different one. A
+    // holder of the new token cannot stake, and the refusal reads as an
+    // insufficient balance rather than as a wiring mistake.
+    let replacement_id = f.e.register(MockUsdc, ());
+    let replacement = MockUsdcClient::new(&f.e, &replacement_id);
+    replacement.initialize(
+        &f.admin,
+        &7u32,
+        &String::from_str(&f.e, "Agama USD"),
+        &String::from_str(&f.e, "agUSD"),
+    );
+    let stranger = Address::generate(&f.e);
+    assert_eq!(
+        f.vault.try_set_agusd(&stranger, &replacement_id),
+        Err(Ok(StakingError::NotAdmin))
+    );
+
+    f.vault.set_agusd(&f.admin, &replacement_id);
+    assert_eq!(f.vault.agusd(), replacement_id);
+
+    // And the contract now takes the token it was repointed at.
+    let alice = Address::generate(&f.e);
+    replacement.faucet(&alice, &(100 * ONE));
+    assert_eq!(f.vault.stake(&alice, &(100 * ONE)), 100 * ONE);
+    assert_eq!(replacement.balance(&f.vault.address), 100 * ONE);
+    assert_eq!(f.vault.stakes(), 1);
+
+    // The door closes at the first stake: 100 agUSD are in custody here and
+    // the share price is a claim on that balance.
+    assert_eq!(
+        f.vault.try_set_agusd(&f.admin, &f.ag.address),
+        Err(Ok(StakingError::StakesExist))
+    );
+    assert_eq!(f.vault.agusd(), replacement_id);
+
+    // Unwinding to zero does not reopen it. The counter records that custody
+    // happened, not what is being held right now, and a pending unstake can
+    // outlive the shares that created it.
+    let assets = f.vault.request_unstake(&alice, &(100 * ONE));
+    assert_eq!(assets, 100 * ONE);
+    assert_eq!(f.vault.total_shares(), 0);
+    assert_eq!(
+        f.vault.try_set_agusd(&f.admin, &f.ag.address),
+        Err(Ok(StakingError::StakesExist))
+    );
+}
+
+#[test]
 fn allocations_roundtrip() {
     let f = setup();
     let allocs = vec![
