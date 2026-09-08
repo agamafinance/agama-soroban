@@ -2,9 +2,26 @@
 use super::*;
 use mock_usdc::{MockUsdc, MockUsdcClient};
 use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{Address, Env, String};
+use soroban_sdk::{contract, contractimpl, symbol_short, Address, Env, String};
 
 const USDC: i128 = 10_000_000; // 1 USDC at 7 decimals
+
+/// The one call `set_counterparties` makes on an Allocation Engine. The real
+/// Engine has its own suite; standing it up here would drag the whole stack
+/// into a crate that is testing two words of storage.
+#[contract]
+pub struct MockEngine;
+
+#[contractimpl]
+impl MockEngine {
+    pub fn initialize(e: Env, vault: Address) {
+        e.storage().instance().set(&symbol_short!("vault"), &vault);
+    }
+    pub fn vault(e: Env) -> Address {
+        e.storage().instance().get(&symbol_short!("vault")).unwrap()
+    }
+}
+
 
 struct Fix {
     e: Env,
@@ -141,4 +158,79 @@ fn metadata_matches_the_feed_the_pool_is_priced_from() {
     // is the on-chain counterpart of this settlement window.
     assert_eq!(f.adapter.oracle_feed(), ORACLE_FEED);
     assert_eq!(f.adapter.settlement_window(), (15, 90));
+}
+
+
+#[test]
+fn the_counterparties_move_only_together_and_only_while_the_adapter_is_empty() {
+    let f = setup();
+    let stranger = Address::generate(&f.e);
+
+    // A replacement Engine that governs a replacement Vault. This is the
+    // situation the setter exists for: both addresses written at
+    // initialization have been superseded, and an adapter is far too cheap a
+    // contract to redeploy over two words of storage.
+    let new_vault = Address::generate(&f.e);
+    let new_engine = f.e.register(MockEngine, ());
+    MockEngineClient::new(&f.e, &new_engine).initialize(&new_vault);
+
+    assert_eq!(
+        f.adapter
+            .try_set_counterparties(&stranger, &new_engine, &new_vault),
+        Err(Ok(AdapterError::NotAdmin))
+    );
+
+    // An Engine that governs somebody else is refused, and so is an address
+    // that cannot answer the question at all. Without this the Vault pointer
+    // would be free: the adapter is empty, so the balance check passes, and
+    // the misdirection would only show up at the first repayment.
+    assert_eq!(
+        f.adapter
+            .try_set_counterparties(&f.admin, &new_engine, &stranger),
+        Err(Ok(AdapterError::CounterpartyMismatch))
+    );
+    assert_eq!(
+        f.adapter
+            .try_set_counterparties(&f.admin, &stranger, &new_vault),
+        Err(Ok(AdapterError::CounterpartyMismatch))
+    );
+
+    f.adapter
+        .set_counterparties(&f.admin, &new_engine, &new_vault);
+    assert_eq!(f.adapter.engine(), new_engine);
+    assert_eq!(f.adapter.vault(), new_vault);
+
+    // Book a position: exposure recorded here was authorized by this Engine
+    // against its caps, and only this Engine can unwind it.
+    f.usdc.faucet(&f.adapter_id, &(500 * USDC));
+    f.adapter.allocate(&(500 * USDC));
+    let other_vault = Address::generate(&f.e);
+    let other_engine = f.e.register(MockEngine, ());
+    MockEngineClient::new(&f.e, &other_engine).initialize(&other_vault);
+    assert_eq!(
+        f.adapter
+            .try_set_counterparties(&f.admin, &other_engine, &other_vault),
+        Err(Ok(AdapterError::NotEmpty))
+    );
+
+    // Unwinding the book is not enough on its own. A repayment that has
+    // arrived but not been booked is still money owed to the Vault the adapter
+    // is pointed at, and `deallocate` sends it wherever that pointer says.
+    f.adapter.deallocate(&(500 * USDC));
+    assert_eq!(f.adapter.get_exposure(), 0);
+    f.usdc.faucet(&f.adapter_id, &(10 * USDC));
+    assert_eq!(
+        f.adapter
+            .try_set_counterparties(&f.admin, &other_engine, &other_vault),
+        Err(Ok(AdapterError::NotEmpty))
+    );
+
+    // Empty on both counts, and it opens again.
+    f.adapter.allocate(&(10 * USDC));
+    f.adapter.deallocate(&(10 * USDC));
+    assert_eq!(f.usdc.balance(&f.adapter_id), 0);
+    f.adapter
+        .set_counterparties(&f.admin, &other_engine, &other_vault);
+    assert_eq!(f.adapter.engine(), other_engine);
+    assert_eq!(f.adapter.vault(), other_vault);
 }
