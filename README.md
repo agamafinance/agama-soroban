@@ -335,18 +335,17 @@ bash scripts/deploy-rewire.sh
 # plus the four refusals, submitted rather than simulated
 bash scripts/smoke-journey.sh
 
-# Earlier deployment scripts, kept because the addresses they produced are
-# still on the ledger and still recorded. They target the superseded
-# generation and are not the ones to run against the current deployment.
-bash scripts/deploy-core.sh          # Vault, Engine, Oracle Adapter, adapters
-bash scripts/smoke-core.sh           # NAV, reserves, an allocation and its unwind
-bash scripts/deploy-agusd-core.sh    # the generation 2 agUSD and its Vault
-bash scripts/smoke-agusd-core.sh     # the deposit path
-
 # Deploy the agUSD + sagUSD + credit vault set (already live on testnet)
 cp .env.example .env
 bash scripts/deploy.sh
 ```
+
+`scripts/deploy-core.sh`, `scripts/deploy-agusd-core.sh`, `scripts/smoke-core.sh`
+and `scripts/smoke-agusd-core.sh` are the earlier generation's scripts. They are
+kept because the addresses and transactions they produced are still on the
+ledger and still recorded, and each one now says so in its header.
+`scripts/smoke-journey.sh` covers everything the two smoke scripts did, against
+the current deployment.
 
 ## Roadmap
 
