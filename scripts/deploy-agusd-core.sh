@@ -29,6 +29,10 @@
 # redeployed it will not call the new Vault: the new Vault takes deposits, pays
 # the withdrawal queue and holds 100% of its assets as idle reserves.
 #
+# Superseded by scripts/deploy-rewire.sh, which redeploys and rewires the whole
+# stack. Kept because the addresses it produced are still on the ledger and
+# still recorded in deployments/testnet.json.
+#
 # Usage: bash scripts/deploy-agusd-core.sh
 #
 # Requires the `agama-poc` identity, which is the admin recorded in
