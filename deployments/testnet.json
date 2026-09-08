@@ -9,11 +9,11 @@
   "contracts": {
     "usdc": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
     "agusd": "CCXEP6QAAYEMFMV2JGBULD2NS6AQB6KQSBHLPPBJSDBCN6HOYIHNQ6H3",
-    "staking": "CDY3ED6T72VJDX5RCMQOZNCV5XKJBHQVAYPNOXTWB66RNBVOS5BTC345",
-    "vault": "CAU54R4PIHZXGCRZMJJCCIOFNMVXZHZF6BBNNSGWJT6A4UZ32MA33AFY",
-    "allocationEngine": "CBCLMUK4R2CW3YVCX3OQ3GMGAXUNKA6JQWXH2AG3JW7U35FBNFHEAMKE",
+    "staking": "CBMEW3QALCS6FFJMK5FR7LVKUWX3MPIP26LQQQAFYMQFYVG6VUWFTHZF",
+    "vault": "CCGPF36PDG2WBBK6ZROLMNMHD67UV4MNG6PHQCN2PXWLLRBXCYF5KVRR",
+    "allocationEngine": "CAFJKWLUGUSYEC7L5ZBNFIFEPSO5MLI7SKDMVVJCGC6Z2TGVP5SZ5HUX",
     "oracleAdapter": "CDV5BC4XCNT5ASOZNFXBQXRGKVXGKHLRVK5EDX6XP5J6EBIZWSXCSV7G",
-    "agusdCore": "CD6OX76FZ54SNOKNR4D3JLHTVS5IO3TNVBE4WSSLR4DIS5VW3O2TGYSK"
+    "agusdCore": "CCW763RTVRDQTEEQ42XCAARSJ42AKWRB2DDM62QV4XVUJFCDAWU4ALZL"
   },
   "creditVaults": {
     "payment-financing": "CAUFXVGKB2OKEDDO6SDWH4ZSWXJ37T2WYKEVUTBOCWZAFEUTGCFYQEF4",
@@ -26,8 +26,8 @@
   "usdcIssuer": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
   "usdcReal": true,
   "poolAdapters": {
-    "private-credit": "CDKLN4NBLLHYUOQEDLSKWM6BI7HSN4NL3W5B2MB4DUAPJG4IKA2RSMEV",
-    "etherfuse": "CCFYYCIHEKQLFN5TZKGFBW3GAH6SBXA7YEWMETTR62TWPEC43X2H6KGO"
+    "private-credit": "CBAPY7KRVIG3FPGSP3VKXXA6SCDKZUWBSFDWISRJXR5V7PYPVQZGFTOZ",
+    "etherfuse": "CBA3GQLHCEOCCZIDVFZ74AG4FUCEO2SN7AMGY4RSAMN4DTHW2WAH7EWI"
   },
   "engineConfig": {
     "poolCapBps": 4000,
@@ -70,7 +70,7 @@
       "address": "CCXEP6QAAYEMFMV2JGBULD2NS6AQB6KQSBHLPPBJSDBCN6HOYIHNQ6H3",
       "supersededBy": "agusdCore",
       "reason": "Generation 1 agUSD is a self contained vault, not a plain token: it mints only inside its own deposit() and exposes no mint entry point, so the Vault cannot mint against a deposit. It stays deployed, it keeps its holders, and it is still the token the deployed sagUSD staking contract accepts.",
-      "label": "agUSD, first generation (`contracts/agusd`)"
+      "label": "agUSD (`contracts/agusd`), first deployment"
     },
     {
       "contract": "vault",
@@ -94,7 +94,7 @@
       "address": "CCFICOHAC4V6M5CDI62O5SWCZR43XG6JXNYFBZ4HAVQJBUCR4V6H54WV",
       "supersededBy": "agusdCore",
       "reason": "Names the generation 2 Vault as its only minter and has no set_minter, so issuance could not follow the Vault to its replacement. Superseded with a zero supply: every unit it issued was redeemed for USDC through the Vault before the handover, so it strands no holders.",
-      "label": "agUSD, second generation (`contracts/agusd-core`), first deployment"
+      "label": "agUSD (`contracts/agusd-core`), first deployment"
     },
     {
       "contract": "allocationEngine",
@@ -127,6 +127,54 @@
       "supersededBy": "staking",
       "reason": "Accepts the generation 1 agUSD, stores it at initialize() with no setter, and has no re-initialization guard. A holder of the agUSD the protocol now issues could not stake at all, and the refusal read as an insufficient balance rather than as a wiring mistake. It is left running rather than drained: it still holds 49.19 agUSD of staked position against 48.39 sagUSD shares, on the token it accepts, so its existing stakers are unaffected by the handover.",
       "label": "sagUSD staking, first deployment"
+    },
+    {
+      "contract": "vault",
+      "generation": 3,
+      "label": "Vault Contract, third deployment",
+      "address": "CAU54R4PIHZXGCRZMJJCCIOFNMVXZHZF6BBNNSGWJT6A4UZ32MA33AFY",
+      "supersededBy": "vault",
+      "reason": "Replaced by scripts/deploy-rewire.sh. This Vault Contract carried the counterparty setters but the guards on them were too loose: Vault.set_engine accepted any address, including an ordinary account, which made the pointer that releases the Vault's reserves a one call instruction to hand them over, and the adapters could be repointed at a Vault their own Engine did not govern, which would have misdirected repayments one allocation later. Deployed and replaced the same day, before it held anything but the deploying admin's own working capital."
+    },
+    {
+      "contract": "agusdCore",
+      "generation": 2,
+      "label": "agUSD (`contracts/agusd-core`), second deployment",
+      "address": "CD6OX76FZ54SNOKNR4D3JLHTVS5IO3TNVBE4WSSLR4DIS5VW3O2TGYSK",
+      "supersededBy": "agusdCore",
+      "reason": "Replaced by scripts/deploy-rewire.sh. This agUSD carried the counterparty setters but the guards on them were too loose: Vault.set_engine accepted any address, including an ordinary account, which made the pointer that releases the Vault's reserves a one call instruction to hand them over, and the adapters could be repointed at a Vault their own Engine did not govern, which would have misdirected repayments one allocation later. Deployed and replaced the same day, before it held anything but the deploying admin's own working capital."
+    },
+    {
+      "contract": "allocationEngine",
+      "generation": 2,
+      "label": "Allocation Engine, second deployment",
+      "address": "CBCLMUK4R2CW3YVCX3OQ3GMGAXUNKA6JQWXH2AG3JW7U35FBNFHEAMKE",
+      "supersededBy": "allocationEngine",
+      "reason": "Replaced by scripts/deploy-rewire.sh. This Allocation Engine carried the counterparty setters but the guards on them were too loose: Vault.set_engine accepted any address, including an ordinary account, which made the pointer that releases the Vault's reserves a one call instruction to hand them over, and the adapters could be repointed at a Vault their own Engine did not govern, which would have misdirected repayments one allocation later. Deployed and replaced the same day, before it held anything but the deploying admin's own working capital."
+    },
+    {
+      "contract": "poolAdapters.private-credit",
+      "generation": 2,
+      "label": "Private credit adapter, second deployment",
+      "address": "CDKLN4NBLLHYUOQEDLSKWM6BI7HSN4NL3W5B2MB4DUAPJG4IKA2RSMEV",
+      "supersededBy": "poolAdapters.private-credit",
+      "reason": "Replaced by scripts/deploy-rewire.sh. This private credit adapter carried the counterparty setters but the guards on them were too loose: Vault.set_engine accepted any address, including an ordinary account, which made the pointer that releases the Vault's reserves a one call instruction to hand them over, and the adapters could be repointed at a Vault their own Engine did not govern, which would have misdirected repayments one allocation later. Deployed and replaced the same day, before it held anything but the deploying admin's own working capital."
+    },
+    {
+      "contract": "poolAdapters.etherfuse",
+      "generation": 2,
+      "label": "Etherfuse adapter, second deployment",
+      "address": "CCFYYCIHEKQLFN5TZKGFBW3GAH6SBXA7YEWMETTR62TWPEC43X2H6KGO",
+      "supersededBy": "poolAdapters.etherfuse",
+      "reason": "Replaced by scripts/deploy-rewire.sh. This Etherfuse adapter carried the counterparty setters but the guards on them were too loose: Vault.set_engine accepted any address, including an ordinary account, which made the pointer that releases the Vault's reserves a one call instruction to hand them over, and the adapters could be repointed at a Vault their own Engine did not govern, which would have misdirected repayments one allocation later. Deployed and replaced the same day, before it held anything but the deploying admin's own working capital."
+    },
+    {
+      "contract": "staking",
+      "generation": 2,
+      "label": "sagUSD staking, second deployment",
+      "address": "CDY3ED6T72VJDX5RCMQOZNCV5XKJBHQVAYPNOXTWB66RNBVOS5BTC345",
+      "supersededBy": "staking",
+      "reason": "Replaced by scripts/deploy-rewire.sh. This sagUSD staking carried the counterparty setters but the guards on them were too loose: Vault.set_engine accepted any address, including an ordinary account, which made the pointer that releases the Vault's reserves a one call instruction to hand them over, and the adapters could be repointed at a Vault their own Engine did not govern, which would have misdirected repayments one allocation later. Deployed and replaced the same day, before it held anything but the deploying admin's own working capital."
     }
   ]
 }

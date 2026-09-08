@@ -76,6 +76,13 @@ ORIGINATOR_CAP=4500    # 45% behind any single originator
 JURISDICTION_CAP=5000  # 50% under any single legal regime
 RESERVE_FLOOR=2500     # 25% of total assets stays as idle USDC in the Vault
 
+# Why this run is retiring what it retires. It goes into deployments/testnet.json
+# against every address this script replaces, so it is the sentence a reviewer
+# reads next to a dead contract. "%s" is filled in with the contract's name.
+# Change it: a deployment that inherits the previous one's reason is a
+# deployment whose record is fiction.
+RETIREMENT_REASON="Replaced by scripts/deploy-rewire.sh. This %s carried the counterparty setters but the guards on them were too loose: Vault.set_engine accepted any address, including an ordinary account, which made the pointer that releases the Vault's reserves a one call instruction to hand them over, and the adapters could be repointed at a Vault their own Engine did not govern, which would have misdirected repayments one allocation later. Deployed and replaced the same day, before it held anything but the deploying admin's own working capital."
+
 # Pool registration metadata, unchanged from the previous deployment for
 # continuity: the private credit facility is fronted by Qiro through a
 # Luxembourg SPV, the Etherfuse leg is tokenized Mexican government debt.
@@ -253,11 +260,13 @@ echo ""
 echo "==> writing $DEP"
 python3 - "$DEP" "$VAULT" "$AGUSD" "$ENGINE" "$PC" "$EF" "$STAKING" \
   "$OLD_VAULT" "$OLD_AGUSD" "$OLD_ENGINE" "$OLD_PC" "$OLD_EF" "$OLD_STAKING" \
-  "$POOL_CAP" "$ORIGINATOR_CAP" "$JURISDICTION_CAP" "$RESERVE_FLOOR" <<'PY'
+  "$POOL_CAP" "$ORIGINATOR_CAP" "$JURISDICTION_CAP" "$RESERVE_FLOOR" \
+  "$RETIREMENT_REASON" <<'PY'
 import json, sys
 (path, vault, agusd, engine, pc, ef, staking,
  old_vault, old_agusd, old_engine, old_pc, old_ef, old_staking,
- pool_cap, originator_cap, jurisdiction_cap, reserve_floor) = sys.argv[1:]
+ pool_cap, originator_cap, jurisdiction_cap, reserve_floor,
+ retirement_reason) = sys.argv[1:]
 dep = json.load(open(path))
 
 # Whatever was recorded as superseded before stays recorded. The history of this
@@ -271,91 +280,68 @@ if isinstance(history, dict):
     ]
 
 
-def retire(contract, address, label, reason):
+ORDINALS = ['first', 'second', 'third', 'fourth', 'fifth', 'sixth']
+
+
+def retire(contract, address, name, reason):
     """Append a superseded entry, numbering it after the ones already there."""
     generation = 1 + sum(1 for e in history if e['contract'] == contract)
     history.append({
         'contract': contract,
         'generation': generation,
-        'label': label,
+        'label': '%s, %s deployment' % (name, ORDINALS[generation - 1]),
         'address': address,
         'supersededBy': contract,
         'reason': reason,
     })
 
 
-# The reasons below describe this particular retirement rather than a generic
-# one. They are the record a reviewer reads, so they say what actually happened
-# to these six addresses.
+# One reason for all six, given once. They are retired together because they are
+# a stack: whatever is wrong with one of them, correcting it means redeploying
+# the ones that name it. The text comes from the script rather than from here so
+# that a run has to say what it is actually retiring and why.
+RETIREMENT_REASON = retirement_reason
+
 retirements = [
     {
         'contract': 'vault',
         'address': old_vault,
-        'label': 'Vault Contract, superseded deployment',
-        'reason': (
-            'Initialized with the generation 1 Allocation Engine as its allocation '
-            'counterparty, and settle_allocation authorizes that address and no other. '
-            'The Engine it names governs a different Vault, so this one can take deposits '
-            'and pay its withdrawal queue but can never release capital to a pool: 100% '
-            'idle for the life of the contract. It carries set_agusd but not set_engine, '
-            'so the pointer that matters could not be corrected.'
-        ),
+        'name': 'Vault Contract',
+        'reason': RETIREMENT_REASON % 'Vault Contract',
     },
     {
         'contract': 'agusdCore',
-        'label': 'agUSD, superseded deployment',
+        'name': 'agUSD',
         'address': old_agusd,
-        'reason': (
-            'Names the generation 2 Vault as its only minter and has no set_minter, so '
-            'issuance could not follow the Vault to its replacement. Superseded with a '
-            'zero supply: every unit it issued was redeemed for USDC through the Vault '
-            'before the handover, so it strands no holders.'
-        ),
+        'reason': RETIREMENT_REASON % 'agUSD',
     },
     {
         'contract': 'allocationEngine',
-        'label': 'Allocation Engine, superseded deployment',
+        'name': 'Allocation Engine',
         'address': old_engine,
-        'reason': (
-            'Stores the Vault it governs at initialize() with no setter, and the Vault it '
-            'names was superseded, so every cap it enforced was measured against a balance '
-            'sheet nobody was depositing into any more. This is the contract the whole '
-            'incident is named after.'
-        ),
+        'reason': RETIREMENT_REASON % 'Allocation Engine',
     },
     {
         'contract': 'poolAdapters.private-credit',
-        'label': 'Private credit adapter, superseded deployment',
+        'name': 'Private credit adapter',
         'address': old_pc,
-        'reason': (
-            'Stores both the Engine and the Vault at initialize() with no setters, and '
-            'both of the addresses it stores were superseded.'
-        ),
+        'reason': RETIREMENT_REASON % 'private credit adapter',
     },
     {
         'contract': 'poolAdapters.etherfuse',
-        'label': 'Etherfuse adapter, superseded deployment',
+        'name': 'Etherfuse adapter',
         'address': old_ef,
-        'reason': (
-            'Stores both the Engine and the Vault at initialize() with no setters, and '
-            'both of the addresses it stores were superseded.'
-        ),
+        'reason': RETIREMENT_REASON % 'Etherfuse adapter',
     },
     {
         'contract': 'staking',
-        'label': 'sagUSD staking, superseded deployment',
+        'name': 'sagUSD staking',
         'address': old_staking,
-        'reason': (
-            'Accepts the generation 1 agUSD, stores it at initialize() with no setter, and '
-            'has no re-initialization guard. A holder of the agUSD the protocol now issues '
-            'could not stake at all, and the refusal read as an insufficient balance rather '
-            'than as a wiring mistake. It is left running rather than drained, so its '
-            'existing stakers keep their position on the token it accepts.'
-        ),
+        'reason': RETIREMENT_REASON % 'sagUSD staking',
     },
 ]
 for entry in retirements:
-    retire(entry['contract'], entry['address'], entry['label'], entry['reason'])
+    retire(entry['contract'], entry['address'], entry['name'], entry['reason'])
 
 dep['contracts'].update({
     'vault': vault,

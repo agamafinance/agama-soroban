@@ -23,18 +23,18 @@ Network: **Stellar Testnet** · RPC: `https://soroban-testnet.stellar.org`
 | Contract | Address |
 |---|---|
 | USDC (Circle) | [`CBIELTK6...XQDAMA`](https://stellar.expert/explorer/testnet/contract/CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA) |
-| agUSD | [`CD6OX76F...2TGYSK`](https://stellar.expert/explorer/testnet/contract/CD6OX76FZ54SNOKNR4D3JLHTVS5IO3TNVBE4WSSLR4DIS5VW3O2TGYSK) |
-| sagUSD | [`CDY3ED6T...BTC345`](https://stellar.expert/explorer/testnet/contract/CDY3ED6T72VJDX5RCMQOZNCV5XKJBHQVAYPNOXTWB66RNBVOS5BTC345) |
-| Vault Contract | [`CAU54R4P...A33AFY`](https://stellar.expert/explorer/testnet/contract/CAU54R4PIHZXGCRZMJJCCIOFNMVXZHZF6BBNNSGWJT6A4UZ32MA33AFY) |
-| Allocation Engine | [`CBCLMUK4...HEAMKE`](https://stellar.expert/explorer/testnet/contract/CBCLMUK4R2CW3YVCX3OQ3GMGAXUNKA6JQWXH2AG3JW7U35FBNFHEAMKE) |
+| agUSD | [`CCW763RT...U4ALZL`](https://stellar.expert/explorer/testnet/contract/CCW763RTVRDQTEEQ42XCAARSJ42AKWRB2DDM62QV4XVUJFCDAWU4ALZL) |
+| sagUSD | [`CBMEW3QA...WFTHZF`](https://stellar.expert/explorer/testnet/contract/CBMEW3QALCS6FFJMK5FR7LVKUWX3MPIP26LQQQAFYMQFYVG6VUWFTHZF) |
+| Vault Contract | [`CCGPF36P...F5KVRR`](https://stellar.expert/explorer/testnet/contract/CCGPF36PDG2WBBK6ZROLMNMHD67UV4MNG6PHQCN2PXWLLRBXCYF5KVRR) |
+| Allocation Engine | [`CAFJKWLU...SZ5HUX`](https://stellar.expert/explorer/testnet/contract/CAFJKWLUGUSYEC7L5ZBNFIFEPSO5MLI7SKDMVVJCGC6Z2TGVP5SZ5HUX) |
 | Oracle Adapter | [`CDV5BC4X...XCSV7G`](https://stellar.expert/explorer/testnet/contract/CDV5BC4XCNT5ASOZNFXBQXRGKVXGKHLRVK5EDX6XP5J6EBIZWSXCSV7G) |
 
 ### Pool Adapters
 
 | Adapter | Originator | Jurisdiction | Address |
 |---|---|---|---|
-| Private Credit | QIRO | LU | [`CDKLN4NB...2RSMEV`](https://stellar.expert/explorer/testnet/contract/CDKLN4NBLLHYUOQEDLSKWM6BI7HSN4NL3W5B2MB4DUAPJG4IKA2RSMEV) |
-| Etherfuse | ETHERFUS | MX | [`CCFYYCIH...2H6KGO`](https://stellar.expert/explorer/testnet/contract/CCFYYCIHEKQLFN5TZKGFBW3GAH6SBXA7YEWMETTR62TWPEC43X2H6KGO) |
+| Private Credit | QIRO | LU | [`CBAPY7KR...ZGFTOZ`](https://stellar.expert/explorer/testnet/contract/CBAPY7KRVIG3FPGSP3VKXXA6SCDKZUWBSFDWISRJXR5V7PYPVQZGFTOZ) |
+| Etherfuse | ETHERFUS | MX | [`CBA3GQLH...AH7EWI`](https://stellar.expert/explorer/testnet/contract/CBA3GQLHCEOCCZIDVFZ74AG4FUCEO2SN7AMGY4RSAMN4DTHW2WAH7EWI) |
 
 Both adapters are registered with the Allocation Engine. `originator` and
 `jurisdiction` are the buckets the concentration caps aggregate over, so two
@@ -48,14 +48,20 @@ replaced. None of them is deleted, and none of them is quietly reused.
 
 | Contract | Address | Why it was replaced |
 |---|---|---|
-| agUSD, first generation (`contracts/agusd`) | [`CCXEP6QA...HNQ6H3`](https://stellar.expert/explorer/testnet/contract/CCXEP6QAAYEMFMV2JGBULD2NS6AQB6KQSBHLPPBJSDBCN6HOYIHNQ6H3) | A self contained vault rather than a plain token: it mints only inside its own `deposit()` and exposes no `mint`, so the Vault Contract could never mint against a deposit. Still deployed, still held, and left exactly as it is. |
+| agUSD (`contracts/agusd`), first deployment | [`CCXEP6QA...HNQ6H3`](https://stellar.expert/explorer/testnet/contract/CCXEP6QAAYEMFMV2JGBULD2NS6AQB6KQSBHLPPBJSDBCN6HOYIHNQ6H3) | A self contained vault rather than a plain token: it mints only inside its own `deposit()` and exposes no `mint`, so the Vault Contract could never mint against a deposit. Still deployed, still held, and left exactly as it is. |
 | Vault Contract, first deployment | [`CAVKHGBQ...5OFJW3`](https://stellar.expert/explorer/testnet/contract/CAVKHGBQUEPVTWHFJGU42ZVZA6VZSM6RZXFHCUXTT72JFRWNPF5OFJW3) | Wired to that token at `initialize()` with no setter and no upgrade path, so its `deposit()` could never mint. |
-| agUSD, second generation (`contracts/agusd-core`), first deployment | [`CCFICOHA...6H54WV`](https://stellar.expert/explorer/testnet/contract/CCFICOHAC4V6M5CDI62O5SWCZR43XG6JXNYFBZ4HAVQJBUCR4V6H54WV) | Names the second Vault as its only minter and has no `set_minter`, so issuance could not follow the Vault to its replacement. Retired at a zero supply: everything it issued was redeemed for USDC through its own Vault first, so it strands no holders. |
 | Vault Contract, second deployment | [`CDQP7L5R...TR3KS4`](https://stellar.expert/explorer/testnet/contract/CDQP7L5RZ6AM4J2PZETMG7TC4M3CDTVQ6QAMYPLG43Z6GAOCB4TR3KS4) | Initialized with the first Allocation Engine as its allocation counterparty, and `settle_allocation` authorizes that address and no other. That Engine governs a different Vault, so this one could take deposits and pay its queue and never release a dollar to a pool. It carries `set_agusd` but not `set_engine`, so the pointer that mattered could not be corrected. |
+| agUSD (`contracts/agusd-core`), first deployment | [`CCFICOHA...6H54WV`](https://stellar.expert/explorer/testnet/contract/CCFICOHAC4V6M5CDI62O5SWCZR43XG6JXNYFBZ4HAVQJBUCR4V6H54WV) | Names the second Vault as its only minter and has no `set_minter`, so issuance could not follow the Vault to its replacement. Retired at a zero supply. |
 | Allocation Engine, first deployment | [`CANDJEHB...SL2SGS`](https://stellar.expert/explorer/testnet/contract/CANDJEHBZUPGBWQMWM567Z3NQR4AHJKJSMWB4LTXPT6SC7GSRKSL2SGS) | Stores the Vault it governs at `initialize()` with no setter, and that Vault had been superseded, so every cap it enforced was measured against a balance sheet nobody was depositing into. |
 | Private credit adapter, first deployment | [`CCDZRKZD...CXT3VZ`](https://stellar.expert/explorer/testnet/contract/CCDZRKZDCWJWTFMLVJFW4LRALZEWRDKWOOD727EDO3EFFKLNDKCXT3VZ) | Stores both the Engine and the Vault at `initialize()` with no setters, and both addresses had been superseded. |
 | Etherfuse adapter, first deployment | [`CBS3OGCV...KFLYKK`](https://stellar.expert/explorer/testnet/contract/CBS3OGCVYMI3XQN2ORZZNE2WKGYK24VSTVDUB3QS5HCZHBQQFWKFLYKK) | Stores both the Engine and the Vault at `initialize()` with no setters, and both addresses had been superseded. |
-| sagUSD staking, first deployment | [`CABPYD4U...2XTALX`](https://stellar.expert/explorer/testnet/contract/CABPYD4U5FAYLBEBMY2MVGVF7BILXTNPWGLOPIXCMUK3QQGIAE2XTALX) | Accepts the first generation agUSD, stores it at `initialize()` with no setter, and had no re-initialization guard. A holder of the agUSD the protocol now issues could not stake at all, and the refusal read as an insufficient balance rather than as a wiring mistake. Left running rather than drained: it still holds 49.19 agUSD staked against 48.39 sagUSD shares, on the token it accepts, so its stakers are unaffected. |
+| sagUSD staking, first deployment | [`CABPYD4U...2XTALX`](https://stellar.expert/explorer/testnet/contract/CABPYD4U5FAYLBEBMY2MVGVF7BILXTNPWGLOPIXCMUK3QQGIAE2XTALX) | Accepts the first generation agUSD, stores it at `initialize()` with no setter, and has no re-initialization guard. Anyone can call its `initialize` a second time and take it over, so the 49.19 agUSD it still custodies should be treated as at risk; that is one of the reasons it is superseded rather than a footnote to it. |
+| Vault Contract, third deployment | [`CAU54R4P...A33AFY`](https://stellar.expert/explorer/testnet/contract/CAU54R4PIHZXGCRZMJJCCIOFNMVXZHZF6BBNNSGWJT6A4UZ32MA33AFY) | Replaced within the day, after review of this branch. Its `set_engine` accepted any address, including an ordinary account, which made the pointer that releases the Vault's reserves a one call instruction to hand them over. |
+| agUSD (`contracts/agusd-core`), second deployment | [`CD6OX76F...2TGYSK`](https://stellar.expert/explorer/testnet/contract/CD6OX76FZ54SNOKNR4D3JLHTVS5IO3TNVBE4WSSLR4DIS5VW3O2TGYSK) | Replaced with the Vault that mints it, since a token freezes its minter and cannot follow one. Retired at a zero supply, redeemed through its own Vault first. |
+| Allocation Engine, second deployment | [`CBCLMUK4...HEAMKE`](https://stellar.expert/explorer/testnet/contract/CBCLMUK4R2CW3YVCX3OQ3GMGAXUNKA6JQWXH2AG3JW7U35FBNFHEAMKE) | Replaced with the Vault it governs. Its own guards were sound; it is here because the stack moved. |
+| Private credit adapter, second deployment | [`CDKLN4NB...2RSMEV`](https://stellar.expert/explorer/testnet/contract/CDKLN4NBLLHYUOQEDLSKWM6BI7HSN4NL3W5B2MB4DUAPJG4IKA2RSMEV) | Replaced within the day, after review. Its Engine and Vault pointers moved independently and the emptiness check was retrospective only, so a repointed Vault would have misdirected repayments one allocation later. |
+| Etherfuse adapter, second deployment | [`CCFYYCIH...2H6KGO`](https://stellar.expert/explorer/testnet/contract/CCFYYCIHEKQLFN5TZKGFBW3GAH6SBXA7YEWMETTR62TWPEC43X2H6KGO) | Replaced within the day, after review. Its Engine and Vault pointers moved independently and the emptiness check was retrospective only, so a repointed Vault would have misdirected repayments one allocation later. |
+| sagUSD staking, second deployment | [`CDY3ED6T...BTC345`](https://stellar.expert/explorer/testnet/contract/CDY3ED6T72VJDX5RCMQOZNCV5XKJBHQVAYPNOXTWB66RNBVOS5BTC345) | Replaced within the day, after review. Its `set_agusd` keyed off the stake counter alone, and `accrue_yield` takes custody without touching it. |
 
 One missing setter cost six contracts. The Engine could not follow its Vault,
 the Vault could not follow its Engine, the token could not follow the Vault
@@ -104,9 +110,18 @@ state is reached by ordinary allocations, it is a unit test, and it was
 executed and refused on testnet in the run below.
 
 The caps stay nested, pool under originator under jurisdiction, so the per-pool
-limit remains the tightest concentration constraint and the aggregate caps
-still bind as soon as one originator or one jurisdiction fronts more than one
-pool.
+limit remains the tightest concentration constraint.
+
+Which means, said plainly: with the two pools registered today the originator
+and jurisdiction caps cannot bind either. Each pool has an originator and a
+jurisdiction of its own, and the 40% per-pool cap is strictly tighter than both,
+so neither aggregate limit can be the one that refuses an allocation until a
+second Qiro pool or a second Luxembourg pool is registered. That is the same
+critique that motivated moving the reserve floor, and it applies to two of the
+four limits. It is left as it is rather than papered over, because the aggregate
+caps exist for the book the protocol is being built towards rather than the two
+pools it has today, and a cap that binds only when a third pool arrives is
+honest as long as nobody claims otherwise.
 
 The Oracle Adapter carries the three feeds documented below, each registered
 with its own staleness window and deviation bound, and the admin address as the
@@ -120,28 +135,28 @@ assertions. From the run of 8 September 2026:
 
 | Step | What it proves | Transaction |
 |---|---|---|
-| Deposit | 2 USDC in, 2 agUSD minted 1:1 | [`02a53d55`](https://stellar.expert/explorer/testnet/tx/02a53d554d55f0b67053a33967aa0e61af9995be08a83dd0eb8f72874b9a380d) |
-| Stake | 1 agUSD staked, sagUSD issued at a share price of 1.0 | [`58793770`](https://stellar.expert/explorer/testnet/tx/58793770ee9ce8591102125b0dc978a4b73f4d9f84f35349093c402fc0e64c73) |
-| Allocate | 4000 bps into private credit, the Vault releases and the adapter books it | [`dd926b9e`](https://stellar.expert/explorer/testnet/tx/dd926b9ef7307b0e90222c1898ab49708dee023fa7e5af111d7be16d2ed5fbb9) |
-| NAV | A 1% revaluation pushed on `PC_NAV`, read back through the Vault | [`c7cc9d17`](https://stellar.expert/explorer/testnet/tx/c7cc9d174144a7b17f86967db3827da9862ee82e467686d2d5f87c1ae84f7e3f) |
-| Yield | Yield delivered, sagUSD share price rises to 1.1, no shares minted | [`8e2a3ea6`](https://stellar.expert/explorer/testnet/tx/8e2a3ea6829bedb9e5634700243ae2ece9d4157dcba527e66f8de7dff17fd7b4) |
-| Allocate | 3500 bps into Etherfuse, landing idle reserves exactly on the floor | [`7b22e5b2`](https://stellar.expert/explorer/testnet/tx/7b22e5b25c1aab99c83859fd329175ecdf89325dad0f3fdae3df1c4dd2988a7e) |
-| Unstake | Shares burned at request, the appreciated position locked behind the cooldown | [`6098c0e0`](https://stellar.expert/explorer/testnet/tx/6098c0e0bc7d1accdb762be2c9d277b6da2df7738c5d7eef23432d5da48a70ab) |
-| Unstake claim | 1.1 agUSD returned for 1.0 staked, after the cooldown | [`8d64814f`](https://stellar.expert/explorer/testnet/tx/8d64814f92e6dc4c4d91e87541b5dfda8714fd27d0208a9df65332bfe0674992) |
-| Withdrawal request | agUSD burned at request time, claim queued and not yet payable | [`817e4d5b`](https://stellar.expert/explorer/testnet/tx/817e4d5b5bfb701b20e9d1794b05533f95b5b042bfa5634460253a1684db09e8) |
-| Deallocate | Capital returns from Etherfuse and the claim becomes payable | [`fc17ac15`](https://stellar.expert/explorer/testnet/tx/fc17ac157c52fdc490d53e04c1bfcc9e0ed27348243a01db803faea4578c780a) |
-| Withdrawal claim | Claim paid, USDC back to the holder, queue empty | [`f8d7b4dd`](https://stellar.expert/explorer/testnet/tx/f8d7b4dd72fc253de017547b49b24c72815f3a55f6dd3076d468bf76404fdc6b) |
-| Unwind | Private credit repaid, the book back to 100% reserves | [`ead6dad7`](https://stellar.expert/explorer/testnet/tx/ead6dad7ac05bea0d02cce1c545229c3bafba14cc176053ee67be7540567480b) |
+| Deposit | 2 USDC in, 2 agUSD minted 1:1 | [`735c1403`](https://stellar.expert/explorer/testnet/tx/735c1403183abd120c301d3fce8a412ff9289787337f9aa257bbad0badd1f1e6) |
+| Stake | 1 agUSD staked, sagUSD issued at a share price of 1.0 | [`e921a1bf`](https://stellar.expert/explorer/testnet/tx/e921a1bf984ed2cd1c626f9164bf5b42d8e9871d2f0ff509a5f1d62eeb7ddd66) |
+| Allocate | 4000 bps into private credit, the Vault releases and the adapter books it | [`d0347f1f`](https://stellar.expert/explorer/testnet/tx/d0347f1f968e53f7639c8e92c115839e6c0428cb76987571581669745a193385) |
+| NAV | A 1% revaluation pushed on `PC_NAV`, read back through the Vault | [`1f946a98`](https://stellar.expert/explorer/testnet/tx/1f946a98587c3099611c1e582b8de4cc8a67e47b876f82d3476b55bc5c01bf36) |
+| Yield | Yield delivered, sagUSD share price rises to 1.1, no shares minted | [`609a6ffc`](https://stellar.expert/explorer/testnet/tx/609a6ffcc2925979672ade3d725b74189524f74528c0c10a0c6db025f30d6ed0) |
+| Allocate | 3500 bps into Etherfuse, landing idle reserves exactly on the floor | [`36ce0dba`](https://stellar.expert/explorer/testnet/tx/36ce0dba3789ecca34a624f09c5ca476d3858cee88685ae26f97260608df0173) |
+| Unstake | Shares burned at request, the appreciated position locked behind the cooldown | [`e2571d0b`](https://stellar.expert/explorer/testnet/tx/e2571d0bd62ed52fa3c78004554b760ebbaf066735182cba9d38ecbcd76b877e) |
+| Unstake claim | 1.1 agUSD returned for 1.0 staked, after the cooldown | [`70678eb4`](https://stellar.expert/explorer/testnet/tx/70678eb46029a2d82ebc8d3e548c9e570b3ce060629e38740231ad71ae1daf13) |
+| Withdrawal request | agUSD burned at request time, claim queued and not yet payable | [`7a2b6048`](https://stellar.expert/explorer/testnet/tx/7a2b6048eab3e99251de1072ed1e46c1920cd97dfec121edad64c3c456800f4f) |
+| Deallocate | Capital returns from Etherfuse and the claim becomes payable | [`74488e22`](https://stellar.expert/explorer/testnet/tx/74488e2231ae647c7970f78491e73a78014d1be7e52eca9f25b3e2bbc1eb5253) |
+| Withdrawal claim | Claim paid, USDC back to the holder, queue empty | [`6bf56410`](https://stellar.expert/explorer/testnet/tx/6bf56410af8e0ba513e0d2708620ad90b40d5fbaab548d93a48ca801520bdf85) |
+| Unwind | Private credit repaid, the book back to 100% reserves | [`26016d59`](https://stellar.expert/explorer/testnet/tx/26016d596f766e1728a97f99dea7ae421f05f59849510bb3b9fca2c3dbdfd850) |
 
 And the four refusals, each one a failed transaction on the ledger rather than a
 claim in a log:
 
 | Refusal | Ledger record | Transaction |
 |---|---|---|
-| A caller that is not the Vault cannot mint agUSD | authorization failure | [`e7b8c361`](https://stellar.expert/explorer/testnet/tx/e7b8c36152cce92e8d0eadd1f036caeb9ad9ca56bf7f3a24f3729b1850ffcb79) |
-| A caller that is not the Engine cannot release the Vault's USDC | authorization failure | [`ea56785a`](https://stellar.expert/explorer/testnet/tx/ea56785a0e993e43711b131925e95233e09c21626778c939a7852c1926b92835) |
-| An allocation of 4250 bps into a pool capped at 4000 is refused | contract error 407, `PoolCapExceeded` | [`1c936813`](https://stellar.expert/explorer/testnet/tx/1c9368138eb6fac443c21c0a5dc6b8b5cc5bad1bfb7485228fc0c777964b3984) |
-| An allocation inside every cap that would breach the reserve floor is refused | contract error 410, `ReserveFloorBreached` | [`75454406`](https://stellar.expert/explorer/testnet/tx/754544068cd66eecb28aa2fb484dcf603e9ac06b08ef50c0557d509c5f2dcec0) |
+| A caller that is not the Vault cannot mint agUSD | authorization failure | [`6cd17ab3`](https://stellar.expert/explorer/testnet/tx/6cd17ab3982105278b25e05f60aa028e147c6243dfcee0a009e2d0b20fa7ea9c) |
+| A caller that is not the Engine cannot release the Vault's USDC | authorization failure | [`f7cba464`](https://stellar.expert/explorer/testnet/tx/f7cba464fb723180a7fd0a7f1e37fb035161094c81ef45434367b259f575fd0e) |
+| An allocation of 4250 bps into a pool capped at 4000 is refused | contract error 407, `PoolCapExceeded` | [`7861c0d8`](https://stellar.expert/explorer/testnet/tx/7861c0d87aff15e9aaeb7f73f8cf1d9ac23a5db1fb1789d2d415c8bd294f318c) |
+| An allocation inside every cap that would breach the reserve floor is refused | contract error 410, `ReserveFloorBreached` | [`30c6bfa7`](https://stellar.expert/explorer/testnet/tx/30c6bfa747008f7c2662c047f1eaf3a925fabcdae24fac56389af96109b0cfbb) |
 
 All four were submitted, not simulated, and the script reads the failure reason
 back off the ledger before it calls any of them passed. Simulation records
@@ -163,29 +178,45 @@ transaction hash rather than a paragraph.
 
 | Setter | What it corrected | Transaction |
 |---|---|---|
-| `AgUsdCore::set_minter` | Issuance moved from the superseded Vault to the new one, at a zero supply | [`65c43f28`](https://stellar.expert/explorer/testnet/tx/65c43f283107d86ece979510f361efae1309f3c262c7506e5683c4b1803383e9) |
-| `Vault::set_agusd` | The Vault repointed at the new agUSD, before its first deposit | [`6db17c42`](https://stellar.expert/explorer/testnet/tx/6db17c424f9df6ea2d300e5328d17d897ddb26e2ae86fdd2e53a8277e87a1ac6) |
-| `Vault::set_engine` | The Vault repointed away from the Engine that governs a different Vault | [`40860a08`](https://stellar.expert/explorer/testnet/tx/40860a08e9724bab0f6e0289c3ee52f9ab8bc09b22ed61ed742e9be2ec31f4af) |
-| `AllocationEngine::set_vault` | The Engine repointed at the Vault it actually governs, with an empty book | [`5eea9606`](https://stellar.expert/explorer/testnet/tx/5eea96067a640d9225107379b70df206b7ebd8c1e0dd0524e652531bfc770cf0) |
-| `PrivateCreditAdapter::set_engine` | The adapter repointed at the new Engine, holding nothing | [`eff10ea5`](https://stellar.expert/explorer/testnet/tx/eff10ea5148f0f09d0e1d76a3ff7717eaea5204efd7be340733e3c9e72f81f87) |
-| `PrivateCreditAdapter::set_vault` | The adapter repointed at the new Vault, holding nothing | [`2944da8a`](https://stellar.expert/explorer/testnet/tx/2944da8a82df290b5c166563f7426bfa3550aed6a86c78ab607c71a8be0053fb) |
-| `EtherfuseAdapter::set_engine` | The adapter repointed at the new Engine, holding nothing | [`27a597db`](https://stellar.expert/explorer/testnet/tx/27a597db6025aee823d2f997b6a33323e07d6f3040a4ee8cebe84354e500154c) |
-| `EtherfuseAdapter::set_vault` | The adapter repointed at the new Vault, holding nothing | [`c08c989b`](https://stellar.expert/explorer/testnet/tx/c08c989b928f4ce3c4570d331f3643a6adc0eb571d54480771a9494e0023f62c) |
-| `Staking::set_agusd` | sagUSD repointed at the agUSD the protocol issues, before its first stake | [`b660005f`](https://stellar.expert/explorer/testnet/tx/b660005fb61e5c5058d97a85d0503e57972bb20641530719d8df53c6d0e73889) |
+| `AgUsdCore::set_minter` | Issuance moved from the superseded Vault to the new one, at a zero supply | [`db46e40e`](https://stellar.expert/explorer/testnet/tx/db46e40e5083632c3a190c4745c196b5eefd1e29ce9cb00dab776c9589538288) |
+| `AllocationEngine::set_vault` | The Engine repointed at the Vault it actually governs, with an empty book | [`7e0e51c2`](https://stellar.expert/explorer/testnet/tx/7e0e51c2584f0ff26e35092c1e89500c9126d054e20e4e35c05fb44d504180d9) |
+| `Vault::set_agusd` | The Vault repointed at the new agUSD, before its first deposit | [`3f5bcd0e`](https://stellar.expert/explorer/testnet/tx/3f5bcd0eea01c39ab5524172921329ab7f5fc2041c72f2d31d7ea9a3d10a2346) |
+| `Vault::set_engine` | The Vault repointed away from an Engine that governs a different Vault, onto one that names it back | [`111faa6d`](https://stellar.expert/explorer/testnet/tx/111faa6d95faed454a06d02931acc647fddb660e896b848e83e6811fd70d9673) |
+| `PrivateCreditAdapter::set_counterparties` | Engine and Vault moved together, holding nothing | [`4ba96771`](https://stellar.expert/explorer/testnet/tx/4ba96771fb7006256d93fbfa7712648e7d0af55c1fc5b7664351f80c0ca4b84a) |
+| `EtherfuseAdapter::set_counterparties` | Engine and Vault moved together, holding nothing | [`e014feb2`](https://stellar.expert/explorer/testnet/tx/e014feb2c271b2dc7dc36b908f9a0aa99316d3eb4814b1759be49a08409bd541) |
+| `Staking::set_agusd` | sagUSD repointed at the agUSD the protocol issues, before its first stake | [`36ee7f08`](https://stellar.expert/explorer/testnet/tx/36ee7f080531d437f97b15c76f28d1cd47c8646114e8de48fdc134246b410986) |
 
-`Vault::set_engine` is the sharpest of them. It was applied while the Vault was
+`Vault::set_engine` is where the guards meet. It was applied while the Vault was
 pointed at an Engine with a live, non-empty exposure book, every stroop of which
-had been funded by a different Vault. A guard that only asked whether the Engine
+had been funded by a different Vault: a guard that only asked whether the Engine
 had capital deployed would have refused it, and refused it in precisely the case
-the setter exists for, so the guard asks whose capital it is.
+the setter exists for, so the guard asks whose capital it is. And it refuses any
+address that does not answer that it governs this Vault, which is why the Engine
+had to be configured first and which is what stops the pointer that releases the
+reserves being aimed at an ordinary account.
 
-The superseded generation was wound down before it was replaced rather than
-abandoned: its agUSD was redeemed to a zero supply through the Vault that minted
-it ([`96a43e4b`](https://stellar.expert/explorer/testnet/tx/96a43e4ba6733107b1d35a37f323d17169294664f3a2652ca6646d4efc6ad7c6),
-[`44d95d66`](https://stellar.expert/explorer/testnet/tx/44d95d662d26314ab6c5bf4d473e3486ea1d6ef979055171f1c58ff2bc2addc8)),
-and the old Engine's book was unwound to zero
-([`7390dc2e`](https://stellar.expert/explorer/testnet/tx/7390dc2e93b0d5e2fba93f7c39956e7d644cad777fbf483627e33b190f0440ac))
+Each superseded generation was wound down before it was replaced rather than
+abandoned. Every agUSD it had issued was redeemed to a zero supply through the
+Vault that minted it, so no token is retired holding somebody's claim
+([`96a43e4b`](https://stellar.expert/explorer/testnet/tx/96a43e4ba6733107b1d35a37f323d17169294664f3a2652ca6646d4efc6ad7c6),
+[`44d95d66`](https://stellar.expert/explorer/testnet/tx/44d95d662d26314ab6c5bf4d473e3486ea1d6ef979055171f1c58ff2bc2addc8)
+for the first, and
+[`355f3b49`](https://stellar.expert/explorer/testnet/tx/355f3b4975c4f20d5a598881daca64a3417bc075d9618282bfd673201ba053d4),
+[`880d91da`](https://stellar.expert/explorer/testnet/tx/880d91da2605472a1f1f2eb71b72e58a6b51027a6aeba93d6d60b826e269c6ac)
+for the second). The first Engine's book was unwound to zero
+([`7390dc2e`](https://stellar.expert/explorer/testnet/tx/7390dc2e93b0d5e2fba93f7c39956e7d644cad777fbf483627e33b190f0440ac)),
 so nothing reads as deployed on a stack nobody drives.
+
+**Why there are two of them.** The first rewire was reviewed before this branch
+was merged, and the review found that its `Vault::set_engine` would accept any
+address at all. That made the pointer which releases the Vault's reserves a one
+call instruction to hand them to an ordinary account, and the pool adapters had
+the mirror image: two independently settable pointers behind an emptiness check
+that only looked backwards. The contracts were tightened and the stack was
+redeployed the same day, before it held anything but the deploying admin's own
+working capital. The addresses are in the table above with that reason next to
+them, because a deployment that quietly replaces itself is exactly the habit
+this branch exists to break.
 
 ### Credit Vaults (Allocation Pools)
 
@@ -235,7 +266,9 @@ Composable synthetic dollar minted 1:1 against USDC deposits. Full [SEP-41](http
 
 `mint` checks the minter address recorded at initialization, which is the Vault Contract, and nothing else. There is no admin mint and no pause that could create supply, so one agUSD in circulation means one USDC was deposited into the Vault, and an auditor can check that rather than take it on trust.
 
-`set_minter` exists and freezes at the first mint. The earlier version had no setter at all, on the argument that an admin who can rotate the minter can point it at itself and print. That is true of a token with a book and false of a token with no supply, and paying for it cost a token migration when the Vault named at initialization turned out to be unusable. So the guard is the mint counter: zero mints and the minter is configuration, one mint and it is frozen for the life of the contract. The property an auditor checks is unchanged and now readable in one call, `mints()`. Burning the supply back to zero does not reopen it, because having issued is not the same as holding.
+`set_minter` exists and freezes at the first mint. The earlier version had no setter at all, on the argument that an admin who can rotate the minter can point it at itself and print. That is true of a token with a book and false of a token with no supply, and paying for it cost a token migration when the Vault named at initialization turned out to be unusable. So the guard is the mint counter: zero mints and the minter is configuration, one mint and it is frozen for the life of the contract, readable in one call as `mints()`. Burning the supply back to zero does not reopen it, because having issued is not the same as holding.
+
+Be precise about what that rules out. It does not stop an admin naming itself minter and printing, because the two conditions are sequential and both hold at a zero supply. It stops doing that to a token anybody is holding, and it stops doing it quietly: every rotation emits `MinterSet`. And which token is the protocol's agUSD is decided by the Vault that names it and by the deployment record, both public, so a token whose `minter()` is not the Vault above is not this protocol's agUSD, and an admin who wanted one could always have deployed it.
 
 `burn` and `burn_from` stay on the standard SEP-41 semantics, authorized by the holder. That is what the Vault's `request_withdrawal` calls, and restricting the burn path would buy nothing: destroying your own balance harms nobody else. Supply goes up only through the Vault and down only through the holder.
 
@@ -251,7 +284,9 @@ Yield-bearing staked agUSD. Share-based vault accounting compatible with the DeF
 
 **DeFindex compatibility:** sagUSD adopts the DeFindex assets-per-share model, making sagUSD positions natively readable by any DeFindex-integrated wallet or protocol without additional integration work.
 
-`set_agusd` repoints the token this contract accepts and closes at the first stake, keyed off a counter rather than off the share supply: a position that has been fully unstaked is not the same as one that never existed, and the pending unstake queue can outlive the shares that created it. `initialize` now refuses a second call, which the deployed generation did not: a second call could name a new admin, repoint the staked asset and reset the NAV, and the NAV is the denominator every share is redeemed against.
+`set_agusd` repoints the token this contract accepts and closes the moment it has taken custody of anything: a stake counter rather than the share supply, because a position that has been fully unstaked is not the same as one that never existed and the pending unstake queue can outlive the shares that created it, plus the NAV and the balance, because `accrue_yield` takes custody without going near the counter.
+
+`initialize` now refuses a second call, which the deployed generation did not: a second call could name a new admin, repoint the staked asset and reset the NAV, which is the denominator every share is redeemed against. That guard stops a stranger. It does not stop the admin, who keeps `report_nav` and can still overwrite that denominator, and it is not offered as doing so; `report_nav` is there for demo and reconciliation, and `accrue_yield`, which moves real agUSD and cannot overstate the book, is the path that should be used.
 
 ### Vault Contract (`contracts/vault`) (deployed on testnet)
 
@@ -262,6 +297,8 @@ The queue is paid strictly in order and there is no admin path around it: `claim
 **Two pointers, two setters.** `initialize()` writes the agUSD address and the Allocation Engine address, the Vault is not upgradeable, and both of them used to be one way doors. Both have now been through one. The first Vault pointed at a token with no `mint` and could never issue agUSD. The second pointed at an Engine that governs a different Vault and could never release a dollar of capital, because `settle_allocation` authorizes the address `initialize()` wrote and nothing else. Each mistake cost a redeployment, and the second cost two contracts rather than one, because the token names the Vault as its only minter.
 
 `set_agusd` and `set_engine` are that lesson. Both are admin gated and both close once the contract holds state the move would invalidate. For agUSD that line is the first deposit: repointing a Vault while agUSD is outstanding would leave holders backed by a token it no longer mints or burns. For the Engine it is an exposure book funded by this Vault, because the USDC behind it is out in the pool adapters and only the Engine that put it there can call it back. An Engine whose book belongs to a different Vault does not freeze the pointer, which matters, because that was exactly the state the live deployment was stuck in.
+
+`set_engine` also refuses any address that does not answer that it governs this Vault. That check is not decoration. `settle_allocation` hands the reserves to whatever the pointer names and `require_auth` on an ordinary account is satisfied by that account's own signature, so without it the setter would be a one call instruction to release the Vault to the admin. With it, an account cannot be named at all, and neither can an Engine that governs somebody else. It does not make the admin harmless and it is not offered as doing so: see the Security section for what the admin can still do and what actually constrains it.
 
 **Testnet status.** Deposit, mint, stake, allocate, NAV, yield, unstake, withdrawal request and claim all run on-chain against real Circle USDC, in one script with every transaction hash, listed under [The Whole Journey, On-Chain](#the-whole-journey-on-chain) above. The queue behaviour is worth singling out: the withdrawal claim is deliberately requested while capital is still deployed, so it sits at the head of the queue and reads `Pending` until a pool repays, then becomes `Ready` without anyone touching it.
 
@@ -304,7 +341,9 @@ fn get_exposure() -> i128     // Current allocated amount
 | Etherfuse | Stablebond contracts | Instant (on-chain) | Etherfuse feed (48h) |
 | Private Credit | Off-chain originator | D+15 to D+90 | Custom reporter (7d) |
 
-Only the Engine can move capital: there is no admin path that allocates or deallocates behind it, because that path would bypass every concentration cap and the reserve floor. Both adapters carry `set_engine` and `set_vault`, admin gated and refused unless the adapter is holding nothing at all. Two conditions, for two different reasons: exposure booked here was authorized by the current Engine against the caps it enforces, so moving the Engine mid-position orphans a book only that Engine can unwind; and `deallocate` sends capital to the stored Vault address, so an unbooked USDC balance, a repayment that arrived before anyone recorded it, would be redirected to a Vault it was never owed to.
+Only the Engine can move capital: there is no admin path that allocates or deallocates behind it, because that path would bypass every concentration cap and the reserve floor.
+
+Both adapters carry `set_counterparties`, which moves the Engine and the Vault together in one call and refuses unless three things hold: the caller is the admin, the adapter is holding nothing (no booked exposure and no USDC), and the Engine offered says it governs the Vault offered. One call rather than two because the addresses are only meaningful as a pair, and an adapter halfway between two generations takes capital on one authority and returns it to another. The emptiness check alone would not be enough, because being empty today says nothing about tomorrow: repoint the Vault while empty, let the Engine allocate afterwards, and every repayment would go to the address that was written here while the Engine's book decremented all the same, with nothing reverting. The symmetry check is what closes that.
 
 ## Build and Test
 
@@ -371,8 +410,10 @@ From the [SCF Integration List](https://communityfund.stellar.org/integration-li
 ## Security
 
 - `mint` restricted to the Vault Contract via `require_auth()`, with the minter frozen at the first mint: no admin mint, no rotation once supply exists, and burning left to the holder
-- Every address a contract stores about another contract is admin settable, and every one of those setters closes once the contract holds state the move would invalidate: the Vault's agUSD at its first deposit, the Vault's Engine once that Engine holds this Vault's capital, the Engine's Vault once its book is non-empty, an adapter's Engine and Vault once it holds exposure or USDC, sagUSD's agUSD at its first stake, and agUSD's minter at its first mint
+- Every counterparty pointer that has caused an incident is now admin settable, and every one of those setters closes once the contract holds state the move would invalidate: the Vault's agUSD at its first deposit, the Vault's Engine once that Engine holds this Vault's capital, the Engine's Vault once its book is non-empty, an adapter's Engine and Vault once it holds exposure or USDC, sagUSD's agUSD once it has taken custody, and agUSD's minter at its first mint. Two stored addresses are not settable and are not claimed to be: the Vault's USDC, which has no setter at all, and the Vault's Oracle Adapter, whose setter never closes because a stale or wrong NAV feed is a reporting problem and not a custody one
+- Every one of those setters emits an event, so a change to the highest-privilege state in the protocol is never a silent storage write
 - The Vault's USDC leaves only through the Allocation Engine or a queued withdrawal claim
+- **The admin is a trusted role in V1 and the contracts do not pretend otherwise.** The admin sets the Engine's caps and reserve floor and chooses which pools are registered, so an admin willing to register a pool it controls can move the Vault's capital to itself. No guard inside the Vault prevents that, by design: the Vault does not duplicate the Engine's limits, and duplicating them would mean two implementations that can disagree. What protects depositors from the admin is the 2-of-3 multi-signature admin in V1 and governance with a 48h timelock in V2, both below, not a check in a contract
 - Oracle reporter set: `push_nav()` validates caller, rotation requires admin + event
 - NAV deviation bounds: >2% for Reflector asset prices, >5% for private credit NAV
 - On-chain concentration caps: `allocate()` reverts if any cap exceeded
