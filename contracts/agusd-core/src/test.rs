@@ -112,6 +112,60 @@ fn nobody_but_the_minter_creates_supply() {
 }
 
 #[test]
+fn the_minter_is_correctable_until_the_first_mint_and_frozen_after() {
+    let f = setup();
+    assert_eq!(f.token.mints(), 0);
+    let replacement = Address::generate(&f.e);
+    let stranger = Address::generate(&f.e);
+
+    assert_eq!(
+        f.token.try_set_minter(&stranger, &replacement),
+        Err(Ok(AgUsdCoreError::NotAdmin))
+    );
+
+    // The repair this exists for: the Vault named at initialization turned out
+    // to be unusable, and issuance has to follow it to its replacement rather
+    // than force a second token and a migration.
+    f.token.set_minter(&f.admin, &replacement);
+    assert_eq!(f.token.minter(), replacement);
+
+    // The old minter is now nobody. Its signature buys it nothing.
+    let alice = Address::generate(&f.e);
+    let args = (alice.clone(), 100 * UNIT).into_val(&f.e);
+    f.e.mock_auths(&[MockAuth {
+        address: &f.minter,
+        invoke: &MockAuthInvoke {
+            contract: &f.token.address,
+            fn_name: "mint",
+            args,
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(f.token.try_mint(&alice, &(100 * UNIT)).is_err());
+    assert_eq!(f.token.total_supply(), 0);
+
+    // One mint, and the pointer is a promise to the holder rather than a
+    // setting. The admin cannot rotate the minter to itself and print.
+    f.e.mock_all_auths();
+    f.token.mint(&alice, &(100 * UNIT));
+    assert_eq!(f.token.mints(), 1);
+    assert_eq!(
+        f.token.try_set_minter(&f.admin, &f.admin),
+        Err(Ok(AgUsdCoreError::MinterFrozen))
+    );
+    assert_eq!(f.token.minter(), replacement);
+
+    // Burning the supply back to zero does not reopen it: the counter records
+    // that the token has issued, not what is outstanding today.
+    f.token.burn(&alice, &(100 * UNIT));
+    assert_eq!(f.token.total_supply(), 0);
+    assert_eq!(
+        f.token.try_set_minter(&f.admin, &f.admin),
+        Err(Ok(AgUsdCoreError::MinterFrozen))
+    );
+}
+
+#[test]
 fn minting_zero_or_a_negative_amount_is_rejected() {
     let f = setup();
     let alice = Address::generate(&f.e);
