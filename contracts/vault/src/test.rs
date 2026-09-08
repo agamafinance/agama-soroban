@@ -534,6 +534,31 @@ fn the_engine_pointer_is_frozen_while_this_vaults_capital_is_out() {
 }
 
 #[test]
+fn the_engine_pointer_refuses_anything_that_does_not_name_this_vault() {
+    // Without this the pointer would be a one call instruction to hand the
+    // reserves to an ordinary account: `settle_allocation` authorizes whatever
+    // this pointer names, and an account signs for itself.
+    let f = setup();
+    depositor(&f, 1_000 * USDC);
+    let mallory = Address::generate(&f.e);
+    assert_eq!(
+        f.vault.try_set_engine(&f.admin, &mallory),
+        Err(Ok(VaultError::EngineMismatch))
+    );
+
+    // A real Engine, correctly configured, that happens to govern a different
+    // Vault is refused for the same reason.
+    let other_vault = f.e.register(Vault, ());
+    let (foreign, _) = spare_engine(&f, &other_vault);
+    assert_eq!(
+        f.vault.try_set_engine(&f.admin, &foreign.address),
+        Err(Ok(VaultError::EngineMismatch))
+    );
+    assert_eq!(f.vault.allocation_engine(), f.engine.address);
+    assert_eq!(f.vault.idle_reserves(), 1_000 * USDC);
+}
+
+#[test]
 fn an_engine_that_governs_another_vault_does_not_freeze_this_one() {
     // The live failure this setter was written for. The Vault was initialized
     // against an Engine that had already been wired to an earlier Vault, so
@@ -566,12 +591,28 @@ fn an_engine_that_governs_another_vault_does_not_freeze_this_one() {
     foreign.allocate(&f.admin, &foreign_pool, &(300 * USDC));
     assert_eq!(foreign.total_allocated(), 300 * USDC);
 
-    // Point our Vault at that Engine, then walk back out. The book is not
-    // ours, so there is nothing here to strand.
-    f.vault.set_engine(&f.admin, &foreign_id);
-    assert_eq!(f.vault.allocation_engine(), foreign_id);
-    f.vault.set_engine(&f.admin, &f.engine.address);
-    assert_eq!(f.vault.allocation_engine(), f.engine.address);
+    // Put our Vault on that Engine the only way it can get there, the way the
+    // live deployment did: at initialization, before any setter exists to
+    // refuse it.
+    let stranded_id = f.e.register(Vault, ());
+    let stranded = VaultClient::new(&f.e, &stranded_id);
+    let stranded_agusd = f.e.register(MockUsdc, ());
+    MockUsdcClient::new(&f.e, &stranded_agusd).initialize(
+        &stranded_id,
+        &7u32,
+        &String::from_str(&f.e, "Agama USD"),
+        &String::from_str(&f.e, "agUSD"),
+    );
+    stranded.initialize(&f.admin, &f.usdc.address, &stranded_agusd, &foreign_id);
+
+    // That Vault can never deploy a dollar: the Engine it names governs
+    // somebody else. Walking out is exactly what the setter is for, and the
+    // 300 USDC book on the Engine it is leaving must not stand in the way,
+    // because none of it is this Vault's money.
+    let (own_engine, _) = spare_engine(&f, &stranded_id);
+    stranded.set_engine(&f.admin, &own_engine.address);
+    assert_eq!(stranded.allocation_engine(), own_engine.address);
+    assert_eq!(foreign.total_allocated(), 300 * USDC);
 }
 
 #[test]

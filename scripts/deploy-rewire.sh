@@ -177,43 +177,50 @@ echo "    staking (sagUSD)  = $STAKING"
 # caused the incident, at a moment when the guard permits it.
 echo ""
 echo "==> agusd-core: minter set to the superseded Vault, then corrected"
-echo "    initialize   tx $(tx "$AGUSD" initialize --admin "$ADMIN" --minter "$OLD_VAULT" \
+echo "    initialize        tx $(tx "$AGUSD" initialize --admin "$ADMIN" --minter "$OLD_VAULT" \
   --decimal "$DECIMALS" --name "$AGUSD_NAME" --symbol "$AGUSD_SYMBOL")"
-echo "    set_minter   tx $(tx "$AGUSD" set_minter --admin "$ADMIN" --minter "$VAULT")"
+echo "    set_minter        tx $(tx "$AGUSD" set_minter --admin "$ADMIN" --minter "$VAULT")"
+
+# The Engine goes first from here on, and the order is a consequence of the
+# guards rather than a preference. Vault.set_engine refuses any address that
+# does not answer that it governs this Vault, and the adapters refuse any pair
+# whose Engine does not govern the Vault offered with it, so the Engine has to
+# be pointed at the new Vault before anything else can be pointed at the Engine.
+echo ""
+echo "==> allocation-engine: pointed at the superseded Vault, then corrected"
+echo "    initialize        tx $(tx "$ENGINE" initialize --admin "$ADMIN" --vault "$OLD_VAULT")"
+echo "    set_vault         tx $(tx "$ENGINE" set_vault --admin "$ADMIN" --vault "$VAULT")"
 
 echo ""
 echo "==> vault: wired to the superseded token and Engine, then corrected"
-echo "    initialize   tx $(tx "$VAULT" initialize --admin "$ADMIN" --usdc_token "$USDC" \
+echo "    initialize        tx $(tx "$VAULT" initialize --admin "$ADMIN" --usdc_token "$USDC" \
   --agusd_token "$OLD_AGUSD" --allocation_engine "$OLD_ENGINE")"
-echo "    set_agusd    tx $(tx "$VAULT" set_agusd --admin "$ADMIN" --agusd_token "$AGUSD")"
-# The guard here is the reason set_engine is usable at all: the Engine this
-# Vault was just wired to has a live, non-empty exposure book, and every stroop
-# of it was funded by a different Vault. Reading the book alone would have
-# frozen the pointer in exactly the case it exists for.
-echo "    set_engine   tx $(tx "$VAULT" set_engine --admin "$ADMIN" --allocation_engine "$ENGINE")"
-echo "    set_oracle   tx $(tx "$VAULT" set_oracle --admin "$ADMIN" --oracle "$ORACLE" --feed_id "$FEED")"
-
-echo ""
-echo "==> allocation-engine: pointed at the superseded Vault, then corrected"
-echo "    initialize   tx $(tx "$ENGINE" initialize --admin "$ADMIN" --vault "$OLD_VAULT")"
-echo "    set_vault    tx $(tx "$ENGINE" set_vault --admin "$ADMIN" --vault "$VAULT")"
+echo "    set_agusd         tx $(tx "$VAULT" set_agusd --admin "$ADMIN" --agusd_token "$AGUSD")"
+# Two guards meet on this line. The Engine being left has a live, non-empty
+# exposure book, and every stroop of it was funded by a different Vault, so a
+# guard that only asked whether capital was deployed would refuse the one call
+# it exists for. And the Engine being adopted has to answer that it governs this
+# Vault, which is why it was configured first and which is what stops this
+# pointer being aimed at an ordinary account.
+echo "    set_engine        tx $(tx "$VAULT" set_engine --admin "$ADMIN" --allocation_engine "$ENGINE")"
+echo "    set_oracle        tx $(tx "$VAULT" set_oracle --admin "$ADMIN" --oracle "$ORACLE" --feed_id "$FEED")"
 
 echo ""
 echo "==> pool adapters: wired to the superseded pair, then corrected"
 for pair in "private-credit:$PC" "etherfuse:$EF"; do
   name=${pair%%:*}; id=${pair#*:}
   echo "  $name"
-  echo "    initialize   tx $(tx "$id" initialize --admin "$ADMIN" --engine "$OLD_ENGINE" \
+  echo "    initialize        tx $(tx "$id" initialize --admin "$ADMIN" --engine "$OLD_ENGINE" \
     --vault "$OLD_VAULT" --usdc "$USDC")"
-  echo "    set_engine   tx $(tx "$id" set_engine --admin "$ADMIN" --engine "$ENGINE")"
-  echo "    set_vault    tx $(tx "$id" set_vault --admin "$ADMIN" --vault "$VAULT")"
+  echo "    set_counterparties tx $(tx "$id" set_counterparties --admin "$ADMIN" \
+    --engine "$ENGINE" --vault "$VAULT")"
 done
 
 echo ""
 echo "==> sagUSD: wired to the generation 1 agUSD, then corrected"
-echo "    initialize   tx $(tx "$STAKING" initialize --admin "$ADMIN" --agusd "$AGUSD_V1" \
+echo "    initialize        tx $(tx "$STAKING" initialize --admin "$ADMIN" --agusd "$AGUSD_V1" \
   --cooldown_seconds "$COOLDOWN" --decimal "$DECIMALS" --name "$SAGUSD_NAME" --symbol "$SAGUSD_SYMBOL")"
-echo "    set_agusd    tx $(tx "$STAKING" set_agusd --admin "$ADMIN" --agusd "$AGUSD")"
+echo "    set_agusd         tx $(tx "$STAKING" set_agusd --admin "$ADMIN" --agusd "$AGUSD")"
 
 # The Engine ships fail closed: every cap at zero and the reserve floor at 100%,
 # so it refuses to deploy capital until this block runs.

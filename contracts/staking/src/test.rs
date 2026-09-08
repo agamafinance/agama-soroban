@@ -167,7 +167,7 @@ fn the_agusd_pointer_moves_before_the_first_stake_and_never_after() {
     // the share price is a claim on that balance.
     assert_eq!(
         f.vault.try_set_agusd(&f.admin, &f.ag.address),
-        Err(Ok(StakingError::StakesExist))
+        Err(Ok(StakingError::CustodyTaken))
     );
     assert_eq!(f.vault.agusd(), replacement_id);
 
@@ -179,8 +179,35 @@ fn the_agusd_pointer_moves_before_the_first_stake_and_never_after() {
     assert_eq!(f.vault.total_shares(), 0);
     assert_eq!(
         f.vault.try_set_agusd(&f.admin, &f.ag.address),
-        Err(Ok(StakingError::StakesExist))
+        Err(Ok(StakingError::CustodyTaken))
     );
+}
+
+#[test]
+fn delivered_yield_closes_the_agusd_pointer_even_with_no_stakers() {
+    // accrue_yield takes custody without touching the stake counter. A
+    // contract holding yield and no shares would otherwise still look
+    // untouched, and the first staker after a repoint would be issued shares
+    // against a NAV denominated in a token the contract does not hold.
+    let f = setup();
+    fund_agusd(&f, &f.admin, 1_000 * ONE);
+    f.vault.accrue_yield(&(1_000 * ONE));
+    assert_eq!(f.vault.stakes(), 0);
+    assert_eq!(f.vault.total_shares(), 0);
+    assert_eq!(f.vault.nav(), 1_000 * ONE);
+
+    let replacement = f.e.register(MockUsdc, ());
+    MockUsdcClient::new(&f.e, &replacement).initialize(
+        &f.admin,
+        &7u32,
+        &String::from_str(&f.e, "Agama USD"),
+        &String::from_str(&f.e, "agUSD"),
+    );
+    assert_eq!(
+        f.vault.try_set_agusd(&f.admin, &replacement),
+        Err(Ok(StakingError::CustodyTaken))
+    );
+    assert_eq!(f.vault.agusd(), f.ag.address);
 }
 
 #[test]

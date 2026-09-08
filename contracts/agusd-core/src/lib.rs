@@ -47,11 +47,23 @@
 //! reading one number: any token with supply has a minter that has not moved
 //! since the supply started existing.
 //!
-//! The `admin` recorded by `initialize` is deliberately powerless over supply.
-//! It is stored so the deployment is attributable on-chain, so future
-//! non-supply governance has an anchor, and so the minter can be corrected
-//! before the token is used; every function that creates supply checks the
-//! minter and never the admin.
+//! Be precise about what that does and does not rule out. It does not stop an
+//! admin naming itself minter and printing: the two conditions are sequential,
+//! so at a zero supply an admin can call `set_minter(admin)` and then `mint`,
+//! and would then be frozen in as minter for the life of the contract. What it
+//! rules out is doing that to a token that anybody is holding, and doing it
+//! quietly. Every rotation emits `MinterSet`, so a pre-mint rotation is a
+//! ledger event and not a silent state change, and which token is the
+//! protocol's agUSD is decided by the Vault that names it and by the deployment
+//! record, both of which are public. A token whose minter is not the Vault is
+//! simply not this protocol's agUSD, and an admin who wanted one could always
+//! have deployed it.
+//!
+//! The `admin` recorded by `initialize` is deliberately powerless over supply
+//! once supply exists. It is stored so the deployment is attributable on-chain,
+//! so future non-supply governance has an anchor, and so the minter can be
+//! corrected before the token is used; every function that creates supply
+//! checks the minter and never the admin.
 //!
 //! # Burning stays on the SEP-41 semantics
 //!
@@ -65,7 +77,7 @@
 //! holder.
 
 use soroban_sdk::contracterror;
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String};
+use soroban_sdk::{contract, contractevent, contractimpl, contracttype, Address, Env, String};
 use token as tok;
 
 #[contracterror]
@@ -91,6 +103,18 @@ enum Cfg {
     Admin,
     Minter,
     Mints,
+}
+
+/// Emitted when the minting authority is corrected, which can only happen
+/// before the token has minted anything. It is the single most consequential
+/// thing that can be said about this contract, so it is never a silent state
+/// change: a rotation is in the event stream whether anybody was watching the
+/// storage or not.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MinterSet {
+    #[topic]
+    pub minter: Address,
 }
 
 #[contract]
@@ -161,9 +185,14 @@ impl AgUsdCore {
     /// It stops working at the first mint, permanently, and that is what keeps
     /// the security property intact: agUSD in circulation was created by the
     /// minter recorded here, and that minter has not changed since the first
-    /// unit existed. An admin cannot rotate the minter to itself and print,
-    /// because rotating requires a supply of zero and printing requires being
-    /// the minter first.
+    /// unit existed.
+    ///
+    /// It does not stop an admin naming itself minter and printing, because
+    /// the two conditions are sequential and both are satisfiable at a zero
+    /// supply. What it stops is doing that to a token anybody holds, and doing
+    /// it without a trace: the rotation emits `MinterSet`, and a token whose
+    /// `minter()` is not the Vault named in the deployment record is not this
+    /// protocol's agUSD in the first place.
     pub fn set_minter(e: Env, admin: Address, minter: Address) -> Result<(), AgUsdCoreError> {
         let stored: Address = e
             .storage()
@@ -179,6 +208,7 @@ impl AgUsdCore {
         }
         e.storage().instance().set(&Cfg::Minter, &minter);
         tok::bump_instance(&e);
+        MinterSet { minter }.publish(&e);
         Ok(())
     }
 

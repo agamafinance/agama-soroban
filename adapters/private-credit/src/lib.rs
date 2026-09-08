@@ -35,19 +35,32 @@
 //! stack and it still had to be redeployed, purely because two addresses could
 //! not be rewritten.
 //!
-//! `set_engine` and `set_vault` are admin gated and refused unless the adapter
-//! is holding nothing: no booked exposure, and no USDC on the balance. Both
-//! conditions matter and for different reasons. Exposure recorded here was
+//! `set_counterparties` moves both at once, admin gated, refused unless the
+//! adapter is holding nothing (no booked exposure and no USDC on the balance),
+//! and refused unless the Engine offered says it governs the Vault offered.
+//! Every one of those conditions is load bearing. Exposure recorded here was
 //! authorized by the current Engine against the caps it enforces, so moving
-//! the Engine mid-position orphans a book that only the old Engine can unwind.
-//! And `deallocate` sends capital to the stored Vault address, so moving it
+//! the Engine mid-position orphans a book only the old Engine can unwind. And
+//! `deallocate` sends capital to the stored Vault address, so moving it
 //! while the adapter holds USDC, whether booked or arrived unannounced from an
 //! originator's repayment, redirects money that belongs to the old Vault.
+//! Being empty today says nothing about tomorrow, which is why the symmetry
+//! check is there as well: it is what stops an adapter being pointed at a Vault
+//! its Engine does not serve, and repaying capital to an address of the admin's
+//! choosing one allocation later.
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, token::TokenClient, Address,
-    Env, Symbol,
+    contract, contractclient, contracterror, contractevent, contractimpl, contracttype,
+    symbol_short, token::TokenClient, Address, Env, Symbol,
 };
+
+/// The Allocation Engine, as seen from the adapter. Only `set_counterparties`
+/// calls it, to check that an Engine it is about to answer to governs the Vault
+/// it is about to repay.
+#[contractclient(name = "EngineClient")]
+pub trait AllocationEngineInterface {
+    fn vault(e: Env) -> Address;
+}
 
 const DAY_LEDGERS: u32 = 17_280;
 const INSTANCE_BUMP: u32 = 30 * DAY_LEDGERS;
@@ -74,6 +87,8 @@ pub enum AdapterError {
     /// The Engine and Vault pointers cannot move while the adapter holds
     /// booked exposure or USDC.
     NotEmpty = 605,
+    /// The proposed Engine does not answer that it governs the proposed Vault.
+    CounterpartyMismatch = 606,
 }
 
 #[derive(Clone)]
@@ -84,6 +99,18 @@ enum Cfg {
     Vault,
     Usdc,
     Exposure,
+}
+
+/// Emitted when the adapter is repointed. Which Engine may move this pool's
+/// capital and which Vault it is repaid to are the only two things the adapter
+/// decides, so a change to either belongs in the event stream.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CounterpartiesSet {
+    #[topic]
+    pub engine: Address,
+    #[topic]
+    pub vault: Address,
 }
 
 #[contract]
@@ -111,24 +138,40 @@ impl PrivateCreditAdapter {
         Ok(())
     }
 
-    /// Point the adapter at a replacement Allocation Engine, while it holds
-    /// nothing.
-    pub fn set_engine(e: Env, admin: Address, engine: Address) -> Result<(), AdapterError> {
+    /// Point the adapter at a replacement Engine and Vault, together.
+    ///
+    /// One call, not two, because the two addresses are only meaningful as a
+    /// pair: the Engine says what may be allocated here and the Vault says
+    /// where `deallocate` sends it back to, and an adapter halfway between two
+    /// generations is a contract that takes capital on one authority and
+    /// returns it to another. So the Engine has to name the Vault, and both
+    /// move in the same transaction or neither does.
+    ///
+    /// The symmetry check is the one that matters. Repointing the Vault while
+    /// the adapter is empty looks harmless and is not: exposure booked
+    /// afterwards would be repaid to whatever address was written here, with
+    /// the Engine's book decrementing all the same, so the cash and the book
+    /// would part company one repayment later and nothing would revert. An
+    /// adapter that only accepts a Vault its own Engine governs cannot be aimed
+    /// somewhere else.
+    pub fn set_counterparties(
+        e: Env,
+        admin: Address,
+        engine: Address,
+        vault: Address,
+    ) -> Result<(), AdapterError> {
         Self::require_admin(&e, &admin)?;
         Self::require_empty(&e)?;
+        // An address that cannot answer is refused with one that answers
+        // wrongly: neither is an Allocation Engine that governs this Vault.
+        match EngineClient::new(&e, &engine).try_vault() {
+            Ok(Ok(governed)) if governed == vault => {}
+            _ => return Err(AdapterError::CounterpartyMismatch),
+        }
         e.storage().instance().set(&Cfg::Engine, &engine);
-        Self::bump(&e);
-        Ok(())
-    }
-
-    /// Point the adapter at a replacement Vault, while it holds nothing.
-    /// `deallocate` returns capital to this address, so it decides where
-    /// repayments land.
-    pub fn set_vault(e: Env, admin: Address, vault: Address) -> Result<(), AdapterError> {
-        Self::require_admin(&e, &admin)?;
-        Self::require_empty(&e)?;
         e.storage().instance().set(&Cfg::Vault, &vault);
         Self::bump(&e);
+        CounterpartiesSet { engine, vault }.publish(&e);
         Ok(())
     }
 

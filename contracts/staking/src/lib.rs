@@ -19,15 +19,26 @@
 //! balance rather than like a wiring mistake.
 //!
 //! `set_agusd` fixes that, gated the way the Vault's own token pointer is:
-//! admin only, and closed the moment anybody has staked. Once shares exist,
-//! the agUSD behind them is in this contract's custody and the pending unstake
-//! queue is denominated in it, so repointing would leave both pointing at a
-//! token the balances were never denominated in. Before the first stake there
-//! is nothing to strand.
+//! admin only, and closed the moment this contract has taken custody of
+//! anything, by a stake or by delivered yield. Once it holds a balance, the
+//! share price is a claim on it and the pending unstake queue is denominated in
+//! it, so repointing would leave both denominated in a token the contract does
+//! not hold. Before that there is nothing to strand.
+//!
+//! # What the admin can still do
+//!
+//! `report_nav` overwrites the reported NAV outright, which is the denominator
+//! every share is redeemed against, and `accrue_yield` moves the admin's own
+//! agUSD in. The re-initialization guard below stops a stranger doing either;
+//! it does not stop the admin, and it is not sold as doing so. As everywhere
+//! else in V1 the mitigation is the multi-signature admin and the timelock on
+//! the roadmap. `report_nav` exists for demo and reconciliation, and
+//! `accrue_yield`, which moves real agUSD and cannot overstate the book, is the
+//! path that should be used.
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, token::TokenClient, Address, Env, String,
-    Vec,
+    contract, contracterror, contractevent, contractimpl, contracttype, token::TokenClient, Address,
+    Env, String, Vec,
 };
 use token as tok;
 
@@ -40,8 +51,20 @@ pub enum StakingError {
     AlreadyInitialized = 800,
     NotInitialized = 801,
     NotAdmin = 802,
-    /// The contract has taken a stake, so its agUSD is fixed.
-    StakesExist = 803,
+    /// The contract has taken custody of agUSD, through a stake or through
+    /// delivered yield, so the token it accepts is fixed.
+    CustodyTaken = 803,
+}
+
+/// Emitted when the staked asset is repointed. It can only happen before the
+/// contract has taken custody of anything, and it is the one change that
+/// decides what every future share is a claim on, so it goes in the event
+/// stream.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AgUsdRepointed {
+    #[topic]
+    pub agusd: Address,
 }
 
 #[derive(Clone)]
@@ -116,20 +139,37 @@ impl Staking {
     /// and simply stopped being reachable: staking the token the protocol now
     /// issues fails on a balance the contract is not even looking at.
     ///
-    /// It closes at the first stake. From then on the contract custodies real
-    /// agUSD, the share price is a claim on that balance and the pending
+    /// It closes the moment the contract has taken custody of anything. From
+    /// then on the share price is a claim on a real balance and the pending
     /// unstake queue is denominated in it, so a repointed contract would owe
-    /// its stakers a token it never took in. The counter records that a stake
-    /// has happened rather than what the balance is now: unwinding to zero is
-    /// not the same thing as never having taken custody, and the pending queue
-    /// can be non-empty while the share supply is nil.
+    /// its stakers a token it never took in.
+    ///
+    /// Three conditions, because there are three ways in. The stake counter
+    /// records that a stake has happened rather than what the balance is now,
+    /// since unwinding to zero is not the same thing as never having taken
+    /// custody and the pending queue can be non-empty while the share supply is
+    /// nil. The NAV and the balance are checked as well because `accrue_yield`
+    /// takes custody without going near the counter: a contract holding a
+    /// thousand agUSD of undistributed yield and no shares would otherwise
+    /// still look untouched, and the first staker after a repoint would be
+    /// issued shares against a NAV denominated in a token the contract no
+    /// longer holds.
     pub fn set_agusd(e: Env, admin: Address, agusd: Address) -> Result<(), StakingError> {
         Self::require_admin(&e, &admin)?;
-        if Self::stakes(e.clone()) > 0 {
-            return Err(StakingError::StakesExist);
+        if Self::stakes(e.clone()) > 0 || Self::nav(e.clone()) != 0 {
+            return Err(StakingError::CustodyTaken);
+        }
+        let current: Address = e
+            .storage()
+            .instance()
+            .get(&Cfg::AgUsd)
+            .ok_or(StakingError::NotInitialized)?;
+        if TokenClient::new(&e, &current).balance(&e.current_contract_address()) != 0 {
+            return Err(StakingError::CustodyTaken);
         }
         e.storage().instance().set(&Cfg::AgUsd, &agusd);
         tok::bump_instance(&e);
+        AgUsdRepointed { agusd }.publish(&e);
         Ok(())
     }
 

@@ -51,7 +51,24 @@
 //! Vault that has already issued agUSD would strand the holders against a
 //! token it no longer mints. For the Engine it is an exposure book funded by
 //! this Vault, because the USDC behind it is out in the pool adapters and only
-//! the Engine that put it there can call it back.
+//! the Engine that put it there can call it back. `set_engine` additionally
+//! refuses any address that does not name this Vault back, so the pointer that
+//! releases the reserves cannot be aimed at an ordinary account.
+//!
+//! # What the admin can do, stated plainly
+//!
+//! None of that makes the admin harmless, and this contract does not pretend
+//! otherwise. V1 allocation is admin directed: the admin sets the Engine's
+//! caps and reserve floor, chooses which pools are registered, and decides how
+//! much goes to each. An admin willing to register a pool it controls can
+//! therefore move the Vault's capital to itself, and no check inside the Vault
+//! prevents that, because the Vault deliberately does not duplicate the
+//! Engine's limits. What protects depositors from the admin is the
+//! multi-signature admin in V1 and governance with a timelock in V2, not a
+//! guard in this file. What the guards here protect is everything else: the
+//! withdrawal queue cannot be reordered, agUSD cannot be minted by anyone but
+//! this Vault, and no counterparty pointer can be moved into a state that
+//! silently misreports the book.
 //!
 //! # Circuit breaker
 //!
@@ -136,6 +153,9 @@ pub enum VaultError {
     /// The Engine the Vault currently points at holds a non-empty exposure
     /// book funded by this Vault, so the pointer cannot move.
     CapitalDeployed = 313,
+    /// The proposed Allocation Engine does not answer that it governs this
+    /// Vault, so it cannot be given the authority to release its reserves.
+    EngineMismatch = 314,
 }
 
 /// A queued withdrawal. The agUSD is burned at request time, so this record is
@@ -257,6 +277,10 @@ impl Vault {
         }
         e.storage().instance().set(&Cfg::AgUsd, &agusd_token);
         Self::bump_instance(&e);
+        AgUsdRepointed {
+            agusd: agusd_token,
+        }
+        .publish(&e);
         Ok(())
     }
 
@@ -285,6 +309,22 @@ impl Vault {
     /// somebody else's capital, and this Vault is free to leave. That is the
     /// case this deployment was actually stuck in, and refusing it would have
     /// made the setter useless in the one situation it exists for.
+    ///
+    /// The replacement has to answer that it governs this Vault.
+    /// `settle_allocation` hands the Vault's USDC to whatever this pointer
+    /// names, so without that check the setter would be a one call instruction
+    /// to release the reserves to an ordinary account: an account has no
+    /// `vault()` to answer with, so it cannot be named here, and neither can an
+    /// Engine that governs somebody else. It also means the setter that exists
+    /// to undo a mis-wiring cannot be used to create one, which is worth having
+    /// on the only pointer both contracts have already been wrong about.
+    ///
+    /// It does not make the admin harmless and it is not sold as doing so. An
+    /// admin can register a pool of its own choosing with the Engine and
+    /// allocate to it; V1 allocation is admin directed by construction, and
+    /// what protects depositors from the admin is the multi-signature admin and
+    /// the timelock on the roadmap, not a check in this function. What this
+    /// check buys is that the short path is no shorter than the long one.
     pub fn set_engine(
         e: Env,
         admin: Address,
@@ -296,17 +336,36 @@ impl Vault {
             .instance()
             .get(&Cfg::Engine)
             .ok_or(VaultError::NotInitialized)?;
-        // An Engine that cannot answer cannot have deployed this Vault's
-        // capital either: only a live contract can have called
-        // `settle_allocation`, and only after being named here.
-        let engine = EngineClient::new(&e, &current);
-        if let Ok(Ok(governed)) = engine.try_vault() {
-            if governed == e.current_contract_address() && engine.total_allocated() > 0 {
+
+        // Leaving an Engine that cannot answer is always safe: whatever it has
+        // done with this Vault's USDC, it can do no more once it is no longer
+        // named here, and there is no book to reconcile because there is no
+        // book to read. Refusing in that case would freeze the pointer exactly
+        // when moving it is the remedy.
+        let outgoing = EngineClient::new(&e, &current);
+        if let (Ok(Ok(governed)), Ok(Ok(deployed))) =
+            (outgoing.try_vault(), outgoing.try_total_allocated())
+        {
+            if governed == e.current_contract_address() && deployed > 0 {
                 return Err(VaultError::CapitalDeployed);
             }
         }
+
+        // An address that cannot answer the question is refused along with one
+        // that answers wrongly, so a plain account and a hostile contract fail
+        // here identically rather than one of them failing later, in a release.
+        let incoming = EngineClient::new(&e, &allocation_engine);
+        match incoming.try_vault() {
+            Ok(Ok(governed)) if governed == e.current_contract_address() => {}
+            _ => return Err(VaultError::EngineMismatch),
+        }
+
         e.storage().instance().set(&Cfg::Engine, &allocation_engine);
         Self::bump_instance(&e);
+        EngineRepointed {
+            engine: allocation_engine,
+        }
+        .publish(&e);
         Ok(())
     }
 
@@ -673,6 +732,25 @@ pub struct WithdrawalClaimed {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PauseToggled {
     pub paused: bool,
+}
+
+/// Emitted when the Vault is repointed at a different agUSD. Repointing the
+/// token is the authority to mint against the Vault's reserves, so the move
+/// belongs in the event stream and not only in state a monitor has to poll.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AgUsdRepointed {
+    #[topic]
+    pub agusd: Address,
+}
+
+/// Emitted when the Vault is repointed at a different Allocation Engine.
+/// Repointing the Engine is the authority to release those reserves.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EngineRepointed {
+    #[topic]
+    pub engine: Address,
 }
 
 mod test;

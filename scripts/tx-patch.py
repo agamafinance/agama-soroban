@@ -63,15 +63,26 @@ def i128_bytes(value: int) -> bytes:
     return struct.pack(">q", value >> 64) + struct.pack(">Q", value & ((1 << 64) - 1))
 
 
+# A prepared invoke carries the amount exactly twice: once in the operation's
+# argument list and once in the root invocation of its authorization entry. Any
+# other count means the rewrite is hitting something it was not aimed at, and a
+# blind replace on a transaction that is about to be signed is not the place to
+# be relaxed about that.
+EXPECTED_OCCURRENCES = 2
+
+
 def patch_amount(env: bytes, old: int, new: int) -> bytes:
     old_b, new_b = i128_bytes(old), i128_bytes(new)
     count = env.count(old_b)
-    if count == 0:
-        raise SystemExit(f"tx-patch: amount {old} does not appear in the envelope")
+    if count != EXPECTED_OCCURRENCES:
+        raise SystemExit(
+            f"tx-patch: expected {EXPECTED_OCCURRENCES} occurrences of {old} "
+            f"in the envelope, found {count}; refusing to rewrite"
+        )
     patched = env.replace(old_b, new_b)
     if len(patched) != len(env):
         raise SystemExit("tx-patch: rewriting the amount changed the envelope length")
-    print(f"tx-patch: rewrote {count} occurrence(s) of {old} to {new}", file=sys.stderr)
+    print(f"tx-patch: rewrote {count} occurrences of {old} to {new}", file=sys.stderr)
     return patched
 
 
