@@ -142,3 +142,60 @@ fn metadata_matches_the_feed_the_pool_is_priced_from() {
     assert_eq!(f.adapter.oracle_feed(), ORACLE_FEED);
     assert_eq!(f.adapter.settlement_days(), 0);
 }
+
+#[test]
+fn the_engine_and_vault_pointers_move_only_while_the_adapter_holds_nothing() {
+    let f = setup();
+    let stranger = Address::generate(&f.e);
+    let new_engine = Address::generate(&f.e);
+    let new_vault = Address::generate(&f.e);
+
+    assert_eq!(
+        f.adapter.try_set_engine(&stranger, &new_engine),
+        Err(Ok(AdapterError::NotAdmin))
+    );
+    assert_eq!(
+        f.adapter.try_set_vault(&stranger, &new_vault),
+        Err(Ok(AdapterError::NotAdmin))
+    );
+
+    // Empty adapter, so both pointers follow their contracts to the
+    // replacements. This is the whole reason the deployed generation had to be
+    // thrown away rather than rewired.
+    f.adapter.set_engine(&f.admin, &new_engine);
+    f.adapter.set_vault(&f.admin, &new_vault);
+    assert_eq!(f.adapter.engine(), new_engine);
+    assert_eq!(f.adapter.vault(), new_vault);
+
+    // Book a position: exposure recorded here was authorized by this Engine
+    // against its caps, and only this Engine can unwind it.
+    f.usdc.faucet(&f.adapter_id, &(500 * USDC));
+    f.adapter.allocate(&(500 * USDC));
+    assert_eq!(
+        f.adapter.try_set_engine(&f.admin, &stranger),
+        Err(Ok(AdapterError::NotEmpty))
+    );
+    assert_eq!(
+        f.adapter.try_set_vault(&f.admin, &stranger),
+        Err(Ok(AdapterError::NotEmpty))
+    );
+
+    // Unwinding the book is not enough on its own. A repayment that has
+    // arrived but not been booked is still money owed to the Vault the
+    // adapter is pointed at, and `deallocate` sends it wherever that pointer
+    // says, so an unbooked balance keeps the door shut too.
+    f.adapter.deallocate(&(500 * USDC));
+    assert_eq!(f.adapter.get_exposure(), 0);
+    f.usdc.faucet(&f.adapter_id, &(10 * USDC));
+    assert_eq!(
+        f.adapter.try_set_vault(&f.admin, &stranger),
+        Err(Ok(AdapterError::NotEmpty))
+    );
+
+    // Both empty, and it opens again.
+    f.adapter.allocate(&(10 * USDC));
+    f.adapter.deallocate(&(10 * USDC));
+    assert_eq!(f.usdc.balance(&f.adapter_id), 0);
+    f.adapter.set_vault(&f.admin, &stranger);
+    assert_eq!(f.adapter.vault(), stranger);
+}

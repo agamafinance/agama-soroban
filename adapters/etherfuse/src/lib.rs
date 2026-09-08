@@ -25,6 +25,22 @@
 //!
 //! Only the Engine can move capital: an admin path here would bypass the
 //! concentration caps and the reserve floor the Engine exists to enforce.
+//!
+//! # Which Engine, and which Vault
+//!
+//! Both addresses used to be written by `initialize` and never again, and the
+//! deployed generation of this adapter is stuck to an Engine and a Vault that
+//! have since been superseded. An adapter is the cheapest contract in the
+//! stack and it still had to be redeployed, purely because two addresses could
+//! not be rewritten.
+//!
+//! `set_engine` and `set_vault` are admin gated and refused unless the adapter
+//! is holding nothing: no booked exposure, and no USDC on the balance. Both
+//! conditions matter and for different reasons. Exposure recorded here was
+//! authorized by the current Engine against the caps it enforces, so moving
+//! the Engine mid-position orphans a book that only the old Engine can unwind.
+//! And `deallocate` sends capital to the stored Vault address, so moving it
+//! while the adapter holds USDC redirects money that belongs to the old Vault.
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token::TokenClient, Address,
@@ -51,6 +67,10 @@ pub enum AdapterError {
     InvalidAmount = 702,
     /// Deallocating more than is currently deployed.
     ExposureUnderflow = 703,
+    NotAdmin = 704,
+    /// The Engine and Vault pointers cannot move while the adapter holds
+    /// booked exposure or USDC.
+    NotEmpty = 705,
 }
 
 #[derive(Clone)]
@@ -84,6 +104,27 @@ impl EtherfuseAdapter {
         e.storage().instance().set(&Cfg::Vault, &vault);
         e.storage().instance().set(&Cfg::Usdc, &usdc);
         e.storage().instance().set(&Cfg::Exposure, &0i128);
+        Self::bump(&e);
+        Ok(())
+    }
+
+    /// Point the adapter at a replacement Allocation Engine, while it holds
+    /// nothing.
+    pub fn set_engine(e: Env, admin: Address, engine: Address) -> Result<(), AdapterError> {
+        Self::require_admin(&e, &admin)?;
+        Self::require_empty(&e)?;
+        e.storage().instance().set(&Cfg::Engine, &engine);
+        Self::bump(&e);
+        Ok(())
+    }
+
+    /// Point the adapter at a replacement Vault, while it holds nothing.
+    /// `deallocate` returns capital to this address, so it decides where
+    /// repayments land.
+    pub fn set_vault(e: Env, admin: Address, vault: Address) -> Result<(), AdapterError> {
+        Self::require_admin(&e, &admin)?;
+        Self::require_empty(&e)?;
+        e.storage().instance().set(&Cfg::Vault, &vault);
         Self::bump(&e);
         Ok(())
     }
@@ -173,6 +214,39 @@ impl EtherfuseAdapter {
     }
 
     // ---- internals ----
+
+    fn require_admin(e: &Env, admin: &Address) -> Result<(), AdapterError> {
+        let stored: Address = e
+            .storage()
+            .instance()
+            .get(&Cfg::Admin)
+            .ok_or(AdapterError::NotInitialized)?;
+        if stored != *admin {
+            return Err(AdapterError::NotAdmin);
+        }
+        admin.require_auth();
+        Ok(())
+    }
+
+    /// Neither pointer moves while the adapter is holding anything. Exposure
+    /// booked here was authorized by the current Engine, and USDC sitting here
+    /// is owed to the current Vault, so an empty adapter is the only state in
+    /// which repointing strands nothing. The balance is checked as well as the
+    /// book because a repayment can arrive before it is recorded.
+    fn require_empty(e: &Env) -> Result<(), AdapterError> {
+        if Self::get_exposure(e.clone()) != 0 {
+            return Err(AdapterError::NotEmpty);
+        }
+        let usdc: Address = e
+            .storage()
+            .instance()
+            .get(&Cfg::Usdc)
+            .ok_or(AdapterError::NotInitialized)?;
+        if TokenClient::new(e, &usdc).balance(&e.current_contract_address()) != 0 {
+            return Err(AdapterError::NotEmpty);
+        }
+        Ok(())
+    }
 
     fn require_engine(e: &Env) -> Result<(), AdapterError> {
         let engine: Address = e
