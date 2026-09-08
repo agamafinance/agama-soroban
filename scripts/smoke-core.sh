@@ -28,7 +28,6 @@ MIN_IDLE=10000000 # 1 USDC at 7 decimals
 
 j() { python3 -c "import json;d=json.load(open('$DEP'));print($1)"; }
 USDC=$(j "d['contracts']['usdc']")
-VAULT=$(j "d['contracts']['vault']")
 ENGINE=$(j "d['contracts']['allocationEngine']")
 ORACLE=$(j "d['contracts']['oracleAdapter']")
 PC=$(j "d['poolAdapters']['private-credit']")
@@ -44,12 +43,18 @@ assert_eq() { if [ "$(num "$2")" = "$3" ]; then ok "$1 ($2)"; else bad "$1: got 
 
 # Read-only: simulated, never submitted, so views cost nothing.
 q()   { stellar contract invoke --id "$1" --source $SRC --network $NET --send=no -- "${@:2}" 2>/dev/null; }
+# The Vault under test is the one the Engine points at, read from the Engine
+# rather than from the deployment file. The Engine stores that address at
+# initialize() and has no setter, so it still guards the superseded Vault while
+# deployments/testnet.json already names its replacement. Asking the Engine
+# keeps this script testing a pair that is actually wired together.
+VAULT=$(q "$ENGINE" vault | tr -d '"')
 # State changing: submitted, and the transaction hash is echoed.
 tx()  { stellar contract invoke --id "$1" --source $SRC --network $NET -- "${@:2}" 2>&1 \
           | grep -oE '[0-9a-f]{64}' | head -1; }
 
 echo "== deployment under test =="
-echo "  vault             $VAULT"
+echo "  vault             $VAULT (the Vault the Engine points at)"
 echo "  allocation-engine $ENGINE"
 echo "  oracle-adapter    $ORACLE"
 echo "  private-credit    $PC"
