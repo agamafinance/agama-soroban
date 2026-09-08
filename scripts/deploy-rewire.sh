@@ -256,26 +256,35 @@ dep = json.load(open(path))
 # Whatever was recorded as superseded before stays recorded. The history of this
 # deployment is part of what is being submitted, so nothing is dropped and every
 # entry carries the reason it was replaced.
-previous = dep.get('superseded', {})
-history = []
-if isinstance(previous, dict):
-    for name, entry in previous.items():
-        history.append({
-            'contract': name,
-            'generation': 1,
-            'address': entry['address'],
-            'supersededBy': entry['supersededBy'],
-            'reason': entry['reason'],
-        })
-else:
-    history = previous
+history = dep.get('superseded', [])
+if isinstance(history, dict):
+    history = [
+        dict(contract=name, generation=1, label=name, **entry)
+        for name, entry in history.items()
+    ]
 
-history += [
+
+def retire(contract, address, label, reason):
+    """Append a superseded entry, numbering it after the ones already there."""
+    generation = 1 + sum(1 for e in history if e['contract'] == contract)
+    history.append({
+        'contract': contract,
+        'generation': generation,
+        'label': label,
+        'address': address,
+        'supersededBy': contract,
+        'reason': reason,
+    })
+
+
+# The reasons below describe this particular retirement rather than a generic
+# one. They are the record a reviewer reads, so they say what actually happened
+# to these six addresses.
+retirements = [
     {
         'contract': 'vault',
-        'generation': 2,
         'address': old_vault,
-        'supersededBy': 'vault',
+        'label': 'Vault Contract, superseded deployment',
         'reason': (
             'Initialized with the generation 1 Allocation Engine as its allocation '
             'counterparty, and settle_allocation authorizes that address and no other. '
@@ -287,9 +296,8 @@ history += [
     },
     {
         'contract': 'agusdCore',
-        'generation': 1,
+        'label': 'agUSD, superseded deployment',
         'address': old_agusd,
-        'supersededBy': 'agusdCore',
         'reason': (
             'Names the generation 2 Vault as its only minter and has no set_minter, so '
             'issuance could not follow the Vault to its replacement. Superseded with a '
@@ -299,9 +307,8 @@ history += [
     },
     {
         'contract': 'allocationEngine',
-        'generation': 1,
+        'label': 'Allocation Engine, superseded deployment',
         'address': old_engine,
-        'supersededBy': 'allocationEngine',
         'reason': (
             'Stores the Vault it governs at initialize() with no setter, and the Vault it '
             'names was superseded, so every cap it enforced was measured against a balance '
@@ -311,9 +318,8 @@ history += [
     },
     {
         'contract': 'poolAdapters.private-credit',
-        'generation': 1,
+        'label': 'Private credit adapter, superseded deployment',
         'address': old_pc,
-        'supersededBy': 'poolAdapters.private-credit',
         'reason': (
             'Stores both the Engine and the Vault at initialize() with no setters, and '
             'both of the addresses it stores were superseded.'
@@ -321,9 +327,8 @@ history += [
     },
     {
         'contract': 'poolAdapters.etherfuse',
-        'generation': 1,
+        'label': 'Etherfuse adapter, superseded deployment',
         'address': old_ef,
-        'supersededBy': 'poolAdapters.etherfuse',
         'reason': (
             'Stores both the Engine and the Vault at initialize() with no setters, and '
             'both of the addresses it stores were superseded.'
@@ -331,9 +336,8 @@ history += [
     },
     {
         'contract': 'staking',
-        'generation': 1,
+        'label': 'sagUSD staking, superseded deployment',
         'address': old_staking,
-        'supersededBy': 'staking',
         'reason': (
             'Accepts the generation 1 agUSD, stores it at initialize() with no setter, and '
             'has no re-initialization guard. A holder of the agUSD the protocol now issues '
@@ -342,6 +346,8 @@ history += [
         ),
     },
 ]
+for entry in retirements:
+    retire(entry['contract'], entry['address'], entry['label'], entry['reason'])
 
 dep['contracts'].update({
     'vault': vault,
