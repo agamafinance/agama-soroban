@@ -438,8 +438,140 @@ fn only_the_admin_can_pause_or_rewire() {
         f.vault.try_set_agusd(&stranger, &stranger),
         Err(Ok(VaultError::NotAdmin))
     );
+    // And repointing the Engine is the authority to release them.
+    assert_eq!(
+        f.vault.try_set_engine(&stranger, &stranger),
+        Err(Ok(VaultError::NotAdmin))
+    );
     assert_eq!(f.vault.agusd(), f.agusd.address);
+    assert_eq!(f.vault.allocation_engine(), f.engine.address);
     assert!(!f.vault.paused());
+}
+
+/// A second Engine wired to `vault`, with its own pool adapter, opened up to
+/// the same limits as the fixture's. Returns the Engine and its pool.
+fn spare_engine(f: &Fix, vault: &Address) -> (AllocationEngineClient<'static>, Address) {
+    let engine_id = f.e.register(AllocationEngine, ());
+    let engine = AllocationEngineClient::new(&f.e, &engine_id);
+    engine.initialize(&f.admin, vault);
+    let pool = f.e.register(PrivateCreditAdapter, ());
+    PrivateCreditAdapterClient::new(&f.e, &pool).initialize(
+        &f.admin,
+        &engine_id,
+        vault,
+        &f.usdc.address,
+    );
+    engine.register_pool(
+        &f.admin,
+        &pool,
+        &symbol_short!("QIRO"),
+        &symbol_short!("US"),
+        &10_000u32,
+    );
+    engine.set_caps(&f.admin, &10_000, &10_000, &10_000);
+    engine.set_reserve_floor(&f.admin, &0u32);
+    (engine, pool)
+}
+
+#[test]
+fn the_engine_pointer_moves_while_no_capital_of_this_vault_is_deployed() {
+    let f = setup();
+    depositor(&f, 1_000 * USDC);
+    assert_eq!(f.vault.allocation_engine(), f.engine.address);
+
+    // A replacement Engine, wired to this Vault and configured the same way.
+    // This is the situation the setter exists for: the Engine written at
+    // initialization has been superseded and the Vault has to follow it.
+    let (replacement, spare_pool) = spare_engine(&f, &f.vault.address);
+    f.vault.set_engine(&f.admin, &replacement.address);
+    assert_eq!(f.vault.allocation_engine(), replacement.address);
+
+    // The replacement can now do what it could not do a transaction ago.
+    replacement.allocate(&f.admin, &spare_pool, &(100 * USDC));
+    assert_eq!(f.vault.idle_reserves(), 900 * USDC);
+    // Total assets are read through whichever Engine the Vault points at, so
+    // the book follows the pointer.
+    assert_eq!(f.vault.get_total_assets(), 1_000 * USDC);
+}
+
+#[test]
+#[should_panic]
+fn an_engine_the_vault_does_not_point_at_cannot_release_its_capital() {
+    // The whole reason `set_engine` exists. This Engine is wired to the Vault,
+    // registers the pool, and is opened up to the same limits: correct in
+    // every respect except that the Vault has not been told about it. The
+    // release is refused, because the Vault authorizes `settle_allocation`
+    // from the address it stores and from nothing else.
+    let f = setup();
+    depositor(&f, 1_000 * USDC);
+    let (stranger_engine, spare_pool) = spare_engine(&f, &f.vault.address);
+    stranger_engine.allocate(&f.admin, &spare_pool, &(100 * USDC));
+}
+
+#[test]
+fn the_engine_pointer_is_frozen_while_this_vaults_capital_is_out() {
+    let f = setup();
+    depositor(&f, 1_000 * USDC);
+    f.engine.allocate(&f.admin, &f.pool, &(700 * USDC));
+
+    // 700 USDC are sitting in the pool adapter and only the Engine that put
+    // them there can call them back. Repointing now would drop them out of
+    // get_total_assets while leaving them entirely undrawable.
+    let stray = f.e.register(AllocationEngine, ());
+    AllocationEngineClient::new(&f.e, &stray).initialize(&f.admin, &f.vault.address);
+    assert_eq!(
+        f.vault.try_set_engine(&f.admin, &stray),
+        Err(Ok(VaultError::CapitalDeployed))
+    );
+    assert_eq!(f.vault.allocation_engine(), f.engine.address);
+
+    // Unwinding the book reopens the door: with nothing deployed there is
+    // nothing left for the move to invalidate.
+    f.engine.deallocate(&f.pool, &(700 * USDC));
+    assert_eq!(f.engine.total_allocated(), 0);
+    f.vault.set_engine(&f.admin, &stray);
+    assert_eq!(f.vault.allocation_engine(), stray);
+}
+
+#[test]
+fn an_engine_that_governs_another_vault_does_not_freeze_this_one() {
+    // The live failure this setter was written for. The Vault was initialized
+    // against an Engine that had already been wired to an earlier Vault, so
+    // the Engine's exposure book is real and non-empty, and none of it is this
+    // Vault's money. Reading the book alone would have frozen the pointer in
+    // precisely the case it has to move.
+    let f = setup();
+    let other_vault_id = f.e.register(Vault, ());
+    let other_vault = VaultClient::new(&f.e, &other_vault_id);
+
+    let (foreign, foreign_pool) = spare_engine(&f, &other_vault_id);
+    let foreign_id = foreign.address.clone();
+
+    let other_agusd_id = f.e.register(MockUsdc, ());
+    MockUsdcClient::new(&f.e, &other_agusd_id).initialize(
+        &other_vault_id,
+        &7u32,
+        &String::from_str(&f.e, "Agama USD"),
+        &String::from_str(&f.e, "agUSD"),
+    );
+    other_vault.initialize(
+        &f.admin,
+        &f.usdc.address,
+        &other_agusd_id,
+        &foreign_id,
+    );
+    let bob = Address::generate(&f.e);
+    f.usdc.faucet(&bob, &(500 * USDC));
+    other_vault.deposit(&bob, &(500 * USDC));
+    foreign.allocate(&f.admin, &foreign_pool, &(300 * USDC));
+    assert_eq!(foreign.total_allocated(), 300 * USDC);
+
+    // Point our Vault at that Engine, then walk back out. The book is not
+    // ours, so there is nothing here to strand.
+    f.vault.set_engine(&f.admin, &foreign_id);
+    assert_eq!(f.vault.allocation_engine(), foreign_id);
+    f.vault.set_engine(&f.admin, &f.engine.address);
+    assert_eq!(f.vault.allocation_engine(), f.engine.address);
 }
 
 #[test]
