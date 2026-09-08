@@ -10,9 +10,10 @@
     "usdc": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
     "agusd": "CCXEP6QAAYEMFMV2JGBULD2NS6AQB6KQSBHLPPBJSDBCN6HOYIHNQ6H3",
     "staking": "CABPYD4U5FAYLBEBMY2MVGVF7BILXTNPWGLOPIXCMUK3QQGIAE2XTALX",
-    "vault": "CAVKHGBQUEPVTWHFJGU42ZVZA6VZSM6RZXFHCUXTT72JFRWNPF5OFJW3",
+    "vault": "CDQP7L5RZ6AM4J2PZETMG7TC4M3CDTVQ6QAMYPLG43Z6GAOCB4TR3KS4",
     "allocationEngine": "CANDJEHBZUPGBWQMWM567Z3NQR4AHJKJSMWB4LTXPT6SC7GSRKSL2SGS",
-    "oracleAdapter": "CDV5BC4XCNT5ASOZNFXBQXRGKVXGKHLRVK5EDX6XP5J6EBIZWSXCSV7G"
+    "oracleAdapter": "CDV5BC4XCNT5ASOZNFXBQXRGKVXGKHLRVK5EDX6XP5J6EBIZWSXCSV7G",
+    "agusdCore": "CCFICOHAC4V6M5CDI62O5SWCZR43XG6JXNYFBZ4HAVQJBUCR4V6H54WV"
   },
   "creditVaults": {
     "payment-financing": "CAUFXVGKB2OKEDDO6SDWH4ZSWXJ37T2WYKEVUTBOCWZAFEUTGCFYQEF4",
@@ -60,5 +61,17 @@
       "deviationBps": 0
     }
   },
-  "vaultOracleFeed": "PC_NAV"
+  "vaultOracleFeed": "PC_NAV",
+  "superseded": {
+    "agusd": {
+      "address": "CCXEP6QAAYEMFMV2JGBULD2NS6AQB6KQSBHLPPBJSDBCN6HOYIHNQ6H3",
+      "supersededBy": "agusdCore",
+      "reason": "Generation 1 agUSD is a self contained vault, not a plain token: it mints only inside its own deposit() and exposes no mint entry point, so the Vault cannot mint against a deposit. It stays deployed, it keeps its holders, and it is still the token the deployed sagUSD staking contract accepts."
+    },
+    "vault": {
+      "address": "CAVKHGBQUEPVTWHFJGU42ZVZA6VZSM6RZXFHCUXTT72JFRWNPF5OFJW3",
+      "supersededBy": "vault",
+      "reason": "Initialized against generation 1 agUSD with no setter for the token address and no upgrade entry point, so its deposit() could never mint. The Allocation Engine still points at it, because the Engine stores the Vault address at initialize() and cannot be repointed either."
+    }
+  }
 }
