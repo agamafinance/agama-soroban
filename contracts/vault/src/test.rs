@@ -432,5 +432,58 @@ fn only_the_admin_can_pause_or_rewire() {
             .try_set_oracle(&stranger, &stranger, &symbol_short!("FAKE")),
         Err(Ok(VaultError::NotAdmin))
     );
+    // Repointing agUSD is the authority to mint against the Vault's reserves,
+    // so it is gated exactly as hard as the pause switch.
+    assert_eq!(
+        f.vault.try_set_agusd(&stranger, &stranger),
+        Err(Ok(VaultError::NotAdmin))
+    );
+    assert_eq!(f.vault.agusd(), f.agusd.address);
     assert!(!f.vault.paused());
+}
+
+#[test]
+fn the_agusd_pointer_moves_before_the_first_deposit_and_never_after() {
+    let f = setup();
+    assert_eq!(f.vault.deposits(), 0);
+
+    // A second token, also minted by the Vault, standing in for the case this
+    // setter exists for: the address written at initialization turned out to
+    // be the wrong contract.
+    let replacement_id = f.e.register(MockUsdc, ());
+    let replacement = MockUsdcClient::new(&f.e, &replacement_id);
+    replacement.initialize(
+        &f.vault.address,
+        &7u32,
+        &String::from_str(&f.e, "Agama USD"),
+        &String::from_str(&f.e, "agUSD"),
+    );
+    f.vault.set_agusd(&f.admin, &replacement_id);
+    assert_eq!(f.vault.agusd(), replacement_id);
+
+    // The Vault mints through the new address from here on.
+    let alice = Address::generate(&f.e);
+    f.usdc.faucet(&alice, &(100 * USDC));
+    f.vault.deposit(&alice, &(100 * USDC));
+    assert_eq!(replacement.balance(&alice), 100 * USDC);
+    assert_eq!(f.agusd.balance(&alice), 0);
+    assert_eq!(f.vault.deposits(), 1);
+
+    // And the door closes: 100 agUSD are outstanding, and repointing now would
+    // leave them backed by a token this Vault no longer mints or burns.
+    assert_eq!(
+        f.vault.try_set_agusd(&f.admin, &f.agusd.address),
+        Err(Ok(VaultError::DepositsExist))
+    );
+    assert_eq!(f.vault.agusd(), replacement_id);
+
+    // Withdrawing everything does not reopen it: the counter records that the
+    // Vault has issued, not what it is holding right now.
+    let claim_id = f.vault.request_withdrawal(&alice, &(100 * USDC));
+    f.vault.claim_withdrawal(&alice, &claim_id);
+    assert_eq!(f.vault.idle_reserves(), 0);
+    assert_eq!(
+        f.vault.try_set_agusd(&f.admin, &f.agusd.address),
+        Err(Ok(VaultError::DepositsExist))
+    );
 }

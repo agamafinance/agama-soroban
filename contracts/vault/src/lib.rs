@@ -31,6 +31,16 @@
 //! advance. Skipping them would be precisely the priority jumping the queue
 //! exists to prevent, so V1 accepts the stall.
 //!
+//! # The agUSD pointer moves only before the first deposit
+//!
+//! `initialize` writes the token address and every deposit mints through it,
+//! so getting it wrong is expensive: the Vault is not upgradeable, and the
+//! first deployment had to be replaced because the token it pointed at turned
+//! out to have no `mint` for the Vault to call. `set_agusd` exists so that
+//! mistake costs a transaction rather than a redeployment, and it stops
+//! working at the first deposit, because repointing a Vault that has already
+//! issued agUSD would strand the holders against a token it no longer mints.
+//!
 //! # Circuit breaker
 //!
 //! `set_paused` blocks deposits, withdrawal requests, claims and new
@@ -105,6 +115,8 @@ pub enum VaultError {
     InsufficientLiquidity = 310,
     /// `set_oracle` has not been called yet.
     OracleNotConfigured = 311,
+    /// The Vault has already taken a deposit, so its agUSD is fixed.
+    DepositsExist = 312,
 }
 
 /// A queued withdrawal. The agUSD is burned at request time, so this record is
@@ -142,6 +154,7 @@ enum Cfg {
     Paused,
     QueueHead,
     QueueTail,
+    Deposits,
 }
 
 /// Persistent storage: the claim records, keyed by claim id.
@@ -203,6 +216,31 @@ impl Vault {
         Ok(())
     }
 
+    /// Point the Vault at a different agUSD contract, before it has taken any
+    /// money.
+    ///
+    /// The Vault deployed before this one did not have this, which made the
+    /// token pointer a one way door: `initialize` writes the address, every
+    /// deposit mints through it, and the contract is not upgradeable, so a
+    /// token that turns out to expose no `mint` costs a whole redeployment.
+    /// This setter is that lesson, and it is admin gated for the same reason
+    /// re-initialization is blocked: repointing agUSD is the authority to mint
+    /// against the Vault's reserves.
+    ///
+    /// It stops working at the first deposit, and that limit is the point. A
+    /// Vault repointed while agUSD is outstanding would leave holders backed
+    /// by a token it no longer mints or burns, and they would find out at the
+    /// withdrawal queue. Before the first deposit there is nothing to strand.
+    pub fn set_agusd(e: Env, admin: Address, agusd_token: Address) -> Result<(), VaultError> {
+        Self::require_admin(&e, &admin)?;
+        if Self::deposits(e.clone()) > 0 {
+            return Err(VaultError::DepositsExist);
+        }
+        e.storage().instance().set(&Cfg::AgUsd, &agusd_token);
+        Self::bump_instance(&e);
+        Ok(())
+    }
+
     /// Circuit breaker. Blocks deposits, withdrawal requests, claims and new
     /// allocations; leaves staking and NAV reporting untouched.
     pub fn set_paused(e: Env, admin: Address, paused: bool) -> Result<(), VaultError> {
@@ -235,6 +273,9 @@ impl Vault {
 
         TokenClient::new(&e, &usdc).transfer(&from, &e.current_contract_address(), &amount);
         AgUsdClient::new(&e, &agusd).mint(&from, &amount);
+        e.storage()
+            .instance()
+            .set(&Cfg::Deposits, &(Self::deposits(e.clone()) + 1));
         Self::bump_instance(&e);
 
         Deposit {
@@ -442,6 +483,14 @@ impl Vault {
     /// Claims requested and not yet paid.
     pub fn queue_length(e: Env) -> u64 {
         Self::queue_tail(e.clone()) - Self::queue_head(e)
+    }
+
+    /// Deposits taken since deployment. Counted rather than derived from the
+    /// balance sheet because it is what `set_agusd` keys off: the question is
+    /// whether this Vault has ever issued agUSD, and reserves that have been
+    /// withdrawn back to zero would answer it wrongly.
+    pub fn deposits(e: Env) -> u64 {
+        e.storage().instance().get(&Cfg::Deposits).unwrap_or(0)
     }
 
     pub fn paused(e: Env) -> bool {

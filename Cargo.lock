@@ -13,6 +13,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "agusd-core"
+version = "0.0.0"
+dependencies = [
+ "mock_usdc",
+ "soroban-sdk",
+ "token",
+ "vault",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"

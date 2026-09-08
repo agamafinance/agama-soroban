@@ -1,0 +1,271 @@
+#![cfg(test)]
+use super::*;
+use mock_usdc::{MockUsdc, MockUsdcClient};
+use soroban_sdk::testutils::{Address as _, MockAuth, MockAuthInvoke};
+use soroban_sdk::IntoVal;
+use vault::{Vault, VaultClient};
+
+const UNIT: i128 = 10_000_000; // 1 agUSD at 7 decimals
+
+struct Fix {
+    e: Env,
+    token: AgUsdCoreClient<'static>,
+    admin: Address,
+    minter: Address,
+}
+
+/// The token on its own, with a plain account standing in for the Vault so the
+/// minter's authorization can be granted and withheld one call at a time.
+fn setup() -> Fix {
+    let e = Env::default();
+    e.mock_all_auths();
+    let admin = Address::generate(&e);
+    let minter = Address::generate(&e);
+
+    let id = e.register(AgUsdCore, ());
+    let token = AgUsdCoreClient::new(&e, &id);
+    token.initialize(
+        &admin,
+        &minter,
+        &7u32,
+        &String::from_str(&e, "Agama USD"),
+        &String::from_str(&e, "agUSD"),
+    );
+
+    Fix {
+        e,
+        token,
+        admin,
+        minter,
+    }
+}
+
+#[test]
+fn initialize_records_the_minter_and_the_metadata() {
+    let f = setup();
+    assert_eq!(f.token.minter(), f.minter);
+    assert_eq!(f.token.admin(), f.admin);
+    assert_eq!(f.token.decimals(), 7);
+    assert_eq!(f.token.name(), String::from_str(&f.e, "Agama USD"));
+    assert_eq!(f.token.symbol(), String::from_str(&f.e, "agUSD"));
+    assert_eq!(f.token.total_supply(), 0);
+}
+
+#[test]
+fn cannot_be_reinitialized() {
+    let f = setup();
+    let attacker = Address::generate(&f.e);
+    // The attack this blocks is naming yourself minter on a token that already
+    // has a book, and printing against it.
+    assert_eq!(
+        f.token.try_initialize(
+            &attacker,
+            &attacker,
+            &7u32,
+            &String::from_str(&f.e, "Agama USD"),
+            &String::from_str(&f.e, "agUSD"),
+        ),
+        Err(Ok(AgUsdCoreError::AlreadyInitialized))
+    );
+    assert_eq!(f.token.minter(), f.minter);
+}
+
+#[test]
+fn the_minter_creates_supply() {
+    let f = setup();
+    let alice = Address::generate(&f.e);
+
+    f.token.mint(&alice, &(400 * UNIT));
+    assert_eq!(f.token.balance(&alice), 400 * UNIT);
+    assert_eq!(f.token.total_supply(), 400 * UNIT);
+
+    f.token.mint(&alice, &(100 * UNIT));
+    assert_eq!(f.token.total_supply(), 500 * UNIT);
+}
+
+#[test]
+fn nobody_but_the_minter_creates_supply() {
+    let f = setup();
+    let attacker = Address::generate(&f.e);
+
+    // Drop the blanket auth mock: with nothing signed, minting is refused.
+    f.e.mock_auths(&[]);
+    assert!(f.token.try_mint(&attacker, &(100 * UNIT)).is_err());
+
+    // And the admin's own signature does not help, because there is no admin
+    // mint: the check is against the stored minter and nothing else. This is
+    // the security claim of the contract, so it is asserted rather than
+    // assumed.
+    let args = (attacker.clone(), 100 * UNIT).into_val(&f.e);
+    f.e.mock_auths(&[MockAuth {
+        address: &f.admin,
+        invoke: &MockAuthInvoke {
+            contract: &f.token.address,
+            fn_name: "mint",
+            args,
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(f.token.try_mint(&attacker, &(100 * UNIT)).is_err());
+    assert_eq!(f.token.total_supply(), 0);
+    assert_eq!(f.token.balance(&attacker), 0);
+}
+
+#[test]
+fn minting_zero_or_a_negative_amount_is_rejected() {
+    let f = setup();
+    let alice = Address::generate(&f.e);
+
+    assert_eq!(
+        f.token.try_mint(&alice, &0),
+        Err(Ok(AgUsdCoreError::InvalidAmount))
+    );
+    assert_eq!(
+        f.token.try_mint(&alice, &(-100 * UNIT)),
+        Err(Ok(AgUsdCoreError::InvalidAmount))
+    );
+    assert_eq!(f.token.total_supply(), 0);
+}
+
+#[test]
+fn minting_before_the_minter_is_wired_says_so() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let id = e.register(AgUsdCore, ());
+    let token = AgUsdCoreClient::new(&e, &id);
+    let alice = Address::generate(&e);
+
+    // No default minter, no silent success: an unwired token refuses.
+    assert_eq!(
+        token.try_mint(&alice, &(100 * UNIT)),
+        Err(Ok(AgUsdCoreError::NotInitialized))
+    );
+}
+
+#[test]
+fn the_sep41_surface_moves_balances_and_supply() {
+    let f = setup();
+    let alice = Address::generate(&f.e);
+    let bob = Address::generate(&f.e);
+    f.token.mint(&alice, &(400 * UNIT));
+
+    f.token.transfer(&alice, &bob, &(100 * UNIT));
+    assert_eq!(f.token.balance(&alice), 300 * UNIT);
+    assert_eq!(f.token.balance(&bob), 100 * UNIT);
+    // Moving tokens around never changes how many exist.
+    assert_eq!(f.token.total_supply(), 400 * UNIT);
+
+    f.token
+        .approve(&alice, &bob, &(50 * UNIT), &(f.e.ledger().sequence() + 100));
+    assert_eq!(f.token.allowance(&alice, &bob), 50 * UNIT);
+    f.token.transfer_from(&bob, &alice, &bob, &(50 * UNIT));
+    assert_eq!(f.token.balance(&bob), 150 * UNIT);
+    assert_eq!(f.token.allowance(&alice, &bob), 0);
+}
+
+#[test]
+fn holders_can_burn_and_supply_falls() {
+    let f = setup();
+    let alice = Address::generate(&f.e);
+    let bob = Address::generate(&f.e);
+    f.token.mint(&alice, &(400 * UNIT));
+
+    f.token.burn(&alice, &(100 * UNIT));
+    assert_eq!(f.token.balance(&alice), 300 * UNIT);
+    assert_eq!(f.token.total_supply(), 300 * UNIT);
+
+    f.token
+        .approve(&alice, &bob, &(50 * UNIT), &(f.e.ledger().sequence() + 100));
+    f.token.burn_from(&bob, &alice, &(50 * UNIT));
+    assert_eq!(f.token.balance(&alice), 250 * UNIT);
+    assert_eq!(f.token.total_supply(), 250 * UNIT);
+}
+
+/// The reason this contract exists: the Vault's `deposit` and
+/// `request_withdrawal` call `mint` and `burn` on it, and neither one works
+/// against the generation 1 agUSD.
+#[test]
+fn the_vault_mints_on_deposit_and_burns_on_a_withdrawal_request() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let admin = Address::generate(&e);
+    let engine = Address::generate(&e);
+    let alice = Address::generate(&e);
+
+    let usdc_id = e.register(MockUsdc, ());
+    let usdc = MockUsdcClient::new(&e, &usdc_id);
+    usdc.initialize(
+        &admin,
+        &7u32,
+        &String::from_str(&e, "USD Coin"),
+        &String::from_str(&e, "USDC"),
+    );
+
+    let vault_id = e.register(Vault, ());
+    let vault = VaultClient::new(&e, &vault_id);
+
+    // The Vault is the minter, so the token is deployed after it and wired to
+    // its address. There is no setter to fix this up later, on purpose.
+    let agusd_id = e.register(AgUsdCore, ());
+    let agusd = AgUsdCoreClient::new(&e, &agusd_id);
+    agusd.initialize(
+        &admin,
+        &vault_id,
+        &7u32,
+        &String::from_str(&e, "Agama USD"),
+        &String::from_str(&e, "agUSD"),
+    );
+    vault.initialize(&admin, &usdc_id, &agusd_id, &engine);
+
+    usdc.faucet(&alice, &(1_000 * UNIT));
+    assert_eq!(vault.deposit(&alice, &(400 * UNIT)), 400 * UNIT);
+    assert_eq!(agusd.balance(&alice), 400 * UNIT);
+    assert_eq!(agusd.total_supply(), 400 * UNIT);
+    assert_eq!(usdc.balance(&alice), 600 * UNIT);
+    assert_eq!(vault.idle_reserves(), 400 * UNIT);
+
+    // The agUSD goes at request time, not at claim time.
+    let claim_id = vault.request_withdrawal(&alice, &(100 * UNIT));
+    assert_eq!(agusd.balance(&alice), 300 * UNIT);
+    assert_eq!(agusd.total_supply(), 300 * UNIT);
+
+    vault.claim_withdrawal(&alice, &claim_id);
+    assert_eq!(usdc.balance(&alice), 700 * UNIT);
+    // One agUSD in circulation, one USDC still in the Vault.
+    assert_eq!(agusd.total_supply(), vault.idle_reserves());
+}
+
+/// The Vault is the minter, so nobody else can mint even when the Vault is the
+/// one holding the mandate: the auth check is on the stored address, not on
+/// whoever is calling.
+#[test]
+fn a_stranger_cannot_mint_the_vaults_token() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let admin = Address::generate(&e);
+    let vault_id = e.register(Vault, ());
+    let mallory = Address::generate(&e);
+
+    let agusd_id = e.register(AgUsdCore, ());
+    let agusd = AgUsdCoreClient::new(&e, &agusd_id);
+    agusd.initialize(
+        &admin,
+        &vault_id,
+        &7u32,
+        &String::from_str(&e, "Agama USD"),
+        &String::from_str(&e, "agUSD"),
+    );
+
+    let args = (mallory.clone(), 100 * UNIT).into_val(&e);
+    e.mock_auths(&[MockAuth {
+        address: &mallory,
+        invoke: &MockAuthInvoke {
+            contract: &agusd_id,
+            fn_name: "mint",
+            args,
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(agusd.try_mint(&mallory, &(100 * UNIT)).is_err());
+    assert_eq!(agusd.total_supply(), 0);
+}

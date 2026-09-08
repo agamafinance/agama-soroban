@@ -8,6 +8,10 @@
 # deployments/testnet.json and reused as they are. Only the five new contract
 # addresses are written back into that file.
 #
+# A Vault deployed by this script mints agusd-core, and agusd-core mints only
+# for the Vault named at its initialization, so a Vault redeployed here needs a
+# new agUSD too. See scripts/deploy-agusd-core.sh, which deploys the pair.
+#
 # Usage: bash scripts/deploy-core.sh
 #
 # Requires the `agama-poc` identity, which is the admin already recorded in
@@ -43,10 +47,12 @@ EF_ORIGINATOR=ETHERFUS;  EF_JURISDICTION=MX
 
 ADMIN=$(stellar keys address "$SRC")
 USDC=$(python3 -c "import json;print(json.load(open('$DEP'))['contracts']['usdc'])")
-AGUSD=$(python3 -c "import json;print(json.load(open('$DEP'))['contracts']['agusd'])")
+# agusdCore, not agusd: the generation 1 token has no mint entry point, so a
+# Vault wired to it can never mint against a deposit.
+AGUSD=$(python3 -c "import json;print(json.load(open('$DEP'))['contracts']['agusdCore'])")
 echo "admin=$ADMIN"
 echo "usdc (live, reused)  = $USDC"
-echo "agusd (live, reused) = $AGUSD"
+echo "agusd-core (live, reused) = $AGUSD"
 
 deploy() { stellar contract deploy --wasm "$1" --source "$SRC" --network "$NET" 2>/dev/null; }
 inv() { stellar contract invoke --id "$1" --source "$SRC" --network "$NET" -- "${@:2}"; }

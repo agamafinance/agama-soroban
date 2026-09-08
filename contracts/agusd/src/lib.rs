@@ -1,10 +1,10 @@
 #![no_std]
-//! agUSD — Agama's synthetic dollar on Stellar (SEP-41).
+//! agUSD, Agama's synthetic dollar on Stellar (SEP-41).
 //!
 //! Minted 1:1 by depositing the base USDC. The contract keeps a liquidity
 //! buffer (`buffer_bps` of supply) for instant redemptions; ON EVERY DEPOSIT,
 //! the excess above the buffer is auto-allocated into the curated credit
-//! vaults according to the Allocation Engine's target weights — in the same
+//! vaults according to the Allocation Engine's target weights, in the same
 //! transaction. The contract itself holds the vault shares, so the backing is
 //! fully traceable on-chain: backing = reserve buffer + deployed positions.
 //!
@@ -56,7 +56,7 @@ enum Cfg {
     Admin,
     Usdc,
     Treasury,
-    Targets,   // Vec<Target> — allocation weights set by the Allocation Engine
+    Targets,   // Vec<Target>, allocation weights set by the Allocation Engine
     BufferBps, // liquidity buffer kept for instant redemptions
 }
 
@@ -97,7 +97,7 @@ impl AgUsd {
         e.storage().instance().set(&Cfg::BufferBps, &buffer_bps);
     }
 
-    /// Deposit USDC and mint agUSD 1:1. Then — the Allocation Engine hook —
+    /// Deposit USDC and mint agUSD 1:1. Then, the Allocation Engine hook,
     /// any reserve above the liquidity buffer is auto-deployed into the
     /// credit vaults at the target weights, in this same transaction.
     pub fn deposit(e: Env, from: Address, amount: i128) {
@@ -112,7 +112,7 @@ impl AgUsd {
     }
 
     /// Redeem agUSD for USDC 1:1 from the liquidity buffer. If the request
-    /// exceeds the buffer, fails with InsufficientBuffer — the remainder of
+    /// exceeds the buffer, fails with InsufficientBuffer: the remainder of
     /// the backing is working in strategies.
     pub fn redeem(e: Env, from: Address, amount: i128) {
         from.require_auth();
@@ -125,7 +125,7 @@ impl AgUsd {
         tok::burn_unchecked(&e, &from, amount);
         let usdc: Address = e.storage().instance().get(&Cfg::Usdc).unwrap();
         TokenClient::new(&e, &usdc).transfer(&e.current_contract_address(), &from, &amount);
-        // Movement out — start pulling capital back so the buffer returns to target.
+        // Movement out: start pulling capital back so the buffer returns to target.
         Self::rebalance(e);
     }
 
