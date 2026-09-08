@@ -24,19 +24,45 @@
 //! staking contract accepts, since that contract stores its address at
 //! initialization. This is the token the Vault mints.
 //!
-//! # The minter is fixed at initialization
+//! # The minter freezes at the first mint
 //!
-//! `minter` is written once, by `initialize`, and there is no setter, no
-//! admin mint and no pause that would let anyone else create supply. An admin
-//! able to rotate the minter could point it at itself and print, which is an
-//! admin mint with one extra step, and it would make the claim above untrue.
-//! Moving issuance to a different Vault therefore costs a new token
-//! deployment. That is the price of being able to say, and have an auditor
-//! check, that only the Vault can create agUSD.
+//! `minter` is written by `initialize` and can be moved by `set_minter` until
+//! the first agUSD is created. After that it is fixed for good: there is no
+//! setter that still works, no admin mint and no pause that would let anyone
+//! else create supply.
 //!
-//! The `admin` recorded by `initialize` is deliberately powerless over supply.
-//! It is stored so the deployment is attributable on-chain and so future
-//! non-supply governance has an anchor; every function that can move supply
+//! The earlier version of this contract had no setter at all, on the argument
+//! that an admin able to rotate the minter could point it at itself and print,
+//! which is an admin mint with one extra step. The argument is right about a
+//! token with a book. It is wrong about a token with no supply, where there is
+//! nothing to print against and nobody to dilute, and paying for it turned out
+//! to be expensive: the Vault named here was itself wired to an Allocation
+//! Engine it could not use, and because issuance could not follow the Vault to
+//! its replacement, a one line fix in one contract became two new contracts
+//! and a token migration.
+//!
+//! So the guard is the mint counter rather than the calendar. Before the first
+//! mint the minter is configuration. From the first mint onwards it is a
+//! promise to the holders, and an auditor can check that the promise holds by
+//! reading one number: any token with supply has a minter that has not moved
+//! since the supply started existing.
+//!
+//! Be precise about what that does and does not rule out. It does not stop an
+//! admin naming itself minter and printing: the two conditions are sequential,
+//! so at a zero supply an admin can call `set_minter(admin)` and then `mint`,
+//! and would then be frozen in as minter for the life of the contract. What it
+//! rules out is doing that to a token that anybody is holding, and doing it
+//! quietly. Every rotation emits `MinterSet`, so a pre-mint rotation is a
+//! ledger event and not a silent state change, and which token is the
+//! protocol's agUSD is decided by the Vault that names it and by the deployment
+//! record, both of which are public. A token whose minter is not the Vault is
+//! simply not this protocol's agUSD, and an admin who wanted one could always
+//! have deployed it.
+//!
+//! The `admin` recorded by `initialize` is deliberately powerless over supply
+//! once supply exists. It is stored so the deployment is attributable on-chain,
+//! so future non-supply governance has an anchor, and so the minter can be
+//! corrected before the token is used; every function that creates supply
 //! checks the minter and never the admin.
 //!
 //! # Burning stays on the SEP-41 semantics
@@ -51,7 +77,7 @@
 //! holder.
 
 use soroban_sdk::contracterror;
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String};
+use soroban_sdk::{contract, contractevent, contractimpl, contracttype, Address, Env, String};
 use token as tok;
 
 #[contracterror]
@@ -64,14 +90,31 @@ pub enum AgUsdCoreError {
     NotMinter = 202,
     /// Zero or negative mint amount.
     InvalidAmount = 203,
+    NotAdmin = 204,
+    /// The token has already minted, so the minter is fixed for good.
+    MinterFrozen = 205,
 }
 
-/// Instance storage. Both entries are written once and never rewritten.
+/// Instance storage. `Admin` is written once. `Minter` can be corrected until
+/// `Mints` leaves zero, and never after.
 #[derive(Clone)]
 #[contracttype]
 enum Cfg {
     Admin,
     Minter,
+    Mints,
+}
+
+/// Emitted when the minting authority is corrected, which can only happen
+/// before the token has minted anything. It is the single most consequential
+/// thing that can be said about this contract, so it is never a silent state
+/// change: a rotation is in the event stream whether anybody was watching the
+/// storage or not.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MinterSet {
+    #[topic]
+    pub minter: Address,
 }
 
 #[contract]
@@ -124,17 +167,67 @@ impl AgUsdCore {
             return Err(AgUsdCoreError::InvalidAmount);
         }
         tok::mint(&e, &to, amount);
+        e.storage()
+            .instance()
+            .set(&Cfg::Mints, &(Self::mints(e.clone()) + 1));
+        Ok(())
+    }
+
+    /// Correct the minting authority, before the token has minted anything.
+    ///
+    /// This is a deployment repair tool, not governance. The Vault a token is
+    /// bound to is chosen before either contract has done anything, and if the
+    /// Vault turns out to be unusable, as the one this token was first pointed
+    /// at was, the alternative to this call is deploying a second token and
+    /// migrating whatever the first one issued. That is a large price for a
+    /// mistake that costs nothing to fix while the supply is zero.
+    ///
+    /// It stops working at the first mint, permanently, and that is what keeps
+    /// the security property intact: agUSD in circulation was created by the
+    /// minter recorded here, and that minter has not changed since the first
+    /// unit existed.
+    ///
+    /// It does not stop an admin naming itself minter and printing, because
+    /// the two conditions are sequential and both are satisfiable at a zero
+    /// supply. What it stops is doing that to a token anybody holds, and doing
+    /// it without a trace: the rotation emits `MinterSet`, and a token whose
+    /// `minter()` is not the Vault named in the deployment record is not this
+    /// protocol's agUSD in the first place.
+    pub fn set_minter(e: Env, admin: Address, minter: Address) -> Result<(), AgUsdCoreError> {
+        let stored: Address = e
+            .storage()
+            .instance()
+            .get(&Cfg::Admin)
+            .ok_or(AgUsdCoreError::NotInitialized)?;
+        if stored != admin {
+            return Err(AgUsdCoreError::NotAdmin);
+        }
+        admin.require_auth();
+        if Self::mints(e.clone()) > 0 {
+            return Err(AgUsdCoreError::MinterFrozen);
+        }
+        e.storage().instance().set(&Cfg::Minter, &minter);
+        tok::bump_instance(&e);
+        MinterSet { minter }.publish(&e);
         Ok(())
     }
 
     // ---- views ----
 
-    /// The only address that can create supply. Fixed at initialization.
+    /// The only address that can create supply. Frozen at the first mint.
     pub fn minter(e: Env) -> Result<Address, AgUsdCoreError> {
         e.storage()
             .instance()
             .get(&Cfg::Minter)
             .ok_or(AgUsdCoreError::NotInitialized)
+    }
+
+    /// Mints since deployment. Zero means the minter can still be corrected;
+    /// anything else means it is fixed for the life of the contract. Counted
+    /// rather than read off the supply, because burning back to zero is not
+    /// the same thing as never having issued.
+    pub fn mints(e: Env) -> u64 {
+        e.storage().instance().get(&Cfg::Mints).unwrap_or(0)
     }
 
     /// Recorded at initialization and powerless over supply. Kept so the

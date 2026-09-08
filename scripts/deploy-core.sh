@@ -12,6 +12,10 @@
 # for the Vault named at its initialization, so a Vault redeployed here needs a
 # new agUSD too. See scripts/deploy-agusd-core.sh, which deploys the pair.
 #
+# Superseded by scripts/deploy-rewire.sh, which redeploys and rewires the whole
+# stack. Kept because the addresses it produced are still on the ledger and
+# still recorded in deployments/testnet.json.
+#
 # Usage: bash scripts/deploy-core.sh
 #
 # Requires the `agama-poc` identity, which is the admin already recorded in

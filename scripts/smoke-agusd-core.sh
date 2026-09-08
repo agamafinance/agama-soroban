@@ -23,6 +23,11 @@
 # Needs the admin account (agama-poc) to hold the deposit amount in real USDC.
 # Get some at https://faucet.circle.com (USDC / Stellar Testnet).
 #
+# Written for the generation 2 deployment. The stack has since been redeployed
+# and rewired; scripts/smoke-journey.sh covers the whole journey against the
+# current one, including everything here. This is kept because the addresses and
+# transactions it produced are still on the ledger and still recorded.
+#
 # Usage: bash scripts/smoke-agusd-core.sh
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -45,6 +50,8 @@ STAKING=$(j "d['contracts']['staking']")
 PC=$(j "d['poolAdapters']['private-credit']")
 EF=$(j "d['poolAdapters']['etherfuse']")
 POOL_CAP=$(j "d['engineConfig']['poolCapBps']")
+ORIGINATOR_CAP=$(j "d['engineConfig']['originatorCapBps']")
+JURISDICTION_CAP=$(j "d['engineConfig']['jurisdictionCapBps']")
 FLOOR=$(j "d['engineConfig']['reserveFloorBps']")
 ADMIN=$(stellar keys address $SRC)
 
@@ -203,11 +210,12 @@ OVER=$(( TOTAL * (POOL_CAP + 1000) / 10000 ))
 refuses "allocating $OVER, past the ${POOL_CAP} bps pool cap, is refused" 407 \
   "$ENGINE" allocate --admin "$ADMIN" --pool_id "$EF" --amount "$OVER"
 
-# With two pools capped at 30% each, at most 60% of the book can ever be
-# deployed, so the 20% reserve floor cannot be the binding constraint today:
-# the pool cap always fires first. To show the floor itself refusing a release,
-# it is raised above the current reserve ratio, the allocation is simulated,
-# and it is put straight back.
+# This raises the floor above the current reserve ratio to show it refusing a
+# release that every cap allows, then puts it straight back. It dates from a
+# configuration where two pools capped at 30% could deploy at most 60% of the
+# book, so a 20% floor could never bind on its own. The deployed limits no
+# longer have that problem, and scripts/smoke-journey.sh reaches the state where
+# the floor is the only limit refusing an allocation without touching it.
 UNDER=$(( TOTAL / 100 ))
 echo "  raise the floor to 9500 bps  tx $(tx "$ENGINE" set_reserve_floor --admin "$ADMIN" --floor_bps 9500)"
 refuses "allocating $UNDER, well inside every cap, is refused by the floor" 410 \
@@ -215,7 +223,7 @@ refuses "allocating $UNDER, well inside every cap, is refused by the floor" 410 
 echo "  restore the floor to $FLOOR bps  tx $(tx "$ENGINE" set_reserve_floor --admin "$ADMIN" --floor_bps "$FLOOR")"
 assert_eq "the reserve floor is back where it was" "$(q "$ENGINE" reserve_floor_bps)" "$FLOOR"
 assert_eq "the caps are untouched" "$(q "$ENGINE" caps)" \
-  "{jurisdiction_bps:5000,originator_bps:4000,pool_bps:$POOL_CAP}"
+  "{jurisdiction_bps:$JURISDICTION_CAP,originator_bps:$ORIGINATOR_CAP,pool_bps:$POOL_CAP}"
 
 echo ""
 echo "== STAKING: does the deployed sagUSD accept the new token =="

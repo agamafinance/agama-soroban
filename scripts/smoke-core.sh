@@ -17,6 +17,11 @@
 # it has none, the script tops it up from the admin account, which needs USDC
 # on its trustline (https://faucet.circle.com, USDC / Stellar Testnet).
 #
+# Written for the generation 2 deployment. The stack has since been redeployed
+# and rewired; scripts/smoke-journey.sh covers the whole journey against the
+# current one, including everything here. This is kept because the addresses and
+# transactions it produced are still on the ledger and still recorded.
+#
 # Usage: bash scripts/smoke-core.sh
 set -uo pipefail
 cd "$(dirname "$0")/.."
