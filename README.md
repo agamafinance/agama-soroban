@@ -55,7 +55,7 @@ replaced. None of them is deleted, and none of them is quietly reused.
 | Allocation Engine, first deployment | [`CANDJEHB...SL2SGS`](https://stellar.expert/explorer/testnet/contract/CANDJEHBZUPGBWQMWM567Z3NQR4AHJKJSMWB4LTXPT6SC7GSRKSL2SGS) | Stores the Vault it governs at `initialize()` with no setter, and that Vault had been superseded, so every cap it enforced was measured against a balance sheet nobody was depositing into. |
 | Private credit adapter, first deployment | [`CCDZRKZD...CXT3VZ`](https://stellar.expert/explorer/testnet/contract/CCDZRKZDCWJWTFMLVJFW4LRALZEWRDKWOOD727EDO3EFFKLNDKCXT3VZ) | Stores both the Engine and the Vault at `initialize()` with no setters, and both addresses had been superseded. |
 | Etherfuse adapter, first deployment | [`CBS3OGCV...KFLYKK`](https://stellar.expert/explorer/testnet/contract/CBS3OGCVYMI3XQN2ORZZNE2WKGYK24VSTVDUB3QS5HCZHBQQFWKFLYKK) | Stores both the Engine and the Vault at `initialize()` with no setters, and both addresses had been superseded. |
-| sagUSD staking, first deployment | [`CABPYD4U...2XTALX`](https://stellar.expert/explorer/testnet/contract/CABPYD4U5FAYLBEBMY2MVGVF7BILXTNPWGLOPIXCMUK3QQGIAE2XTALX) | Accepts the first generation agUSD, stores it at `initialize()` with no setter, and had no re-initialization guard. A holder of the agUSD the protocol now issues could not stake at all, and the refusal read as an insufficient balance rather than as a wiring mistake. |
+| sagUSD staking, first deployment | [`CABPYD4U...2XTALX`](https://stellar.expert/explorer/testnet/contract/CABPYD4U5FAYLBEBMY2MVGVF7BILXTNPWGLOPIXCMUK3QQGIAE2XTALX) | Accepts the first generation agUSD, stores it at `initialize()` with no setter, and had no re-initialization guard. A holder of the agUSD the protocol now issues could not stake at all, and the refusal read as an insufficient balance rather than as a wiring mistake. Left running rather than drained: it still holds 49.19 agUSD staked against 48.39 sagUSD shares, on the token it accepts, so its stakers are unaffected. |
 
 One missing setter cost six contracts. The Engine could not follow its Vault,
 the Vault could not follow its Engine, the token could not follow the Vault
@@ -65,6 +65,14 @@ them admin gated and each closed once the contract holds state the move would
 invalidate. USDC, the Oracle Adapter and the six credit vaults were not
 redeployed: the Oracle Adapter binds no Vault and no Engine, so it was never
 part of the problem.
+
+**One thing is left behind.** 1.2 USDC of working capital sits in the first
+Vault Contract. It was never minted against, so no agUSD claims it, and the
+only path out of that Vault is its withdrawal queue, which burns first
+generation agUSD. Recovering it would mean reducing the supply of a token that
+is deployed, held by other people and deliberately left untouched, for 1.2 USDC
+of testnet float. It stays where it is, and it is recorded here rather than
+netted out of a balance somewhere.
 
 ### Deployed Configuration
 

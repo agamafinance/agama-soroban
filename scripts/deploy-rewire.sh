@@ -342,7 +342,8 @@ retirements = [
             'Accepts the generation 1 agUSD, stores it at initialize() with no setter, and '
             'has no re-initialization guard. A holder of the agUSD the protocol now issues '
             'could not stake at all, and the refusal read as an insufficient balance rather '
-            'than as a wiring mistake.'
+            'than as a wiring mistake. It is left running rather than drained, so its '
+            'existing stakers keep their position on the token it accepts.'
         ),
     },
 ]

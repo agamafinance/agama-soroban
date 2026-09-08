@@ -125,7 +125,7 @@
       "generation": 1,
       "address": "CABPYD4U5FAYLBEBMY2MVGVF7BILXTNPWGLOPIXCMUK3QQGIAE2XTALX",
       "supersededBy": "staking",
-      "reason": "Accepts the generation 1 agUSD, stores it at initialize() with no setter, and has no re-initialization guard. A holder of the agUSD the protocol now issues could not stake at all, and the refusal read as an insufficient balance rather than as a wiring mistake.",
+      "reason": "Accepts the generation 1 agUSD, stores it at initialize() with no setter, and has no re-initialization guard. A holder of the agUSD the protocol now issues could not stake at all, and the refusal read as an insufficient balance rather than as a wiring mistake. It is left running rather than drained: it still holds 49.19 agUSD of staked position against 48.39 sagUSD shares, on the token it accepts, so its existing stakers are unaffected by the handover.",
       "label": "sagUSD staking, first deployment"
     }
   ]
