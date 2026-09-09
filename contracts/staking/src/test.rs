@@ -75,14 +75,14 @@ fn full_yield_flow() {
     let shares = f.vault.stake(&alice, &1_000_0000000);
     assert_eq!(shares, 1_000_0000000);
     assert_eq!(f.vault.total_shares(), 1_000_0000000);
-    assert_eq!(f.vault.share_price(), ONE); // 1.0
+    assert_eq!(f.vault.exchange_rate(), ONE); // 1.0
     assert_eq!(f.vault.nav(), 1_000_0000000);
 
     // Strategist delivers 100 agUSD of yield -> share price +10%.
     fund_agusd(&f, &f.admin, 100_0000000);
-    f.vault.accrue_yield(&100_0000000);
+    f.vault.distribute_yield(&100_0000000);
     assert_eq!(f.vault.nav(), 1_100_0000000);
-    assert_eq!(f.vault.share_price(), 11_000_000); // 1.1
+    assert_eq!(f.vault.exchange_rate(), 11_000_000); // 1.1
 
     // Bob stakes 110 agUSD after the appreciation -> gets 100 shares.
     let bob = Address::generate(&f.e);
@@ -185,13 +185,13 @@ fn the_agusd_pointer_moves_before_the_first_stake_and_never_after() {
 
 #[test]
 fn delivered_yield_closes_the_agusd_pointer_even_with_no_stakers() {
-    // accrue_yield takes custody without touching the stake counter. A
+    // distribute_yield takes custody without touching the stake counter. A
     // contract holding yield and no shares would otherwise still look
     // untouched, and the first staker after a repoint would be issued shares
     // against a NAV denominated in a token the contract does not hold.
     let f = setup();
     fund_agusd(&f, &f.admin, 1_000 * ONE);
-    f.vault.accrue_yield(&(1_000 * ONE));
+    f.vault.distribute_yield(&(1_000 * ONE));
     assert_eq!(f.vault.stakes(), 0);
     assert_eq!(f.vault.total_shares(), 0);
     assert_eq!(f.vault.nav(), 1_000 * ONE);
@@ -239,5 +239,55 @@ fn report_nav_overrides() {
     fund_agusd(&f, &alice, 500_0000000);
     f.vault.stake(&alice, &500_0000000);
     f.vault.report_nav(&750_0000000); // +50% on paper
-    assert_eq!(f.vault.share_price(), 15_000_000); // 1.5
+    assert_eq!(f.vault.exchange_rate(), 15_000_000); // 1.5
+}
+
+/// The DeFindex-facing name and the name this contract shipped with have to be
+/// the same number, at every point where that number can differ: the empty
+/// vault, a fresh stake, and after delivered yield has moved the rate off 1.0.
+/// They are one computation with two names, and this is what keeps it that way.
+#[test]
+fn share_price_is_an_alias_of_exchange_rate() {
+    let f = setup();
+    assert_eq!(f.vault.share_price(), f.vault.exchange_rate());
+    assert_eq!(f.vault.share_price(), ONE);
+
+    let alice = Address::generate(&f.e);
+    fund_agusd(&f, &alice, 400 * ONE);
+    f.vault.stake(&alice, &(400 * ONE));
+    assert_eq!(f.vault.share_price(), f.vault.exchange_rate());
+    assert_eq!(f.vault.share_price(), ONE);
+
+    fund_agusd(&f, &f.admin, 100 * ONE);
+    f.vault.distribute_yield(&(100 * ONE));
+    assert_eq!(f.vault.share_price(), f.vault.exchange_rate());
+    assert_eq!(f.vault.exchange_rate(), 12_500_000); // 1.25
+}
+
+/// `distribute_yield` is the DeFindex name for the path that raises
+/// assets-per-share, and it has to do exactly what the name promises: move
+/// real agUSD in, raise the rate for every existing holder, and mint nobody a
+/// share to do it. A distribution that issued shares would leave the rate
+/// where it was and the yield would go nowhere.
+#[test]
+fn distribute_yield_raises_the_rate_without_issuing_shares() {
+    let f = setup();
+    let alice = Address::generate(&f.e);
+    fund_agusd(&f, &alice, 200 * ONE);
+    f.vault.stake(&alice, &(200 * ONE));
+
+    let shares_before = f.vault.total_shares();
+    let alice_before = f.vault.balance(&alice);
+    let rate_before = f.vault.exchange_rate();
+
+    fund_agusd(&f, &f.admin, 20 * ONE);
+    f.vault.distribute_yield(&(20 * ONE));
+
+    assert_eq!(f.vault.total_shares(), shares_before);
+    assert_eq!(f.vault.balance(&alice), alice_before);
+    assert_eq!(f.vault.exchange_rate(), 11_000_000); // 1.1
+    assert!(f.vault.exchange_rate() > rate_before);
+    // The agUSD is really in the contract, not just booked in the NAV.
+    assert_eq!(f.ag.balance(&f.vault.address), 220 * ONE);
+    assert_eq!(f.vault.nav(), 220 * ONE);
 }
