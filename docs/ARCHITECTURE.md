@@ -342,16 +342,16 @@ Standard SEP-41 interface: `transfer`, `transfer_from`, `approve`, `allowance`, 
 | `initialize(admin, vault)` | One-time setup. Ships fail-closed: every cap at zero and the reserve floor at 10000 bps, so an unconfigured Engine can deploy nothing. |
 | `register_pool(admin, pool_id, originator, jurisdiction, cap_bps)` | Whitelists a pool with metadata and cap. |
 | `set_caps(admin, pool_cap_bps, originator_cap_bps, jurisdiction_cap_bps)` | Updates global concentration limits, in bps of total assets. |
-| `set_reserve_floor(admin, floor_bps: u32)` | Sets the minimum **share of total assets**, in basis points, that must stay as idle USDC in the Vault. Rejects anything above 10000. Admin-gated, emits an event on every change. |
-| `set_vault(admin, vault)` | Repoints the Engine at a different Vault. Refused while any capital is deployed, so the exposure book and the balance sheet the caps are measured against always belong to the same Vault. |
+| `set_reserve_floor(admin, floor_bps: u32)` | Sets the minimum **share of total assets**, in basis points, that must stay as idle USDC in the Vault. Rejects anything above 10000. Admin-gated; emits an event. |
+| `set_vault(admin, vault)` | Repoints the Engine at a different Vault. Refused while any capital is deployed, so the book and the balance sheet the caps measure it against stay one Vault's. |
 | `allocate(admin, pool_id, amount)` | Deploys capital. Reverts if any cap is exceeded, or if the call would leave idle reserves below `floor_bps` of total assets. |
 | `deallocate(pool_id, amount)` | Records repayments returning to vault. |
 | `get_exposure(pool_id) → i128` | Current allocation per pool. |
-| `get_exposures() → Map` | Full allocation state. Registered pools with no exposure appear as zero, so the map doubles as the whitelist. |
-| `total_allocated() → i128` | Total booked as deployed across every pool. The Vault reads this to compute total assets. |
+| `get_exposures() → Map` | Full allocation state. Pools with no exposure appear as zero, so the map doubles as the whitelist. |
+| `total_allocated() → i128` | Total booked as deployed across every pool. The Vault reads it to compute total assets. |
 | `caps() → Caps` | The three concentration limits currently in force, in bps. |
 | `reserve_floor_bps() → u32` | Current reserve floor, in bps of total assets. Readable by anyone. |
-| `get_reserve_ratio() → u32` | Idle reserves as an actual share of total assets, in bps. This is the number the floor is a lower bound on, so floor and reality are read in the same units. |
+| `get_reserve_ratio() → u32` | Idle reserves as an actual share of total assets, in bps: the number the floor is a lower bound on, read in the same units. |
 | `get_pool(pool_id) → Pool` | A registered pool's originator, jurisdiction and cap. |
 | `pools() → Vec<Address>` | Every registered pool adapter. |
 
@@ -499,12 +499,12 @@ The floor is set by the Curator through an admin-gated call, and every change em
 
 | Category | Threat | Mitigation |
 |---|---|---|
-| **Spoofing** | Unauthorized agUSD mint | `mint` restricted to the recorded minter (the Vault); `set_minter` closes at the first mint. `burn` is holder-authorized by design and cannot inflate supply. `require_auth()` on all functions. |
+| **Spoofing** | Unauthorized agUSD mint | `mint` restricted to the recorded minter (the Vault), and `set_minter` closes at the first mint. `burn` is holder-authorized and cannot inflate supply. `require_auth()` throughout. |
 | **Spoofing** | Fake oracle reporter | Authorized reporter set. `push_nav()` validates caller. Rotation requires admin + event. |
 | **Tampering** | NAV manipulation | Deviation bounds (>5% rejected). Two-step confirmation for large changes. |
-| **Tampering** | Allocation to compromised pool | On-chain concentration caps (pool, originator, jurisdiction) and the reserve floor, all four in bps of total assets. `allocate()` reverts if any one is exceeded. |
+| **Tampering** | Allocation to compromised pool | On-chain concentration caps (pool, originator, jurisdiction) and the reserve floor, all four in bps of total assets. `allocate()` reverts if any is exceeded. |
 | **Repudiation** | Originator denies allocation | Soroban events on every `allocate` / `deallocate`. Indexed with block provenance. |
-| **Repudiation** | Disputed yield | Every distribution moves real agUSD into the contract, so it leaves a SEP-41 `transfer` event and a matching move in `nav()` and `exchange_rate()`. Fully reconstructable from the chain. A dedicated `yield_distributed` event carrying the amount and the resulting rate is planned, so the reconstruction does not depend on joining two sources. |
+| **Repudiation** | Disputed yield | Every distribution moves real agUSD in, so it leaves a SEP-41 `transfer` event and a matching move in `nav()` and `exchange_rate()`. Fully reconstructable from the chain. A dedicated `yield_distributed` event is planned. |
 | **Info Disclosure** | LP position exposure | Public chain by design. No private data in contracts. |
 | **DoS** | Withdrawal queue flood | Minimum amount + agUSD burn cost. TTL on claim records. |
 | **DoS** | Oracle starvation | Deposits/stakes continue. Only withdrawals/allocations revert. Admin updates reporter set. |
