@@ -3,7 +3,7 @@
 **Private Credit Yield Vaults on Stellar**  
 June 2026, revised September 2026 · Confidential
 
-`Soroban` · `SEP-41` · `Soroswap` · `Etherfuse` · `CCTP` · `DeFindex` · `MoneyGram`
+`Soroban` · `SEP-41` · `Soroswap` · `Etherfuse` · `CCTP` · `MoneyGram`
 
 **The same architecture, elsewhere in this repository:**  
 [`Agama_Technical_Architecture.pdf`](Agama_Technical_Architecture.pdf) — this document as a rendered PDF ·  
@@ -30,7 +30,7 @@ Agama is a private-credit yield infrastructure for tokenized real-world assets, 
 
 Both agUSD and sagUSD are issued as Soroban/**SEP-41** tokens. The on-chain Allocation Engine distributes capital across vetted pools—including **Etherfuse Stablebonds** for Stellar-native government-bond exposure and off-chain private credit pools from vetted originators—while enforcing concentration caps by pool, originator, and jurisdiction.
 
-The protocol composes existing Stellar ecosystem primitives rather than reimplementing solved problems: **Soroswap** for AMM liquidity, **DeFindex** for yield vault patterns, **CCTP** for cross-chain USDC bridging, and **MoneyGram** (SEP-24) and **Bridge** for fiat on/off-ramps. agUSD functions as a composable building block for other Soroban protocols, bringing sticky, real-yield-backed TVL to the Stellar ecosystem.
+The protocol composes existing Stellar ecosystem primitives rather than reimplementing solved problems: **Soroswap** for AMM liquidity, **CCTP** for cross-chain USDC bridging, and **MoneyGram** (SEP-24) and **Bridge** for fiat on/off-ramps. sagUSD additionally follows the share-price yield economics established by **DeFindex**, without calling its contracts. agUSD functions as a composable building block for other Soroban protocols, bringing sticky, real-yield-backed TVL to the Stellar ecosystem.
 
 ### 1.2 Core Components
 
@@ -59,7 +59,7 @@ The protocol composes existing Stellar ecosystem primitives rather than reimplem
 | Net assets | Free reserves plus deployed capital. The denominator every cap and the floor are measured against. |
 | Originator | Vetted private credit counterparty receiving vault allocations. |
 | Reflector | Decentralized push-based oracle network on Stellar. |
-| DeFindex | Yield infrastructure for Stellar. sagUSD uses DeFindex-compatible vault accounting. |
+| DeFindex | Yield infrastructure for Stellar. sagUSD follows the same share-price yield economics, not DeFindex's contract interface. |
 | Soroswap | Primary AMM on Soroban. Provides agUSD liquidity pools. |
 | CCTP | Circle Cross-Chain Transfer Protocol. Native 1:1 USDC bridge between blockchains. |
 | Etherfuse | Stablebonds — Stellar-native tokens backed by government bonds with embedded yield. |
@@ -84,7 +84,7 @@ The protocol composes existing Stellar ecosystem primitives rather than reimplem
 | Stellar Network | All on-chain operations: USDC settlement, Soroban execution | — |
 | Circle (USDC) | Issuer of native USDC on Stellar | — |
 | Reflector Oracle | Decentralized price feeds (USDC, XLM) | — |
-| DeFindex | Yield vault patterns for sagUSD accounting | Integration List |
+| DeFindex | Share-price yield economics referenced by sagUSD, no contract calls | Integration List |
 | Soroswap | AMM liquidity pools + Router API | Integration List |
 | Etherfuse | Stablebonds — Stellar-native RWA collateral | Integration List |
 | CCTP (Circle) | Native cross-chain USDC bridge | Integration List |
@@ -121,7 +121,7 @@ The protocol composes existing Stellar ecosystem primitives rather than reimplem
 
 - **Vault Contract** — USDC deposits, agUSD mint/burn, FIFO withdrawal queue.
 - **agUSD Token (SEP-41)** — `mint` restricted to the Vault. `burn` and `burn_from` are the standard SEP-41 holder-authorized paths.
-- **sagUSD Staking Contract** — DeFindex-compatible share-based vault. Yield via exchange rate appreciation. Two-step unstake behind a cooldown.
+- **sagUSD Staking Contract** — Share-based vault on DeFindex's yield economics, not its interface. Yield via exchange rate appreciation. Two-step unstake behind a cooldown.
 - **Allocation Engine** — Pool routing with adapters (Etherfuse, private credit). Concentration caps.
 - **Oracle Adapter** — Multi-source NAV validation (Reflector, custom reporter, Etherfuse feed).
 
@@ -145,7 +145,7 @@ The protocol composes existing Stellar ecosystem primitives rather than reimplem
 - **Transparent** — All vault accounting, caps, and yield distribution enforced on-chain.
 - **Non-Custodial Token Layer** — Users hold agUSD/sagUSD in their own wallets.
 - **Risk-Constrained by Design** — Concentration caps checked at allocation time.
-- **Composable** — SEP-41 tokens usable across Soroban protocols. DeFindex-compatible sagUSD.
+- **Composable** — SEP-41 tokens usable across Soroban protocols. sagUSD priced by a single exchange rate.
 - **Ecosystem-Native** — Built on Soroswap, Etherfuse, CCTP rather than standalone.
 - **High-Frequency Yield** — Stellar's sub-cent fees enable frequent on-chain distribution.
 - **Secure by Design** — Admin-gated functions, pausability, oracle guards, STRIDE-modeled threats.
@@ -170,7 +170,7 @@ flowchart TB
     subgraph soroban["SOROBAN SMART CONTRACTS (Rust)"]
         VAULT["Vault Contract<br/>USDC deposit · agUSD mint<br/>Withdrawal queue (FIFO)"]
         AGUSD["agUSD<br/>SEP-41<br/>mint→Vault · burn→holder"]
-        SAGUSD["sagUSD Staking<br/>DeFindex-compatible<br/>share-price yield"]
+        SAGUSD["sagUSD Staking<br/>share-price yield<br/>no rebase"]
         ENGINE["Allocation Engine<br/>Pool routing · caps<br/>Reserve floor · multi-adapter"]
         ORACLE["Oracle Adapter<br/>Multi-source NAV<br/>Staleness · Deviation"]
         ADAPTERS["Pool Adapters:"]
@@ -214,9 +214,11 @@ Legend, as coloured in the diagram: green = Integration List protocol · orange 
 
 Agama builds on proven Stellar ecosystem protocols drawn from the **SCF Integration List**. Each integration serves a specific architectural role and replaces or augments a component that would otherwise be built from scratch.
 
-### 3.1 DeFindex — Yield Infrastructure
+### 3.1 DeFindex — Shared Yield Accounting Convention
 
-**Role:** sagUSD uses DeFindex-compatible vault accounting. `distribute_yield()` increases assets-per-share, the standard DeFindex share-price model. sagUSD shares are interoperable with any DeFindex-integrated wallet or protocol.
+**Role:** sagUSD follows the same economic convention as DeFindex. `distribute_yield()` raises the assets behind each share rather than minting shares or rebasing balances, so a position is valued from a single exchange rate and there is no claim step.
+
+**What this is not.** It is a shared economic model, not call-level compatibility. DeFindex's own vault interface publishes neither `distribute_yield` nor `exchange_rate`. It is multi-asset, `get_asset_amounts_per_shares` returns one amount per underlying asset rather than a scalar price per share, and it exposes no vault-level yield distribution entry point. Agama routes no funds through DeFindex vault contracts and depends on no DeFindex deployment, and a DeFindex-integrated wallet would need integration work to read sagUSD. What is genuinely shared is the economics: shares are never rebased, nothing is pushed to holders, and a position appreciates because the assets behind each share grow. Verified against `vault/src/interface.rs` in `defindex-io/stellar-contracts`, the live repository, in September 2026; the former `paltalabs/defindex` was archived in July 2026.
 
 ### 3.2 Soroswap — AMM Liquidity
 
@@ -324,7 +326,7 @@ Standard SEP-41 interface: `transfer`, `transfer_from`, `approve`, `allowance`, 
 
 ### 4.3 sagUSD Staking Contract
 
-**Purpose:** Yield-bearing staked agUSD. DeFindex-compatible share-based vault accounting. Yield increases the sagUSD/agUSD exchange rate.
+**Purpose:** Yield-bearing staked agUSD. Share-based vault accounting on the same share-price economics as DeFindex, not its contract interface. Yield increases the sagUSD/agUSD exchange rate.
 
 **Key Functions**
 
@@ -646,7 +648,7 @@ The dApp supports both paths but does not claim atomicity between Soroban and Cl
 
 | Integration | Role | Integration List |
 |---|---|---|
-| DeFindex | Yield vault patterns for sagUSD | Yes |
+| DeFindex | Share-price yield economics for sagUSD, no contract calls | Yes |
 | Soroswap | AMM pools + Router API | Yes |
 | Etherfuse | Stablebonds — native RWA collateral | Yes |
 | CCTP (Circle) | Cross-chain USDC bridge | Yes |
