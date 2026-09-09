@@ -93,6 +93,10 @@ pub enum AgUsdCoreError {
     NotAdmin = 204,
     /// The token has already minted, so the minter is fixed for good.
     MinterFrozen = 205,
+    /// `accept_admin` was called with no handover in flight.
+    NoPendingAdmin = 206,
+    /// `accept_admin` was called by an address that was not the one proposed.
+    NotPendingAdmin = 207,
 }
 
 /// Instance storage. `Admin` is written once. `Minter` can be corrected until
@@ -102,7 +106,8 @@ pub enum AgUsdCoreError {
 enum Cfg {
     Admin,
     Minter,
-    Mints,
+    Mints,    /// Half finished admin handover: proposed, not yet accepted.
+    PendingAdmin,
 }
 
 /// Emitted when the minting authority is corrected, which can only happen
@@ -115,6 +120,25 @@ enum Cfg {
 pub struct MinterSet {
     #[topic]
     pub minter: Address,
+}
+
+/// Emitted when an admin handover is proposed. The role has not moved yet: this
+/// is the first half of a two step transfer, and it is in the event stream so
+/// that a pending handover is visible to anyone watching rather than only to
+/// whoever thinks to read the state.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposed {
+    #[topic]
+    pub new_admin: Address,
+}
+
+/// Emitted when a proposed admin accepts and the role actually moves.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminChanged {
+    #[topic]
+    pub admin: Address,
 }
 
 #[contract]
@@ -210,6 +234,70 @@ impl AgUsdCore {
         tok::bump_instance(&e);
         MinterSet { minter }.publish(&e);
         Ok(())
+    }
+
+    /// Hand the admin role to another address, in two steps.
+    ///
+    /// This contract had no rotation at all, which made the admin key a single
+    /// point of failure with no way back from either of the two ways it fails.
+    /// A key that is lost takes every admin gated call in this contract with
+    /// it, permanently. A key that is compromised cannot be replaced, so the
+    /// only remedy left is redeploying the contract and migrating whatever it
+    /// holds, which for a custodian is not a remedy.
+    ///
+    /// Two steps rather than one, because a one step setter aimed at an
+    /// address nobody controls produces exactly the unrecoverable state the
+    /// rotation exists to fix, and it does it in a single transaction with no
+    /// second chance. The proposed address has to authorize a transaction of
+    /// its own before anything changes, and that signature is the proof the
+    /// key is real and reachable.
+    ///
+    /// A proposal replaces any earlier one. An admin that changes its mind
+    /// proposes a different address; an admin that wants to withdraw a
+    /// proposal proposes itself, which is a no-op if it is ever accepted.
+    pub fn propose_admin(e: Env, admin: Address, new_admin: Address) -> Result<(), AgUsdCoreError> {
+        let stored: Address = e
+            .storage()
+            .instance()
+            .get(&Cfg::Admin)
+            .ok_or(AgUsdCoreError::NotInitialized)?;
+        if stored != admin {
+            return Err(AgUsdCoreError::NotAdmin);
+        }
+        admin.require_auth();
+        e.storage().instance().set(&Cfg::PendingAdmin, &new_admin);
+        tok::bump_instance(&e);
+        AdminProposed { new_admin }.publish(&e);
+        Ok(())
+    }
+
+    /// Complete a handover. Only the proposed address can call it, and it has
+    /// to authorize the call itself: that authorization is the entire point of
+    /// the second step.
+    pub fn accept_admin(e: Env, new_admin: Address) -> Result<(), AgUsdCoreError> {
+        let pending: Address = e
+            .storage()
+            .instance()
+            .get(&Cfg::PendingAdmin)
+            .ok_or(AgUsdCoreError::NoPendingAdmin)?;
+        if pending != new_admin {
+            return Err(AgUsdCoreError::NotPendingAdmin);
+        }
+        new_admin.require_auth();
+        e.storage().instance().set(&Cfg::Admin, &new_admin);
+        e.storage().instance().remove(&Cfg::PendingAdmin);
+        tok::bump_instance(&e);
+        AdminChanged {
+            admin: new_admin,
+        }
+        .publish(&e);
+        Ok(())
+    }
+
+    /// The address that has been proposed as admin and has not accepted yet.
+    /// `None` means no handover is in flight.
+    pub fn pending_admin(e: Env) -> Option<Address> {
+        e.storage().instance().get(&Cfg::PendingAdmin)
     }
 
     // ---- views ----

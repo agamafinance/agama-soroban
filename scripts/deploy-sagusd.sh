@@ -28,6 +28,11 @@
 # The interface is checked against the deployed WASM at the end rather than
 # against the source, because the source is not what a wallet reads.
 #
+# Superseded by scripts/deploy-hardening.sh, which redeploys sagUSD along with
+# the rest of the stack after the adversarial security review took report_nav
+# off this contract. Kept because the addresses and transactions it produced are
+# still on the ledger.
+#
 # Usage: bash scripts/deploy-sagusd.sh
 #
 # Requires the `agama-poc` identity, which is the admin recorded in

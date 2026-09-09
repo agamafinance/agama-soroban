@@ -27,6 +27,11 @@
 # mint the shortfall by depositing real Circle USDC into the Vault. Get USDC at
 # https://faucet.circle.com (USDC / Stellar Testnet).
 #
+# Written for the generation before the adversarial security review, which
+# removed report_nav from this contract. scripts/smoke-hardening.sh covers the
+# yield path against the current deployment. Kept because the transactions it
+# produced are still on the ledger.
+#
 # Usage: bash scripts/smoke-sagusd.sh
 set -uo pipefail
 cd "$(dirname "$0")/.."

@@ -323,3 +323,52 @@ fn a_stranger_cannot_mint_the_vaults_token() {
     assert!(agusd.try_mint(&mallory, &(100 * UNIT)).is_err());
     assert_eq!(agusd.total_supply(), 0);
 }
+
+/// Admin rotation, in the two steps that make it safe: a proposal that changes
+/// nothing, and an acceptance signed by the address it hands the role to. An
+/// unreachable key can therefore never be handed the role, which is the
+/// unrecoverable state a one call setter would create in one transaction.
+#[test]
+fn the_admin_role_moves_only_to_an_address_that_signs_for_it() {
+    let f = setup();
+    let successor = Address::generate(&f.e);
+    let mallory = Address::generate(&f.e);
+    assert_eq!(f.token.pending_admin(), None);
+
+    // A stranger cannot propose.
+    assert_eq!(
+        f.token.try_propose_admin(&mallory, &mallory),
+        Err(Ok(AgUsdCoreError::NotAdmin))
+    );
+
+    // The admin proposes and nothing moves yet.
+    f.token.propose_admin(&f.admin, &successor);
+    assert_eq!(f.token.pending_admin(), Some(successor.clone()));
+    assert_eq!(f.token.admin(), f.admin);
+
+    // Only the proposed address can accept, and it has to sign for itself.
+    assert_eq!(
+        f.token.try_accept_admin(&mallory),
+        Err(Ok(AgUsdCoreError::NotPendingAdmin))
+    );
+    f.e.mock_auths(&[MockAuth {
+        address: &mallory,
+        invoke: &MockAuthInvoke {
+            contract: &f.token.address,
+            fn_name: "accept_admin",
+            args: (successor.clone(),).into_val(&f.e),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(f.token.try_accept_admin(&successor).is_err());
+    assert_eq!(f.token.admin(), f.admin);
+
+    f.e.mock_all_auths();
+    f.token.accept_admin(&successor);
+    assert_eq!(f.token.admin(), successor);
+    assert_eq!(f.token.pending_admin(), None);
+    assert_eq!(
+        f.token.try_accept_admin(&successor),
+        Err(Ok(AgUsdCoreError::NoPendingAdmin))
+    );
+}

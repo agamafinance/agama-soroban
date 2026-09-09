@@ -9,11 +9,11 @@
   "contracts": {
     "usdc": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
     "agusd": "CCXEP6QAAYEMFMV2JGBULD2NS6AQB6KQSBHLPPBJSDBCN6HOYIHNQ6H3",
-    "staking": "CCBEDKRQHKAP2W3NC4UIYC4WZSMJVYRXN6EQERHFII45M3PD4JL6HFO2",
-    "vault": "CCGPF36PDG2WBBK6ZROLMNMHD67UV4MNG6PHQCN2PXWLLRBXCYF5KVRR",
-    "allocationEngine": "CAFJKWLUGUSYEC7L5ZBNFIFEPSO5MLI7SKDMVVJCGC6Z2TGVP5SZ5HUX",
-    "oracleAdapter": "CDV5BC4XCNT5ASOZNFXBQXRGKVXGKHLRVK5EDX6XP5J6EBIZWSXCSV7G",
-    "agusdCore": "CCW763RTVRDQTEEQ42XCAARSJ42AKWRB2DDM62QV4XVUJFCDAWU4ALZL"
+    "staking": "CDU7BYCE535Y4WU6FAQTMNPLR3RD7HTGWR2NETW7EEPAQTLY2XGVYE7X",
+    "vault": "CCW5EQCVHXA2PTXN4Y4QMO4O4YMG6BRMB7M2PYASILFI53BL3CKDSIWP",
+    "allocationEngine": "CAOGJDWH5SZAVPGLBB2NCKGPT4OUFT3YEKUCKEJP6BVN3CR2WUKJDONN",
+    "oracleAdapter": "CCIABPQMPGS4HSDQYN46M67LV6B5LCYO6X2XLCI27JSOMKUMN3N4DWJG",
+    "agusdCore": "CANR4HJCDO7KDIUKTNGOJJUSZ45VB6EVR5IFHTOPQUCGAZ2XEDVJGIYG"
   },
   "creditVaults": {
     "payment-financing": "CAUFXVGKB2OKEDDO6SDWH4ZSWXJ37T2WYKEVUTBOCWZAFEUTGCFYQEF4",
@@ -26,15 +26,18 @@
   "usdcIssuer": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
   "usdcReal": true,
   "poolAdapters": {
-    "private-credit": "CBAPY7KRVIG3FPGSP3VKXXA6SCDKZUWBSFDWISRJXR5V7PYPVQZGFTOZ",
-    "etherfuse": "CBA3GQLHCEOCCZIDVFZ74AG4FUCEO2SN7AMGY4RSAMN4DTHW2WAH7EWI"
+    "private-credit": "CBWFVABYRGKAGDN54MIN4GIXQO3ALVPJ3POSVFDFKUQSLYL4M4JT5BBT",
+    "etherfuse": "CADNIBDB5LZHGOOSVTL2LF47XCRPEL53IHBES2Y4RIORI4I3VCKF4ZFV"
   },
   "engineConfig": {
     "poolCapBps": 4000,
     "originatorCapBps": 4500,
     "jurisdictionCapBps": 5000,
     "reserveFloorBps": 2500,
+    "vaultReserveFloorBps": 2500,
     "floorBinds": "The registered pool caps sum to 8000 bps and the floor releases 7500 bps, so there are states reachable by ordinary allocations in which every concentration cap is satisfied and the reserve floor is the only limit refusing the call.",
+    "floorEnforcedTwice": "The Vault keeps its own copy of the floor and applies it in settle_allocation, against its own deployed capital book rather than anything the Engine reports. The Engine is an address the Vault authorizes, so a floor enforced only in the Engine is a floor any contract holding that authorization can skip.",
+    "measuredOn": "Free reserves and net assets, not the gross balance. USDC owed to a queued withdrawal is on the Vault balance and is not deployable, because the agUSD that entitled anyone else to it has already been burned.",
     "pools": {
       "private-credit": {
         "originator": "QIRO",
@@ -51,15 +54,24 @@
   "oracleFeeds": {
     "USDC_USD": {
       "stalenessSecs": 3600,
-      "deviationBps": 200
+      "deviationBps": 200,
+      "minNav": 9000000,
+      "maxNav": 11000000,
+      "minIntervalSecs": 300
     },
     "PC_NAV": {
       "stalenessSecs": 604800,
-      "deviationBps": 500
+      "deviationBps": 500,
+      "minNav": 5000000,
+      "maxNav": 20000000,
+      "minIntervalSecs": 3600
     },
     "EF_BOND": {
       "stalenessSecs": 172800,
-      "deviationBps": 0
+      "deviationBps": 0,
+      "minNav": 5000000,
+      "maxNav": 20000000,
+      "minIntervalSecs": 3600
     }
   },
   "vaultOracleFeed": "PC_NAV",
@@ -183,6 +195,64 @@
       "address": "CBMEW3QALCS6FFJMK5FR7LVKUWX3MPIP26LQQQAFYMQFYVG6VUWFTHZF",
       "supersededBy": "staking",
       "reason": "Replaced by scripts/deploy-sagusd.sh. Exposes accrue_yield and share_price, the names this contract shipped with, rather than distribute_yield and exchange_rate, the names Agama committed to in its answer to the SCF panel and that DeFindex compatibility is a funded deliverable for. A wallet looking for the committed convention did not find it on this contract. Superseded holding nothing: NAV and share supply were both zero at handover, so it strands no staker."
+    },
+    {
+      "contract": "vault",
+      "generation": 4,
+      "label": "Vault Contract, fourth deployment",
+      "address": "CCGPF36PDG2WBBK6ZROLMNMHD67UV4MNG6PHQCN2PXWLLRBXCYF5KVRR",
+      "supersededBy": "vault",
+      "reason": "Replaced by scripts/deploy-hardening.sh. This Vault Contract predates the fixes from the adversarial security review: the Vault delegated the reserve floor entirely to whatever Allocation Engine it pointed at, so a contract that answered vault() correctly could empty it; queued withdrawals were counted as free liquidity by the floor and the caps, so capital could be deployed against money already owed; a stalled head claim froze the withdrawal queue for everyone behind it; a credit loss could not be recognised on-chain at all; sagUSD carried report_nav, a bare setter on the denominator of its own share price; and no contract had admin rotation."
+    },
+    {
+      "contract": "agusdCore",
+      "generation": 3,
+      "label": "agUSD, third deployment",
+      "address": "CCW763RTVRDQTEEQ42XCAARSJ42AKWRB2DDM62QV4XVUJFCDAWU4ALZL",
+      "supersededBy": "agusdCore",
+      "reason": "Replaced by scripts/deploy-hardening.sh. This agUSD predates the fixes from the adversarial security review: the Vault delegated the reserve floor entirely to whatever Allocation Engine it pointed at, so a contract that answered vault() correctly could empty it; queued withdrawals were counted as free liquidity by the floor and the caps, so capital could be deployed against money already owed; a stalled head claim froze the withdrawal queue for everyone behind it; a credit loss could not be recognised on-chain at all; sagUSD carried report_nav, a bare setter on the denominator of its own share price; and no contract had admin rotation."
+    },
+    {
+      "contract": "allocationEngine",
+      "generation": 3,
+      "label": "Allocation Engine, third deployment",
+      "address": "CAFJKWLUGUSYEC7L5ZBNFIFEPSO5MLI7SKDMVVJCGC6Z2TGVP5SZ5HUX",
+      "supersededBy": "allocationEngine",
+      "reason": "Replaced by scripts/deploy-hardening.sh. This Allocation Engine predates the fixes from the adversarial security review: the Vault delegated the reserve floor entirely to whatever Allocation Engine it pointed at, so a contract that answered vault() correctly could empty it; queued withdrawals were counted as free liquidity by the floor and the caps, so capital could be deployed against money already owed; a stalled head claim froze the withdrawal queue for everyone behind it; a credit loss could not be recognised on-chain at all; sagUSD carried report_nav, a bare setter on the denominator of its own share price; and no contract had admin rotation."
+    },
+    {
+      "contract": "oracleAdapter",
+      "generation": 1,
+      "label": "Oracle Adapter, first deployment",
+      "address": "CDV5BC4XCNT5ASOZNFXBQXRGKVXGKHLRVK5EDX6XP5J6EBIZWSXCSV7G",
+      "supersededBy": "oracleAdapter",
+      "reason": "Replaced by scripts/deploy-hardening.sh. This Oracle Adapter predates the fixes from the adversarial security review: the Vault delegated the reserve floor entirely to whatever Allocation Engine it pointed at, so a contract that answered vault() correctly could empty it; queued withdrawals were counted as free liquidity by the floor and the caps, so capital could be deployed against money already owed; a stalled head claim froze the withdrawal queue for everyone behind it; a credit loss could not be recognised on-chain at all; sagUSD carried report_nav, a bare setter on the denominator of its own share price; and no contract had admin rotation."
+    },
+    {
+      "contract": "poolAdapters.private-credit",
+      "generation": 3,
+      "label": "Private credit adapter, third deployment",
+      "address": "CBAPY7KRVIG3FPGSP3VKXXA6SCDKZUWBSFDWISRJXR5V7PYPVQZGFTOZ",
+      "supersededBy": "poolAdapters.private-credit",
+      "reason": "Replaced by scripts/deploy-hardening.sh. This private credit adapter predates the fixes from the adversarial security review: the Vault delegated the reserve floor entirely to whatever Allocation Engine it pointed at, so a contract that answered vault() correctly could empty it; queued withdrawals were counted as free liquidity by the floor and the caps, so capital could be deployed against money already owed; a stalled head claim froze the withdrawal queue for everyone behind it; a credit loss could not be recognised on-chain at all; sagUSD carried report_nav, a bare setter on the denominator of its own share price; and no contract had admin rotation."
+    },
+    {
+      "contract": "poolAdapters.etherfuse",
+      "generation": 3,
+      "label": "Etherfuse adapter, third deployment",
+      "address": "CBA3GQLHCEOCCZIDVFZ74AG4FUCEO2SN7AMGY4RSAMN4DTHW2WAH7EWI",
+      "supersededBy": "poolAdapters.etherfuse",
+      "reason": "Replaced by scripts/deploy-hardening.sh. This Etherfuse adapter predates the fixes from the adversarial security review: the Vault delegated the reserve floor entirely to whatever Allocation Engine it pointed at, so a contract that answered vault() correctly could empty it; queued withdrawals were counted as free liquidity by the floor and the caps, so capital could be deployed against money already owed; a stalled head claim froze the withdrawal queue for everyone behind it; a credit loss could not be recognised on-chain at all; sagUSD carried report_nav, a bare setter on the denominator of its own share price; and no contract had admin rotation."
+    },
+    {
+      "contract": "staking",
+      "generation": 4,
+      "label": "sagUSD staking, fourth deployment",
+      "address": "CCBEDKRQHKAP2W3NC4UIYC4WZSMJVYRXN6EQERHFII45M3PD4JL6HFO2",
+      "supersededBy": "staking",
+      "reason": "Replaced by scripts/deploy-hardening.sh. This sagUSD staking predates the fixes from the adversarial security review: the Vault delegated the reserve floor entirely to whatever Allocation Engine it pointed at, so a contract that answered vault() correctly could empty it; queued withdrawals were counted as free liquidity by the floor and the caps, so capital could be deployed against money already owed; a stalled head claim froze the withdrawal queue for everyone behind it; a credit loss could not be recognised on-chain at all; sagUSD carried report_nav, a bare setter on the denominator of its own share price; and no contract had admin rotation."
     }
-  ]
+  ],
+  "oracleFeedGuards": "The band bounds every report including the first, which a deviation bound cannot reach because a bound on a move needs something to move from. The minimum interval is measured in ledger time between accepted values, not in the timestamps the reporter supplies, because the reporter chooses those. The reference point is persistent, so it cannot expire out from under the checks that read it.",
+  "adminRotation": "Every contract carries propose_admin and accept_admin. The handover is two steps and the successor has to authorize the second one itself, so the role cannot be handed to an address nobody controls."
 }

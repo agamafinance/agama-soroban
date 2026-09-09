@@ -32,6 +32,13 @@
 # Needs the admin account (agama-poc) to hold the deposit amount in real USDC.
 # Get some at https://faucet.circle.com (USDC / Stellar Testnet).
 #
+# Written for the generation before the adversarial security review. The stack
+# has since been redeployed with the Vault enforcing its own reserve floor,
+# queued withdrawals subtracted from free reserves, and a permissionless
+# settle_withdrawal; scripts/smoke-hardening.sh covers those against the current
+# deployment. This is kept because the addresses and transactions it produced
+# are still on the ledger and still recorded in the README.
+#
 # Usage: bash scripts/smoke-journey.sh
 set -uo pipefail
 cd "$(dirname "$0")/.."

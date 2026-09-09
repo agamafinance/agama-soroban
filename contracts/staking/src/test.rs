@@ -3,8 +3,8 @@ use super::*;
 use agusd::{AgUsd, AgUsdClient};
 use mock_usdc::{MockUsdc, MockUsdcClient};
 use soroban_sdk::{
-    testutils::{Address as _, Ledger as _},
-    vec, Address, Env, String,
+    testutils::{Address as _, Ledger as _, MockAuth, MockAuthInvoke},
+    vec, Address, Env, IntoVal, String,
 };
 
 const COOLDOWN: u64 = 300; // 5 min
@@ -232,14 +232,48 @@ fn allocations_roundtrip() {
     assert_eq!(got.get(0).unwrap().target_bps, 6000);
 }
 
+/// The attack the removed `report_nav` made possible, replayed with every entry
+/// point the contract still has.
+///
+/// `report_nav` overwrote the NAV outright, and the NAV is the denominator of
+/// both `stake` (`amount * supply / nav`) and `request_unstake` (`shares * nav
+/// / supply`). Against Alice's 1000 agUSD the sequence was: `report_nav(1)`,
+/// stake 99 stroops and receive 99% of the share supply for it, `report_nav`
+/// back to 1000, unstake, leave with 990 agUSD of Alice's deposit.
+///
+/// With the setter gone the admin's only way to move the NAV is to move agUSD,
+/// and moving agUSD in cannot dilute anybody. 99 stroops buys 99 stroops.
 #[test]
-fn report_nav_overrides() {
+fn the_admin_cannot_reprice_shares_without_moving_the_agusd_behind_them() {
     let f = setup();
     let alice = Address::generate(&f.e);
-    fund_agusd(&f, &alice, 500_0000000);
-    f.vault.stake(&alice, &500_0000000);
-    f.vault.report_nav(&750_0000000); // +50% on paper
-    assert_eq!(f.vault.exchange_rate(), 15_000_000); // 1.5
+    fund_agusd(&f, &alice, 1_000 * ONE);
+    let alice_shares = f.vault.stake(&alice, &(1_000 * ONE));
+
+    // The invariant report_nav existed to break: the reported NAV is the agUSD
+    // the contract is actually holding, at every point.
+    assert_eq!(f.vault.nav(), f.ag.balance(&f.vault.address));
+
+    // The admin's remaining lever moves real money in and cannot overstate the
+    // book. It raises the NAV by exactly what arrived and by nothing else.
+    fund_agusd(&f, &f.admin, 100 * ONE);
+    f.vault.distribute_yield(&(100 * ONE));
+    assert_eq!(f.vault.nav(), 1_100 * ONE);
+    assert_eq!(f.vault.nav(), f.ag.balance(&f.vault.address));
+
+    // The dust stake that used to buy the pool. It buys dust.
+    let mallory = Address::generate(&f.e);
+    fund_agusd(&f, &mallory, 99);
+    let mallory_shares = f.vault.stake(&mallory, &99);
+    assert!(mallory_shares < 100);
+    assert!(mallory_shares * 1_000 < alice_shares);
+
+    // And unstaking returns what was put in, not a share of Alice's position.
+    let owed = f.vault.request_unstake(&mallory, &mallory_shares);
+    assert!(owed <= 99);
+    // Alice is untouched, and better off by the delivered yield.
+    let alice_owed = f.vault.request_unstake(&alice, &alice_shares);
+    assert!(alice_owed >= 1_099 * ONE);
 }
 
 /// The DeFindex-facing name and the name this contract shipped with have to be
@@ -290,4 +324,53 @@ fn distribute_yield_raises_the_rate_without_issuing_shares() {
     // The agUSD is really in the contract, not just booked in the NAV.
     assert_eq!(f.ag.balance(&f.vault.address), 220 * ONE);
     assert_eq!(f.vault.nav(), 220 * ONE);
+}
+
+/// Admin rotation, in the two steps that make it safe: a proposal that changes
+/// nothing, and an acceptance signed by the address it hands the role to. An
+/// unreachable key can therefore never be handed the role, which is the
+/// unrecoverable state a one call setter would create in one transaction.
+#[test]
+fn the_admin_role_moves_only_to_an_address_that_signs_for_it() {
+    let f = setup();
+    let successor = Address::generate(&f.e);
+    let mallory = Address::generate(&f.e);
+    assert_eq!(f.vault.pending_admin(), None);
+
+    // A stranger cannot propose.
+    assert_eq!(
+        f.vault.try_propose_admin(&mallory, &mallory),
+        Err(Ok(StakingError::NotAdmin))
+    );
+
+    // The admin proposes and nothing moves yet.
+    f.vault.propose_admin(&f.admin, &successor);
+    assert_eq!(f.vault.pending_admin(), Some(successor.clone()));
+    assert_eq!(f.vault.admin(), f.admin);
+
+    // Only the proposed address can accept, and it has to sign for itself.
+    assert_eq!(
+        f.vault.try_accept_admin(&mallory),
+        Err(Ok(StakingError::NotPendingAdmin))
+    );
+    f.e.mock_auths(&[MockAuth {
+        address: &mallory,
+        invoke: &MockAuthInvoke {
+            contract: &f.vault.address,
+            fn_name: "accept_admin",
+            args: (successor.clone(),).into_val(&f.e),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(f.vault.try_accept_admin(&successor).is_err());
+    assert_eq!(f.vault.admin(), f.admin);
+
+    f.e.mock_all_auths();
+    f.vault.accept_admin(&successor);
+    assert_eq!(f.vault.admin(), successor);
+    assert_eq!(f.vault.pending_admin(), None);
+    assert_eq!(
+        f.vault.try_accept_admin(&successor),
+        Err(Ok(StakingError::NoPendingAdmin))
+    );
 }

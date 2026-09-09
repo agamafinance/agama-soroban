@@ -5,7 +5,8 @@ use mock_usdc::{MockUsdc, MockUsdcClient};
 use oracle_adapter::{OracleAdapter, OracleAdapterClient};
 use private_credit::{PrivateCreditAdapter, PrivateCreditAdapterClient};
 use soroban_sdk::testutils::{Address as _, Ledger as _};
-use soroban_sdk::{symbol_short, String};
+use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
+use soroban_sdk::{contract, contractimpl, symbol_short, IntoVal, String};
 
 const USDC: i128 = 10_000_000; // 1 USDC at 7 decimals
 const T0: u64 = 1_800_000_000;
@@ -70,6 +71,9 @@ fn setup() -> Fix {
         &oracle_adapter::FEED_PC_NAV,
         &oracle_adapter::PRIVATE_CREDIT_STALENESS,
         &oracle_adapter::PRIVATE_CREDIT_DEVIATION_BPS,
+        &oracle_adapter::NAV_BAND_MIN,
+        &oracle_adapter::NAV_BAND_MAX,
+        &oracle_adapter::NAV_MIN_INTERVAL,
     );
     vault.set_oracle(&admin, &oracle_id, &oracle_adapter::FEED_PC_NAV);
 
@@ -82,11 +86,14 @@ fn setup() -> Fix {
         &symbol_short!("US"),
         &10_000u32,
     );
-    // The caps and the reserve floor have their own suite in the Engine crate.
-    // Here they are opened up so the Vault's queue can be tested against real
-    // allocations rather than against a mock.
+    // The caps and the Engine's copy of the reserve floor have their own suite
+    // in the Engine crate. Here they are opened up so the Vault's queue can be
+    // tested against real allocations rather than against a mock. The Vault's
+    // own floor ships closed at 100%, so it is opened too; the tests that are
+    // about the floor set it back themselves.
     engine.set_caps(&admin, &10_000, &10_000, &10_000);
     engine.set_reserve_floor(&admin, &0u32);
+    vault.set_reserve_floor(&admin, &0u32);
 
     Fix {
         e,
@@ -196,7 +203,9 @@ fn the_admin_cannot_jump_the_queue() {
     let admin_claim = f.vault.request_withdrawal(&f.admin, &(100 * USDC));
 
     // Being the admin buys nothing: there is no privileged path through
-    // claim_withdrawal, and no pause-and-reorder trick either.
+    // claim_withdrawal, and no pause-and-reorder trick either. Pausing does not
+    // even stop Alice, because payouts are outside the breaker, and it still
+    // does not promote the admin's own claim.
     assert_eq!(
         f.vault.try_claim_withdrawal(&f.admin, &admin_claim),
         Err(Ok(VaultError::NotAtQueueHead))
@@ -204,11 +213,11 @@ fn the_admin_cannot_jump_the_queue() {
     f.vault.set_paused(&f.admin, &true);
     assert_eq!(
         f.vault.try_claim_withdrawal(&f.admin, &admin_claim),
-        Err(Ok(VaultError::Paused))
+        Err(Ok(VaultError::NotAtQueueHead))
     );
+    f.vault.claim_withdrawal(&alice, &alice_claim);
     f.vault.set_paused(&f.admin, &false);
 
-    f.vault.claim_withdrawal(&alice, &alice_claim);
     f.vault.claim_withdrawal(&f.admin, &admin_claim);
 }
 
@@ -237,8 +246,18 @@ fn a_claim_can_only_be_taken_by_its_owner_and_only_once() {
     );
 }
 
+/// The breaker stops what creates obligations and leaves what discharges them
+/// alone.
+///
+/// It used to stop claims as well, and that was the wrong side of the line to
+/// put them on: `request_withdrawal` burns the agUSD as it queues the claim, so
+/// a user whose payout is paused holds neither the token nor the cash, for
+/// exactly as long as the admin leaves the switch on. Pausing new requests
+/// stops the queue growing during an incident, which is the point; refusing to
+/// pay the claims already in it is a freeze on people who have already given up
+/// their tokens.
 #[test]
-fn pausing_blocks_deposits_and_withdrawals() {
+fn pausing_blocks_deposits_and_requests_but_never_a_payout() {
     let f = setup();
     let alice = depositor(&f, 1_000 * USDC);
     let claim_id = f.vault.request_withdrawal(&alice, &(100 * USDC));
@@ -255,10 +274,6 @@ fn pausing_blocks_deposits_and_withdrawals() {
         f.vault.try_request_withdrawal(&alice, &(100 * USDC)),
         Err(Ok(VaultError::Paused))
     );
-    assert_eq!(
-        f.vault.try_claim_withdrawal(&alice, &claim_id),
-        Err(Ok(VaultError::Paused))
-    );
     // New allocations stop too: an emergency stop that keeps deploying capital
     // into pools is not a stop. The Engine's checks pass, and the Vault
     // refuses the release, so the whole allocation reverts.
@@ -269,10 +284,22 @@ fn pausing_blocks_deposits_and_withdrawals() {
     assert_eq!(f.vault.claim_status(&claim_id), ClaimStatus::Ready);
     assert!(f.vault.get_total_assets() > 0);
 
-    f.vault.set_paused(&f.admin, &false);
+    // And the queued claim is paid while the breaker is still on. The agUSD
+    // behind it is already burned; there is nothing left to protect by holding
+    // the cash back.
     let before = f.usdc.balance(&alice);
     f.vault.claim_withdrawal(&alice, &claim_id);
     assert_eq!(f.usdc.balance(&alice), before + 100 * USDC);
+    assert!(f.vault.paused());
+
+    // The permissionless path is inside the breaker in exactly the same way:
+    // it is the same payment.
+    f.vault.set_paused(&f.admin, &false);
+    let bob = depositor(&f, 1_000 * USDC);
+    let bob_claim = f.vault.request_withdrawal(&bob, &(50 * USDC));
+    f.vault.set_paused(&f.admin, &true);
+    f.vault.settle_withdrawal();
+    assert_eq!(f.vault.claim_status(&bob_claim), ClaimStatus::Claimed);
 }
 
 #[test]
@@ -358,7 +385,7 @@ fn total_assets_count_idle_reserves_plus_deployed_capital() {
 #[test]
 fn get_nav_reads_the_oracle_and_propagates_staleness() {
     let f = setup();
-    let nav = 1_000 * USDC;
+    let nav = USDC;
     f.oracle
         .push_nav(&f.reporter, &oracle_adapter::FEED_PC_NAV, &nav, &T0);
     assert_eq!(f.vault.get_nav(), nav);
@@ -585,6 +612,7 @@ fn an_engine_that_governs_another_vault_does_not_freeze_this_one() {
         &other_agusd_id,
         &foreign_id,
     );
+    other_vault.set_reserve_floor(&f.admin, &0u32);
     let bob = Address::generate(&f.e);
     f.usdc.faucet(&bob, &(500 * USDC));
     other_vault.deposit(&bob, &(500 * USDC));
@@ -658,5 +686,486 @@ fn the_agusd_pointer_moves_before_the_first_deposit_and_never_after() {
     assert_eq!(
         f.vault.try_set_agusd(&f.admin, &f.agusd.address),
         Err(Ok(VaultError::DepositsExist))
+    );
+}
+
+/// The hostile Engine from the adversarial review, in full.
+///
+/// `set_engine` asks an incoming Engine whether it governs this Vault and
+/// whether its book is empty. This contract answers both correctly, because
+/// answering them correctly costs a stored address and a hardcoded zero. It is
+/// the counterexample to the idea that interrogating a counterparty proves
+/// anything about it, and the reason the Vault stopped delegating its own
+/// solvency to whatever address it happens to point at.
+#[contract]
+pub struct HostileEngine;
+
+#[contractimpl]
+impl HostileEngine {
+    pub fn initialize(e: Env, vault: Address) {
+        e.storage().instance().set(&symbol_short!("vault"), &vault);
+    }
+
+    pub fn vault(e: Env) -> Address {
+        e.storage().instance().get(&symbol_short!("vault")).unwrap()
+    }
+
+    /// Whatever number is convenient. Nothing forces it to be true, which is
+    /// the whole point of the Vault keeping its own.
+    pub fn total_allocated(_e: Env) -> i128 {
+        0
+    }
+
+    /// Call `settle_allocation` for `amount` and report whether it worked. No
+    /// cap, no floor, no event, no book: everything a real Engine does before
+    /// it asks, this one skips.
+    pub fn steal(e: Env, to: Address, amount: i128) -> bool {
+        let vault = Self::vault(e.clone());
+        matches!(
+            VaultClient::new(&e, &vault).try_settle_allocation(&to, &amount),
+            Ok(Ok(()))
+        )
+    }
+
+    /// Reset the Vault's deployed book without returning anything, if it will
+    /// let us. It will not: `record_writedown` needs the Vault admin's
+    /// signature as well as this contract's call.
+    pub fn erase_the_book(e: Env, admin: Address, amount: i128) -> bool {
+        let vault = Self::vault(e.clone());
+        matches!(
+            VaultClient::new(&e, &vault).try_record_writedown(&admin, &amount),
+            Ok(Ok(()))
+        )
+    }
+
+    /// Claim a repayment that never arrived, if it will let us. It will not:
+    /// the Vault checks its own balance first.
+    pub fn fake_a_repayment(e: Env, amount: i128) -> bool {
+        let vault = Self::vault(e.clone());
+        matches!(
+            VaultClient::new(&e, &vault).try_record_repayment(&amount),
+            Ok(Ok(()))
+        )
+    }
+}
+
+/// The finding, and the fix, in one test: a hostile Engine gets exactly what an
+/// honest one would have got, and then gets nothing.
+///
+/// Before, `settle_allocation` released USDC on the Engine's say-so and checked
+/// nothing itself, on the reasoning that the Engine had already checked the
+/// caps and the floor. That reasoning holds only for an Engine that runs those
+/// checks, and `set_engine`'s guard cannot tell one of those from a contract
+/// that answers `vault()` and returns zero from `total_allocated()`. Forty
+/// lines emptied the Vault.
+#[test]
+fn a_hostile_engine_cannot_take_more_than_an_honest_one() {
+    let f = setup();
+    depositor(&f, 1_000 * USDC);
+    // The floor the testnet deployment runs with, on both contracts.
+    f.engine.set_reserve_floor(&f.admin, &2_500u32);
+    f.vault.set_reserve_floor(&f.admin, &2_500u32);
+
+    // What an honest Engine can do: 750, because 250 of the 1000 has to stay.
+    assert!(f
+        .engine
+        .try_allocate(&f.admin, &f.pool, &(751 * USDC))
+        .is_err());
+    f.engine.allocate(&f.admin, &f.pool, &(750 * USDC));
+    assert_eq!(f.vault.idle_reserves(), 250 * USDC);
+    assert_eq!(f.vault.deployed_capital(), 750 * USDC);
+
+    // Unwind, so the hostile Engine starts from the same balance sheet.
+    f.engine.deallocate(&f.pool, &(750 * USDC));
+    assert_eq!(f.vault.deployed_capital(), 0);
+    assert_eq!(f.vault.idle_reserves(), 1_000 * USDC);
+
+    let hostile_id = f.e.register(HostileEngine, ());
+    let hostile = HostileEngineClient::new(&f.e, &hostile_id);
+    hostile.initialize(&f.vault.address);
+    // It passes the guard. That is the finding, not a bug in the test: the
+    // guard asks two questions and this contract knows both answers.
+    f.vault.set_engine(&f.admin, &hostile_id);
+    assert_eq!(f.vault.allocation_engine(), hostile_id);
+
+    let mallory = Address::generate(&f.e);
+    // One stroop past what the floor allows is refused, from an Engine that
+    // never checked a floor in its life.
+    assert!(!hostile.steal(&mallory, &(750 * USDC + 1)));
+    assert!(hostile.steal(&mallory, &(750 * USDC)));
+
+    // And that is the end of it. The Vault's own deployed book went up by
+    // exactly what left, the hostile Engine cannot write to it, and every
+    // further release is measured against it.
+    assert_eq!(f.vault.deployed_capital(), 750 * USDC);
+    for _ in 0..10 {
+        assert!(!hostile.steal(&mallory, &(10 * USDC)));
+    }
+    assert!(!hostile.steal(&mallory, &1));
+    assert_eq!(f.usdc.balance(&mallory), 750 * USDC);
+    assert_eq!(f.vault.idle_reserves(), 250 * USDC);
+
+    // The two ways it could try to reset that book both fail. One needs cash it
+    // does not have, the other needs a signature it cannot forge.
+    assert!(!hostile.fake_a_repayment(&(750 * USDC)));
+    f.e.mock_auths(&[]);
+    assert!(!hostile.erase_the_book(&f.admin, &(750 * USDC)));
+    assert_eq!(f.vault.deployed_capital(), 750 * USDC);
+}
+
+/// The floor is a floor across calls, not within one. Salami slicing a Vault
+/// one small release at a time has to stop at the same place a single large
+/// release does.
+#[test]
+fn the_floor_holds_across_repeated_releases() {
+    let f = setup();
+    depositor(&f, 1_000 * USDC);
+    f.engine.set_reserve_floor(&f.admin, &2_500u32);
+    f.vault.set_reserve_floor(&f.admin, &2_500u32);
+
+    let mut deployed = 0;
+    while f
+        .engine
+        .try_allocate(&f.admin, &f.pool, &(50 * USDC))
+        .is_ok()
+    {
+        deployed += 50 * USDC;
+        assert!(deployed <= 750 * USDC);
+    }
+    assert_eq!(deployed, 750 * USDC);
+    assert_eq!(f.vault.free_reserves(), 250 * USDC);
+    assert_eq!(f.engine.get_reserve_ratio(), 2_500);
+}
+
+/// A queued claim is money the Vault already owes, and it used to appear in no
+/// on-chain quantity at all: not in agUSD supply, which was burned at request
+/// time, not in idle reserves, not in total assets, not in the reserve ratio.
+///
+/// The confirmed consequence: deposit 1000, queue all 1000 for withdrawal, and
+/// the Engine would still deploy 400 while `get_reserve_ratio` reported a
+/// healthy 6000 bps. The claim then could not be paid.
+#[test]
+fn a_queued_withdrawal_is_not_free_liquidity() {
+    let f = setup();
+    let alice = depositor(&f, 1_000 * USDC);
+    // Open both floors right up, so nothing but the liability itself is
+    // stopping the allocation.
+    f.engine.set_reserve_floor(&f.admin, &0u32);
+    f.vault.set_reserve_floor(&f.admin, &0u32);
+
+    let claim_id = f.vault.request_withdrawal(&alice, &(1_000 * USDC));
+    // The gross balance has not moved: the USDC is still here, and that is
+    // exactly what made this invisible.
+    assert_eq!(f.vault.idle_reserves(), 1_000 * USDC);
+    assert_eq!(f.vault.outstanding_liabilities(), 1_000 * USDC);
+    assert_eq!(f.vault.free_reserves(), 0);
+    assert_eq!(f.vault.get_total_assets(), 1_000 * USDC);
+    assert_eq!(f.vault.get_net_assets(), 0);
+
+    // The 400 the Engine used to deploy against money it already owed.
+    assert_eq!(
+        f.engine.try_allocate(&f.admin, &f.pool, &(400 * USDC)),
+        Err(Ok(allocation_engine::EngineError::InsufficientReserves))
+    );
+    assert_eq!(f.engine.get_exposure(&f.pool), 0);
+
+    // And the claim is payable, which is the whole point of refusing.
+    assert_eq!(f.vault.claim_status(&claim_id), ClaimStatus::Ready);
+    f.vault.claim_withdrawal(&alice, &claim_id);
+    assert_eq!(f.usdc.balance(&alice), 1_000 * USDC);
+    assert_eq!(f.vault.outstanding_liabilities(), 0);
+}
+
+/// Partway through: a queue that owes some of the book leaves the rest
+/// deployable, and the floor is measured against what is left.
+#[test]
+fn the_floor_is_measured_on_free_reserves_not_the_gross_balance() {
+    let f = setup();
+    let alice = depositor(&f, 1_000 * USDC);
+    f.engine.set_reserve_floor(&f.admin, &2_500u32);
+    f.vault.set_reserve_floor(&f.admin, &2_500u32);
+
+    f.vault.request_withdrawal(&alice, &(600 * USDC));
+    assert_eq!(f.vault.free_reserves(), 400 * USDC);
+    assert_eq!(f.vault.get_net_assets(), 400 * USDC);
+
+    // 25% of 400 stays, so 300 may go. Against the gross balance it would have
+    // been 25% of 1000, leaving room for 750 that is not there.
+    assert!(f
+        .engine
+        .try_allocate(&f.admin, &f.pool, &(301 * USDC))
+        .is_err());
+    f.engine.allocate(&f.admin, &f.pool, &(300 * USDC));
+    assert_eq!(f.vault.free_reserves(), 100 * USDC);
+    assert_eq!(f.vault.idle_reserves(), 700 * USDC);
+    // Still enough to pay the queue, which is what the subtraction protects.
+    assert_eq!(f.vault.claim_status(&1u64), ClaimStatus::Ready);
+}
+
+/// One agUSD, never claimed, used to freeze every withdrawal behind it forever.
+///
+/// The head advanced only when the head claim's own owner called
+/// `claim_withdrawal`, so the holder of the head had a veto over everyone
+/// behind them and exercised it by doing nothing at all. The attack cost the
+/// anti-dust minimum, and the attacker kept it.
+#[test]
+fn a_stalled_head_claim_no_longer_freezes_the_queue() {
+    let f = setup();
+    let mallory = depositor(&f, 1_000 * USDC);
+    let bob = depositor(&f, 1_000 * USDC);
+    let carol = depositor(&f, 1_000 * USDC);
+
+    // The grief: one claim at the dust floor, at the head, never claimed.
+    let griefer = f.vault.request_withdrawal(&mallory, &MIN_WITHDRAWAL);
+    let bob_claim = f.vault.request_withdrawal(&bob, &(300 * USDC));
+    let carol_claim = f.vault.request_withdrawal(&carol, &(200 * USDC));
+
+    // Everyone behind is stuck, with plenty of liquidity to pay them.
+    assert!(f.vault.idle_reserves() >= 3_000 * USDC);
+    assert_eq!(
+        f.vault.try_claim_withdrawal(&bob, &bob_claim),
+        Err(Ok(VaultError::NotAtQueueHead))
+    );
+
+    // Bob unsticks himself without touching the ordering: the head claim is
+    // paid, to Mallory, for exactly what Mallory asked for.
+    let settled = f.vault.settle_withdrawal();
+    assert_eq!(settled, griefer);
+    assert_eq!(f.usdc.balance(&mallory), MIN_WITHDRAWAL);
+    assert_eq!(f.vault.claim_status(&griefer), ClaimStatus::Claimed);
+    assert_eq!(f.vault.queue_head(), bob_claim);
+
+    // And the queue runs on, still strictly in order.
+    assert_eq!(
+        f.vault.try_claim_withdrawal(&carol, &carol_claim),
+        Err(Ok(VaultError::NotAtQueueHead))
+    );
+    f.vault.claim_withdrawal(&bob, &bob_claim);
+    f.vault.settle_withdrawal();
+    assert_eq!(f.usdc.balance(&carol), 200 * USDC);
+    assert_eq!(f.vault.queue_length(), 0);
+    assert_eq!(f.vault.outstanding_liabilities(), 0);
+}
+
+/// `settle_withdrawal` takes no claim id and no recipient, so there is no lever
+/// to pull. This is the test of that, rather than of the happy path.
+#[test]
+fn settle_withdrawal_offers_the_caller_no_choice_of_claim_or_recipient() {
+    let f = setup();
+    let alice = depositor(&f, 1_000 * USDC);
+    let mallory = Address::generate(&f.e);
+
+    // Nothing queued: there is no claim to name, so there is nothing to pay.
+    assert_eq!(f.vault.try_settle_withdrawal(), Err(Ok(VaultError::QueueEmpty)));
+
+    let alice_claim = f.vault.request_withdrawal(&alice, &(400 * USDC));
+    let bob = depositor(&f, 1_000 * USDC);
+    let bob_claim = f.vault.request_withdrawal(&bob, &(100 * USDC));
+
+    // Mallory calls it and Alice is paid. Mallory cannot ask for Bob's claim
+    // instead, and cannot ask to be paid: neither is an argument.
+    f.vault.settle_withdrawal();
+    assert_eq!(f.usdc.balance(&alice), 400 * USDC);
+    assert_eq!(f.usdc.balance(&mallory), 0);
+    assert_eq!(f.vault.get_claim(&alice_claim).owner, alice);
+    assert_eq!(f.vault.queue_head(), bob_claim);
+
+    // Reserves short of the head claim fail the same way a self-claim does,
+    // rather than paying part of it. Reaching that state now takes a claim
+    // queued after the capital went out, because the Engine can no longer
+    // deploy against money the queue is already owed.
+    let carol = depositor(&f, 1_000 * USDC);
+    f.engine.allocate(&f.admin, &f.pool, &(f.vault.free_reserves()));
+    assert_eq!(f.vault.free_reserves(), 0);
+    let carol_claim = f.vault.request_withdrawal(&carol, &(500 * USDC));
+    f.vault.claim_withdrawal(&bob, &bob_claim);
+    assert_eq!(f.vault.queue_head(), carol_claim);
+    assert_eq!(
+        f.vault.try_settle_withdrawal(),
+        Err(Ok(VaultError::InsufficientLiquidity))
+    );
+    assert_eq!(f.vault.claim_status(&carol_claim), ClaimStatus::Pending);
+}
+
+/// The Vault's floor is admin state, and it is the number every release is
+/// measured against, so it is gated exactly as hard as the pause switch.
+///
+/// Checked with targeted authorizations rather than the fixture's blanket mock:
+/// `mock_all_auths` turns authorization off wholesale, so a test that runs
+/// under it proves nothing about who signed for what.
+#[test]
+fn only_the_admin_can_move_the_vaults_reserve_floor() {
+    let f = setup();
+    let stranger = Address::generate(&f.e);
+
+    // A stranger naming themselves is refused on identity.
+    f.e.mock_auths(&[MockAuth {
+        address: &stranger,
+        invoke: &MockAuthInvoke {
+            contract: &f.vault.address,
+            fn_name: "set_reserve_floor",
+            args: (stranger.clone(), 0u32).into_val(&f.e),
+            sub_invokes: &[],
+        },
+    }]);
+    assert_eq!(
+        f.vault.try_set_reserve_floor(&stranger, &0u32),
+        Err(Ok(VaultError::NotAdmin))
+    );
+
+    // A stranger naming the admin is refused on authorization: the call is not
+    // signed by the address it claims to be acting for.
+    f.e.mock_auths(&[MockAuth {
+        address: &stranger,
+        invoke: &MockAuthInvoke {
+            contract: &f.vault.address,
+            fn_name: "set_reserve_floor",
+            args: (f.admin.clone(), 0u32).into_val(&f.e),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(f.vault.try_set_reserve_floor(&f.admin, &0u32).is_err());
+    assert_eq!(f.vault.reserve_floor_bps(), 0);
+
+    // The admin, signing for themselves, moves it.
+    f.e.mock_auths(&[MockAuth {
+        address: &f.admin,
+        invoke: &MockAuthInvoke {
+            contract: &f.vault.address,
+            fn_name: "set_reserve_floor",
+            args: (f.admin.clone(), 3_000u32).into_val(&f.e),
+            sub_invokes: &[],
+        },
+    }]);
+    f.vault.set_reserve_floor(&f.admin, &3_000u32);
+    assert_eq!(f.vault.reserve_floor_bps(), 3_000);
+}
+
+/// A repayment the Vault cannot see in its own balance is not a repayment.
+/// This is what keeps `deployed_capital` from being a number the Engine writes.
+#[test]
+fn a_repayment_has_to_have_actually_arrived() {
+    let f = setup();
+    depositor(&f, 1_000 * USDC);
+    f.engine.allocate(&f.admin, &f.pool, &(400 * USDC));
+    assert_eq!(f.vault.deployed_capital(), 400 * USDC);
+    assert_eq!(f.vault.booked_reserves(), 600 * USDC);
+
+    let hostile_id = f.e.register(HostileEngine, ());
+    let hostile = HostileEngineClient::new(&f.e, &hostile_id);
+    hostile.initialize(&f.vault.address);
+    // Repointing is refused outright while this Vault's capital is out, from
+    // the Vault's own book rather than by asking the Engine it is leaving.
+    assert_eq!(
+        f.vault.try_set_engine(&f.admin, &hostile_id),
+        Err(Ok(VaultError::CapitalDeployed))
+    );
+
+    // The honest path works because the cash comes with it.
+    f.engine.deallocate(&f.pool, &(400 * USDC));
+    assert_eq!(f.vault.deployed_capital(), 0);
+    assert_eq!(f.vault.booked_reserves(), 1_000 * USDC);
+    assert_eq!(f.vault.idle_reserves(), 1_000 * USDC);
+}
+
+/// The admin key was a single point of failure with no way back from either of
+/// the two ways it fails: lost, and every admin gated call in the contract goes
+/// with it; compromised, and it cannot be replaced.
+///
+/// Checked with targeted authorizations, because the whole property under test
+/// is who signed what, and `mock_all_auths` would answer that question for
+/// everybody at once.
+#[test]
+fn the_admin_role_can_be_handed_over_in_two_steps_and_only_to_a_live_key() {
+    let f = setup();
+    let successor = Address::generate(&f.e);
+    let mallory = Address::generate(&f.e);
+    assert_eq!(f.vault.pending_admin(), None);
+
+    // A stranger cannot propose.
+    f.e.mock_auths(&[MockAuth {
+        address: &mallory,
+        invoke: &MockAuthInvoke {
+            contract: &f.vault.address,
+            fn_name: "propose_admin",
+            args: (mallory.clone(), mallory.clone()).into_val(&f.e),
+            sub_invokes: &[],
+        },
+    }]);
+    assert_eq!(
+        f.vault.try_propose_admin(&mallory, &mallory),
+        Err(Ok(VaultError::NotAdmin))
+    );
+
+    // The admin proposes. Nothing has moved yet: that is the point of the
+    // second step, and it is what stops a one call transfer to a typo.
+    f.e.mock_auths(&[MockAuth {
+        address: &f.admin,
+        invoke: &MockAuthInvoke {
+            contract: &f.vault.address,
+            fn_name: "propose_admin",
+            args: (f.admin.clone(), successor.clone()).into_val(&f.e),
+            sub_invokes: &[],
+        },
+    }]);
+    f.vault.propose_admin(&f.admin, &successor);
+    assert_eq!(f.vault.pending_admin(), Some(successor.clone()));
+    assert_eq!(f.vault.admin(), f.admin);
+
+    // Nobody but the proposed address can accept, and naming it is not enough:
+    // the signature has to be theirs.
+    f.e.mock_auths(&[MockAuth {
+        address: &mallory,
+        invoke: &MockAuthInvoke {
+            contract: &f.vault.address,
+            fn_name: "accept_admin",
+            args: (mallory.clone(),).into_val(&f.e),
+            sub_invokes: &[],
+        },
+    }]);
+    assert_eq!(
+        f.vault.try_accept_admin(&mallory),
+        Err(Ok(VaultError::NotPendingAdmin))
+    );
+    f.e.mock_auths(&[MockAuth {
+        address: &mallory,
+        invoke: &MockAuthInvoke {
+            contract: &f.vault.address,
+            fn_name: "accept_admin",
+            args: (successor.clone(),).into_val(&f.e),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(f.vault.try_accept_admin(&successor).is_err());
+    assert_eq!(f.vault.admin(), f.admin);
+
+    // The successor signs for itself, which is the proof the key is real and
+    // reachable, and the role moves.
+    f.e.mock_auths(&[MockAuth {
+        address: &successor,
+        invoke: &MockAuthInvoke {
+            contract: &f.vault.address,
+            fn_name: "accept_admin",
+            args: (successor.clone(),).into_val(&f.e),
+            sub_invokes: &[],
+        },
+    }]);
+    f.vault.accept_admin(&successor);
+    assert_eq!(f.vault.admin(), successor);
+    assert_eq!(f.vault.pending_admin(), None);
+
+    // The old key is now an ordinary address, and the new one has the powers.
+    f.e.mock_all_auths();
+    assert_eq!(
+        f.vault.try_set_paused(&f.admin, &true),
+        Err(Ok(VaultError::NotAdmin))
+    );
+    f.vault.set_paused(&successor, &true);
+    assert!(f.vault.paused());
+
+    // Accepting twice is not a second transfer.
+    assert_eq!(
+        f.vault.try_accept_admin(&successor),
+        Err(Ok(VaultError::NoPendingAdmin))
     );
 }
