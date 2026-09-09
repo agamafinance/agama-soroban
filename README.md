@@ -78,22 +78,31 @@ Network: **Stellar Testnet** · RPC: `https://soroban-testnet.stellar.org`
 | Contract | Address |
 |---|---|
 | USDC (Circle) | [`CBIELTK6...XQDAMA`](https://stellar.expert/explorer/testnet/contract/CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA) |
-| agUSD | [`CANR4HJC...VJGIYG`](https://stellar.expert/explorer/testnet/contract/CANR4HJCDO7KDIUKTNGOJJUSZ45VB6EVR5IFHTOPQUCGAZ2XEDVJGIYG) |
-| sagUSD | [`CDU7BYCE...GVYE7X`](https://stellar.expert/explorer/testnet/contract/CDU7BYCE535Y4WU6FAQTMNPLR3RD7HTGWR2NETW7EEPAQTLY2XGVYE7X) |
-| Vault Contract | [`CCW5EQCV...KDSIWP`](https://stellar.expert/explorer/testnet/contract/CCW5EQCVHXA2PTXN4Y4QMO4O4YMG6BRMB7M2PYASILFI53BL3CKDSIWP) |
-| Allocation Engine | [`CAOGJDWH...KJDONN`](https://stellar.expert/explorer/testnet/contract/CAOGJDWH5SZAVPGLBB2NCKGPT4OUFT3YEKUCKEJP6BVN3CR2WUKJDONN) |
+| agUSD | [`CDO7WPJH...V2L6PL`](https://stellar.expert/explorer/testnet/contract/CDO7WPJHUFTM3Q6ZLT5FRQIK4OYX5ZG7ERDC2B5W3BWXBRPPMXV2L6PL) |
+| sagUSD | [`CALOJ3UH...SRQWKX`](https://stellar.expert/explorer/testnet/contract/CALOJ3UHHZ7V4LU5J4WY3DIFIXCTL37K36SZTIKSNGVB4TANNMSRQWKX) |
+| Vault Contract | [`CAK7NGMF...AFCSSL`](https://stellar.expert/explorer/testnet/contract/CAK7NGMFYPAJKFY74TOQSCIJADCDCCMAOKEGFHI2O7BZBCQQTIAFCSSL) |
+| Allocation Engine | [`CBM2RACB...G56HRT`](https://stellar.expert/explorer/testnet/contract/CBM2RACBNQU6YKRQAXWMGVFANCO3AJ4LOQONEY5O7IPMXPUBS6G56HRT) |
 | Oracle Adapter | [`CCIABPQM...N4DWJG`](https://stellar.expert/explorer/testnet/contract/CCIABPQMPGS4HSDQYN46M67LV6B5LCYO6X2XLCI27JSOMKUMN3N4DWJG) |
 
 ### Pool Adapters
 
 | Adapter | Originator | Jurisdiction | Address |
 |---|---|---|---|
-| Private Credit | QIRO | LU | [`CBWFVABY...JT5BBT`](https://stellar.expert/explorer/testnet/contract/CBWFVABYRGKAGDN54MIN4GIXQO3ALVPJ3POSVFDFKUQSLYL4M4JT5BBT) |
+| Private Credit | QIRO | LU | [`CCDB2I75...CA4PSR`](https://stellar.expert/explorer/testnet/contract/CCDB2I753FQJCRMVQVSYMUU2UT2R2H2UQJ7I2OLESJ7EKHCZUWCA4PSR) |
 | Etherfuse | ETHERFUS | MX | [`CADNIBDB...KF4ZFV`](https://stellar.expert/explorer/testnet/contract/CADNIBDB5LZHGOOSVTL2LF47XCRPEL53IHBES2Y4RIORI4I3VCKF4ZFV) |
 
 Both adapters are registered with the Allocation Engine. `originator` and
 `jurisdiction` are the buckets the concentration caps aggregate over, so two
 pools fronted by the same counterparty count as one position.
+
+The Etherfuse adapter, the Oracle Adapter and sagUSD are the same contracts as
+before the second security review. None of the three changed, and none of them
+had to be redeployed to follow the Vault and the Engine that did: the Etherfuse
+adapter moved with `set_counterparties`, sagUSD with `set_agusd`, and the Oracle
+Adapter binds neither counterparty and only had to be pointed at. Those setters
+were added by the first review on the argument that a pointer with no way back
+had already cost this protocol six contracts. This is the deployment that had a
+use for them, and they saved three redeployments out of six.
 
 ### Superseded Contracts
 
@@ -126,9 +135,24 @@ replaced. None of them is deleted, and none of them is quietly reused.
 | Etherfuse adapter, third deployment | [`CBA3GQLH...AH7EWI`](https://stellar.expert/explorer/testnet/contract/CBA3GQLHCEOCCZIDVFZ74AG4FUCEO2SN7AMGY4RSAMN4DTHW2WAH7EWI) | Replaced with the Engine and the Vault it names. It also had no way to write off a defaulted position: `deallocate` transfers the USDC before it decrements the book, and a defaulted originator leaves the adapter holding none. |
 | sagUSD staking, fourth deployment | [`CCBEDKRQ...L6HFO2`](https://stellar.expert/explorer/testnet/contract/CCBEDKRQHKAP2W3NC4UIYC4WZSMJVYRXN6EQERHFII45M3PD4JL6HFO2) | Carried `report_nav`, an admin setter that overwrote the NAV outright with any non-negative value, no bound and no event. The NAV is the denominator of both directions of the share price, so against 1000 agUSD staked the sequence `report_nav(1)`, stake 99 stroops for 99% of the share supply, `report_nav` back, unstake, walks away with 990 agUSD of somebody else's deposit. Superseded holding nothing. |
 
-The last seven rows are one event: an adversarial security review of this
-repository, ahead of the OtterSec audit. The findings and the fixes are in
-[The Security Review, On-Chain](#the-security-review-on-chain) below.
+| Vault Contract, fifth deployment | [`CCW5EQCV...KDSIWP`](https://stellar.expert/explorer/testnet/contract/CCW5EQCVHXA2PTXN4Y4QMO4O4YMG6BRMB7M2PYASILFI53BL3CKDSIWP) | Replaced after a second adversarial security review. Its reserve floor was a share of net assets, and `record_writedown` lowers net assets with no cash moving, so every write-down handed back releasable headroom worth `floor_bps` of itself: allocate to the floor, write the position off, allocate to the new floor, and 999.9999999 of every 1000 USDC leaves a Vault holding a 25% floor with every individual call inside the limit. It also trapped on a withdrawal payout the USDC contract refused to deliver, and USDC is a Stellar Asset Contract, so a claimant with no trustline, a frozen one or a limit below the claim froze the whole FIFO queue permanently for everybody behind them. This is the contract the exploit in [The Second Security Review, On-Chain](#the-second-security-review-on-chain) is submitted against. |
+| Allocation Engine, fourth deployment | [`CAOGJDWH...KJDONN`](https://stellar.expert/explorer/testnet/contract/CAOGJDWH5SZAVPGLBB2NCKGPT4OUFT3YEKUCKEJP6BVN3CR2WUKJDONN) | Replaced after a second adversarial security review. Its reserve floor was a share of net assets, and `record_writedown` lowers net assets with no cash moving, so every write-down handed back releasable headroom worth `floor_bps` of itself: allocate to the floor, write the position off, allocate to the new floor, and 999.9999999 of every 1000 USDC leaves a Vault holding a 25% floor with every individual call inside the limit. `get_reserve_ratio` had the same denominator, so recognising a loss made the reported liquidity ratio go up. |
+| agUSD (`contracts/agusd-core`), fourth deployment | [`CANR4HJC...VJGIYG`](https://stellar.expert/explorer/testnet/contract/CANR4HJCDO7KDIUKTNGOJJUSZ45VB6EVR5IFHTOPQUCGAZ2XEDVJGIYG) | Replaced with the Vault that mints it, since a token freezes its minter at the first mint and cannot follow one. Retired at a zero supply, redeemed through its own Vault first. |
+| Private credit adapter, fourth deployment | [`CBWFVABY...JT5BBT`](https://stellar.expert/explorer/testnet/contract/CBWFVABYRGKAGDN54MIN4GIXQO3ALVPJ3POSVFDFKUQSLYL4M4JT5BBT) | Not replaced because its code changed, and that is the point of the row. It could not follow the new Engine and Vault because `set_counterparties` refuses an adapter holding USDC, and it holds 0.2 USDC left over from a written-down position: the exposure is zero, `deallocate` is capped at zero, and there is no sweep entry point anywhere. The cash and the repair path are both stuck. That is finding M2 of the second review, recorded and left for triage, and this retirement is what it has cost. |
+| sagUSD staking, fifth deployment | [`CDU7BYCE...GVYE7X`](https://stellar.expert/explorer/testnet/contract/CDU7BYCE535Y4WU6FAQTMNPLR3RD7HTGWR2NETW7EEPAQTLY2XGVYE7X) | Replaced with the agUSD it accepts. It had taken custody, which closes `set_agusd` for good, so it could not follow. Its stake was unwound and redeemed before the handover, so it strands nobody. Its successor had taken none and was repointed in place rather than redeployed again. |
+| Vault Contract, sixth and seventh deployments | [`CCVFI7YG...DFIKXT`](https://stellar.expert/explorer/testnet/contract/CCVFI7YGBYL346U4NY2TSXGIH3766LKK74BJ5VDCKX5YZFJIUBDFIKXT) · [`CBIJCFWZ...27JDPK`](https://stellar.expert/explorer/testnet/contract/CBIJCFWZXCHMWBEDXBCCKIPVTPUI4TDMZOMMI6S7URU5GLTA5627JDPK) | Two intermediate generations from the second review, each byte for byte the contract that replaced it. They were retired because the on-chain smoke runs left them carrying `recognised_losses` from experiments rather than credit events, and that counter is deliberately permanent: it is what stops a write-down buying room under the reserve floor. A book whose floor is not tightened for good by a test is therefore only reachable through a fresh deployment. The permanence is the fix working, and these two rows are its price. |
+| Allocation Engine, fifth and sixth deployments | [`CA2KUSVW...JJ7YAZ`](https://stellar.expert/explorer/testnet/contract/CA2KUSVWB6G5MTA32XXAGACXNHQQM3ETND3CWVJRVTNPLG2PXIJJ7YAZ) · [`CB45BH7X...2EEK4K`](https://stellar.expert/explorer/testnet/contract/CB45BH7XYH6QWWSOI67Z4IEK6VYF7TO53OYQIFKLIMJ6ZZOBXJ2EEK4K) | Two intermediate generations from the second review, each byte for byte the contract that replaced it. They were retired because the on-chain smoke runs left them carrying `recognised_losses` from experiments rather than credit events, and that counter is deliberately permanent: it is what stops a write-down buying room under the reserve floor. A book whose floor is not tightened for good by a test is therefore only reachable through a fresh deployment. The permanence is the fix working, and these two rows are its price. |
+| agUSD (`contracts/agusd-core`), fifth and sixth deployments | [`CAT5VV5B...QR3FXA`](https://stellar.expert/explorer/testnet/contract/CAT5VV5BTSFZEIAT37NRTHWSYS6LQCIZ7AIERGSFK2GRWY7VLNQR3FXA) · [`CCS3LZIN...NA2YZD`](https://stellar.expert/explorer/testnet/contract/CCS3LZINQQRRQQSSVXGPNEOIAGNMB6AR7UAVJEK7MZ6RGVSPVZNA2YZD) | Each replaced with the Vault that mints it. Both retired at a zero supply, redeemed through their own Vault first. |
+| Private credit adapter, fifth and sixth deployments | [`CDPFTGS6...TWQFYQ`](https://stellar.expert/explorer/testnet/contract/CDPFTGS62IZHPZEGK6ENVTBLUKMLOD4OEPD7UVMJG3FCNDWS65TWQFYQ) · [`CANRYN2H...ZQUIIQ`](https://stellar.expert/explorer/testnet/contract/CANRYN2HGYU6SBQOYKCL52LSNSXKOK54ECK2UFAZTMHNPK47VUZQUIIQ) | Each replaced with the Engine and the Vault it names, and each holding USDC from a written-down position that no entry point can move, which is finding M2 again. |
+
+Two events account for the last sixteen rows. The first seven of them are an
+adversarial security review of this repository, ahead of the OtterSec audit;
+the findings and the fixes are in
+[The Security Review, On-Chain](#the-security-review-on-chain) below. The nine
+after them are a second review, run against the fixes the first one produced, on
+the reasoning that a large set of changes to a custodian is where the next bug
+will be; those are in
+[The Second Security Review, On-Chain](#the-second-security-review-on-chain).
 
 One missing setter cost six contracts. The Engine could not follow its Vault,
 the Vault could not follow its Engine, the token could not follow the Vault
@@ -171,12 +195,34 @@ differ the tighter one binds, which is the safe direction. The Vault ships with
 its own floor closed at 10000 bps, the same way the Engine ships with its caps
 at zero.
 
-It is measured on **free** reserves and **net** assets, not the gross balance.
+It is measured on **free** reserves, not the gross balance.
 `request_withdrawal` burns the agUSD immediately and leaves the USDC in the
 Vault until the claim is paid, so between those two moments the money is on the
 balance sheet and already belongs to somebody. `outstanding_liabilities()` is
 the running total of it, `free_reserves()` is idle reserves minus that, and
 `get_net_assets()` is free reserves plus deployed capital.
+
+The denominator is **`floor_base()`**, which is net assets plus everything the
+protocol has ever written off, and the difference between those two numbers is
+the whole of the second review's first finding. `record_writedown` lowers
+deployed capital with no cash moving anywhere, so a floor that is a share of net
+assets is a floor whose absolute size the admin can lower at will: allocate to
+the floor, write the position off, allocate to the new floor, and the reserves
+walk out of the Vault in slices that are each individually inside the limit.
+Forty rounds of that left one stroop of a 1000 USDC book behind a 25% floor
+while the pool adapter kept every dollar. `recognised_losses()` on the Vault and
+`written_off()` on the Engine are cumulative, never fall, and stay in the
+denominator for the life of the contract, so a write-down buys nothing.
+
+That is also the more correct base under a real default, which is the test of
+whether a guard is a patch or a fix. agUSD is redeemed one for one, so losing a
+quarter of the assets does not reduce by a stroop what the Vault owes: a book in
+that state should be holding more cash against its liabilities, not concluding
+that it may now lend out more. New deposits raise the base and release headroom
+in the ordinary way, so it fails closed without stranding the contract.
+`get_reserve_ratio()` moved onto the same base, which fixes a reporting bug in
+the other direction: with net assets underneath it, recognising a loss made the
+reported liquidity ratio go **up**.
 
 The caps moved because the old set could not both matter. Two pools capped at
 30% can deploy at most 60% of the book, so 40% stays idle whatever the operator
@@ -272,6 +318,72 @@ transfer, so the testnet deployment is not left with agUSD nobody can redeem,
 and it says so in the output. Nothing in the contracts does that, and nothing
 should be read as though something did. Who bears a credit loss is an open
 product decision, and it has not been made.
+
+### The Second Security Review, On-Chain
+
+The fixes above added a lot of new surface to a custodian: a permissionless
+`settle_withdrawal`, an admin-gated `write_down` that reduces recorded exposure
+with no cash moving, four new accounting quantities that every cap and both
+floors now read, and a two step admin rotation on seven contracts. So the
+repository was reviewed a second time, adversarially, against exactly that
+surface.
+
+It found **two Critical issues and nothing at High**. Both are in the code the
+first review produced. The Medium and Low findings are recorded in the pull
+request and left for triage rather than fixed here.
+
+`scripts/smoke-review2.sh` proves both fixes against the live deployment, in two
+independently runnable stages: **52 assertions, no failures** (29 for the floor,
+23 for the queue). From the run of 9 September 2026:
+
+| Finding | Severity | What was wrong | What the fix does |
+|---|---|---|---|
+| A write-down made the reserve floor vacuous | Critical | The floor was a share of net assets and `record_writedown` lowers net assets with no cash moving, so every write-down handed back releasable headroom worth `floor_bps` of itself. Alternating `allocate` and `write_down` moved 9,999,999,999 of 10,000,000,000 stroops out of a Vault holding a 25 percent floor, one stroop where 250 USDC was promised, with every individual call inside both floors | `recognised_losses()` on the Vault and `written_off()` on the Engine are cumulative, never fall, and stay in `floor_base()` for good, so a write-down buys nothing. `get_reserve_ratio()` moved onto the same base |
+| An undeliverable claim froze the whole withdrawal queue | Critical | USDC is a Stellar Asset Contract, so a payout fails whenever the destination has no trustline, has a frozen one, has a limit below the claim, or no longer exists. A failed payout trapped the whole call, `queue_head` never advanced, and the queue is FIFO with no admin path around it by design. One USDC and a lowered trustline limit froze every withdrawal in the protocol permanently, and the owner could not undo it either | `settle_withdrawal` attempts the delivery. A claim the token refuses is marked deferred and stepped over, unpaid, still counted in `outstanding_liabilities` so its cash stays reserved, and collected later by its owner through `claim_withdrawal` out of head order |
+
+**The first finding is proved on-chain against the contracts that had it, not
+only by a unit test that fails before the change.** The superseded Vault and
+Engine are still live, so the exploit was run against them and submitted:
+
+| Step, on the superseded contracts | Result | Transaction |
+|---|---|---|
+| Allocate everything the 25 percent floor releases | Idle reserves land on 1,250,000, exactly the floor | [`fb2ce4a7`](https://stellar.expert/explorer/testnet/tx/fb2ce4a7d0dc1ea63faef7c5e3aa85775a4a7b3c20019fa9a7f2eb0b2d8020c8) |
+| One stroop more | Refused, `ReserveFloorBreached` (410) | simulated, error code asserted |
+| Write the whole position off, no cash moving | The adapter still holds every dollar of it | [`0a422d69`](https://stellar.expert/explorer/testnet/tx/0a422d6932b615d2a39a6f9593cbb8826a8ca2735c5b5c5029848e75a45f57c6) |
+| The identical allocation that was just refused | **Accepted.** The Vault ends holding 875,000 where its own floor promised 1,250,000 | [`6820cec4`](https://stellar.expert/explorer/testnet/tx/6820cec478b6b518bf4bcd74f90378a4d5f9c095dfccd638c168013ee46802c7) |
+
+The same sequence against the live contracts is refused with
+`ReserveFloorBreached`, `floor_base()` does not move when the loss is
+recognised, and the reserve ratio stays at 2500 bps instead of jumping upwards.
+
+| Step, on the live contracts | Result | Transaction |
+|---|---|---|
+| Allocate to the floor across both pools | Free reserves land on the floor to the stroop | [`7cf49114`](https://stellar.expert/explorer/testnet/tx/7cf4911490cc74a58a38d936e32f308ea949f1e10f7426bbe3d49fcbed87edb2), [`ef5fc7c0`](https://stellar.expert/explorer/testnet/tx/ef5fc7c08ecc2f8272cf3ff537ff87d11efd6c7ca70d982e3ddae62eda157705) |
+| Write the private credit leg off entirely | `recognised_losses` rises by exactly the loss, `floor_base` does not move at all | [`521bbf1d`](https://stellar.expert/explorer/testnet/tx/521bbf1dcf65acf263339aa56f4776ee3e37e7557df99851e7cb640542e38dbe) |
+| The allocation the superseded Engine accepted | Refused, `ReserveFloorBreached` (410) | simulated, error code asserted |
+
+**The second finding is proved by transactions signed by the keys under test,**
+because simulation records authorization rather than enforcing it. `bob` holds
+agUSD and no USDC trustline, which is the whole asymmetry: agUSD is a Soroban
+contract token and needs no trustline, USDC is a Stellar Asset Contract and
+does.
+
+| Step | Result | Transaction |
+|---|---|---|
+| bob queues 1 agUSD, alice queues behind him | Both counted as liabilities | [`af84b8f0`](https://stellar.expert/explorer/testnet/tx/af84b8f02733f569c633555ba7457ff3cb9c5f384103c3c695d5c626714127cc), [`c5f67958`](https://stellar.expert/explorer/testnet/tx/c5f67958be11c8b9f0c5645199879a3d9ca6f975d158019c2e42dad1168d4dd1) |
+| bob tries to collect his own claim | Refused, `PaymentRejected` (322), which tells the one party who can fix it | simulated, error code asserted |
+| alice, who owns nothing at the head and holds no role, settles it | bob's claim is deferred, unpaid, still owed, and out of the way | [`b785c0b7`](https://stellar.expert/explorer/testnet/tx/b785c0b7b36a19a6381d0043cb624f4bbaf7d5c1f37dce96b4f4853d69d6fc46) |
+| alice collects the claim behind it | Paid. The queue moved past a head nobody could pay | [`b6d03157`](https://stellar.expert/explorer/testnet/tx/b6d031576acf8f2157a1b1c22eac24a21623bbed664d6a93bc62a9d3b518c31a) |
+| alice tries to collect bob's deferred claim | Refused, `NotClaimOwner` (307) | simulated, error code asserted |
+| bob adds the trustline and collects, out of head order | Paid to the owner recorded on the claim, once, and the head pointer does not move backwards | [`ca28d12b`](https://stellar.expert/explorer/testnet/tx/ca28d12b5c2bb23875e828770182737fe7578bbbc0cb9745bad82cdb8d560585) |
+
+**On the residue this leaves.** The exploit demonstration re-mints a small
+amount of the superseded agUSD against the superseded Vault, and the exploit is
+precisely what leaves it unbacked; it is held by the operator key alone. USDC
+written off during the smoke runs stays in the pool adapters, because an adapter
+with zero exposure has no entry point that can send it back. That is a Medium
+finding of this review, left for triage, and it is why the private credit
+adapter had to be redeployed rather than repointed.
 
 ### The Whole Journey, On-Chain
 
@@ -479,9 +591,13 @@ The queue is paid strictly in order and there is no admin path around it: `claim
 
 **FIFO does not depend on the head claimant showing up.** `settle_withdrawal` pays whichever claim is at the head to the owner recorded on it, and any address may call it. It is not a privileged path around the ordering, because the caller chooses neither the claim nor the recipient: there is no `claim_id` argument and the payment always goes to `claim.owner`, so the only thing it can do is what that owner's own `claim_withdrawal` would have done. Without it, one claim at the 1 agUSD minimum whose owner simply never came back froze every withdrawal in the protocol for as long as they cared to wait, and they kept the agUSD at the end of it.
 
+**And the head that cannot be paid, rather than will not.** Paying a claim is a token transfer, and the Vault's USDC is a Stellar Asset Contract over a classic asset, so the transfer fails whenever the destination has no trustline for USDC, has had it frozen by the issuer, has a limit below the claim, or no longer exists. Any of those used to trap the whole invocation, so the head never advanced and every withdrawal behind it stopped for good, with no admin path around it because there deliberately is not one. It cost an attacker one USDC and a lowered trustline limit, and it happened by accident the first time an issuer froze a claimant. Delivery is now attempted rather than assumed: if the token refuses, `settle_withdrawal` writes nothing about the payment, marks the claim deferred, advances the head over it and says so in an event. The claim stays unpaid and stays counted in `outstanding_liabilities`, so its cash stays reserved, and its owner collects it through `claim_withdrawal` out of head order once the obstruction is gone. `claim_withdrawal` called by the owner still fails, with `PaymentRejected` rather than a trap, because the owner is the one party who can fix the cause. The trade is real and stated: a deferred claim loses its place in the queue, which falls on the only party who can do anything about it.
+
 **A queued claim is a liability, and the Vault counts it.** Between the request and the payment the USDC is still on the Vault's balance and is no longer anybody's to lend out. `outstanding_liabilities()` is the running total, `free_reserves()` is idle reserves minus it, and `get_net_assets()` is free reserves plus deployed capital. Every limit that asks how much may be deployed reads those rather than the gross balance. Before that, a Vault with 1000 deposited and all 1000 queued for withdrawal still reported a healthy reserve ratio and would still let the Engine deploy against it, leaving a claim that could not be paid.
 
 **The Vault is the last word on its own reserves.** `settle_allocation` used to release USDC on the Engine's say-so and check nothing itself, on the reasoning that duplicating the Engine's limits would mean two implementations that can disagree. That reasoning is wrong in one specific way: the Vault holds the money, and the Engine is an address the Vault authorizes, so a limit enforced only in the Engine is a limit any contract holding that authorization can skip. The Vault now keeps its own `reserve_floor_bps`, its own `deployed_capital()` book, and `outstanding_liabilities()`, and `settle_allocation` refuses any release that would take free reserves below the floor or below what the queue is owed. `deployed_capital` rises with every release the Vault performs and falls in exactly two ways: a repayment the Vault can see in its own balance, or a write-down carrying the admin's signature as well as the Engine's call. An honest Engine never meets the check, because it applied the same arithmetic to the same book one call earlier.
+
+**And the floor is a share of a base a write-down cannot move.** Two signatures on `record_writedown` were never going to be enough on their own, because both of them are the same key and a legitimate loss and an invented one pass identically. The arithmetic has to be the thing that says no. The floor is measured against `floor_base()`, which is net assets plus `recognised_losses()`, a cumulative counter that never falls; under a protocol that has never taken a loss the two are the same number, and after one they part company. Without it, `record_writedown` lowered the base the floor is a percentage of, so allocating to the floor and writing the position off, over and over, took 999.9999999 of 1000 USDC out of a Vault holding a 25% floor while the adapter kept every dollar and every individual call passed both checks.
 
 **Two pointers, two setters.** `initialize()` writes the agUSD address and the Allocation Engine address, the Vault is not upgradeable, and both of them used to be one way doors. Both have now been through one. The first Vault pointed at a token with no `mint` and could never issue agUSD. The second pointed at an Engine that governs a different Vault and could never release a dollar of capital, because `settle_allocation` authorizes the address `initialize()` wrote and nothing else. Each mistake cost a redeployment, and the second cost two contracts rather than one, because the token names the Vault as its only minter.
 
@@ -497,13 +613,13 @@ The queue is paid strictly in order and there is no admin path around it: `claim
 
 Routes vault capital across registered pool adapters with on-chain concentration caps (per pool, per originator, per jurisdiction). All pool types implement a uniform adapter interface so the Engine stays agnostic to pool type. Admin-gated in V1, off-chain optimizer in V2.
 
-A fourth guard, `set_reserve_floor`, holds a minimum share of net assets as free USDC in the Vault. `allocate()` reverts if a call would push reserves below it, which is where fast-exit liquidity now lives. Caps and floor start fully closed at deployment, so an Engine that has not been configured cannot deploy capital. The Vault enforces the same floor a second time when it releases the cash, on its own numbers; see the Vault section for why that is not redundancy.
+A fourth guard, `set_reserve_floor`, holds a minimum share of `floor_base` as free USDC in the Vault. `allocate()` reverts if a call would push reserves below it, which is where fast-exit liquidity now lives. Caps and floor start fully closed at deployment, so an Engine that has not been configured cannot deploy capital. The Vault enforces the same floor a second time when it releases the cash, on its own numbers; see the Vault section for why that is not redundancy.
 
 Free reserves and net assets, not the gross balance and gross assets. USDC owed to a queued withdrawal sits in the Vault and is not the protocol's to deploy, because the agUSD that entitled anyone else to it has already been burned.
 
 `register_pool` requires the adapter to name this Engine and this Engine's Vault. An adapter takes `allocate` and `deallocate` from the Engine it stores and sends repayments to the Vault it stores, and neither has to be the pair registering it: registered without the check, an adapter pointed at somebody else's Vault takes capital from this one and repays a third party while `deallocate` here decrements the book as though the money had come home, with nothing reverting.
 
-`write_down(admin, pool_id, amount, reason)` recognises a credit loss. Until it existed, one could not be recognised at all: exposure moved only through `allocate` and `deallocate`, and `deallocate` transfers the USDC before it decrements the book, so a defaulted originator leaves the adapter holding nothing, the transfer panics, and the exposure reports full face value for the life of the contract, with every reserve ratio derived from it overstated by exactly the size of the loss. The write-down moves three books in one transaction, this Engine's exposure record, the adapter's own and the Vault's deployed capital, so they cannot disagree, and it emits an event carrying a reason. It deliberately does not decide who bears the loss; see [Where a loss lands](#where-a-loss-lands).
+`write_down(admin, pool_id, amount, reason)` recognises a credit loss, and adds the amount to `written_off()`, which never falls and stays in the denominator of the reserve floor for good. That last part is not bookkeeping: without it the floor was a share of total assets, `write_down` lowers total assets with no cash moving, and every write-off handed back releasable headroom worth `floor_bps` of itself. The concentration caps deliberately keep the old denominator, because adding to a cap's denominator loosens the cap, and the floor is the only limit here that a larger base makes tighter. Until it existed, one could not be recognised at all: exposure moved only through `allocate` and `deallocate`, and `deallocate` transfers the USDC before it decrements the book, so a defaulted originator leaves the adapter holding nothing, the transfer panics, and the exposure reports full face value for the life of the contract, with every reserve ratio derived from it overstated by exactly the size of the loss. The write-down moves three books in one transaction, this Engine's exposure record, the adapter's own and the Vault's deployed capital, so they cannot disagree, and it emits an event carrying a reason. It deliberately does not decide who bears the loss; see [Where a loss lands](#where-a-loss-lands).
 
 `deallocate` reports the repayment to the Vault, which checks the cash reached it before its own book is allowed to fall. A repayment that went somewhere else fails there and takes the whole deallocation with it, rather than settling the Engine's book against money the protocol never received.
 
@@ -608,6 +724,21 @@ bash scripts/deploy-hardening.sh
 # than enforcing it.
 bash scripts/smoke-hardening.sh
 
+# Redeploy the two contracts the second security review changed, the Vault and
+# the Allocation Engine, plus the agUSD that names the Vault as its minter.
+# Reuses the Oracle Adapter, the Etherfuse adapter and sagUSD in place through
+# their own setters rather than redeploying them, and says why anything it
+# could not reuse could not be reused.
+bash scripts/deploy-review2.sh
+
+# Prove those two fixes against that deployment with real Circle USDC: 52
+# assertions in two independently runnable stages, every state change
+# submitted. Runs the reserve floor exploit against the SUPERSEDED contracts,
+# which are still live, and submits the transaction the fixed ones refuse.
+bash scripts/smoke-review2.sh          # both
+bash scripts/smoke-review2.sh floor    # finding 1 only
+bash scripts/smoke-review2.sh queue    # finding 2 only
+
 # Deploy the agUSD + sagUSD + credit vault set (already live on testnet)
 cp .env.example .env
 bash scripts/deploy.sh
@@ -649,9 +780,10 @@ From the [SCF Integration List](https://communityfund.stellar.org/integration-li
 - Every one of those setters emits an event, so a change to the highest-privilege state in the protocol is never a silent storage write
 - The Vault's USDC leaves only through the Allocation Engine or a queued withdrawal claim
 - The Vault enforces the reserve floor itself, against its own deployed capital book, so no Allocation Engine can pull reserves below it. `set_engine` asks an incoming Engine whether it governs this Vault, and that question is answered correctly by any contract that stores one address, so the guard catches mis-wiring and is not relied on for anything more
+- The floor is a share of `floor_base`, which is net assets plus everything ever written off, and not of net assets alone. `record_writedown` lowers net assets with no cash moving, so a floor measured against them is a floor the admin can lower at will, and alternating `allocate` with `write_down` emptied a Vault past a 25% floor a slice at a time. `recognised_losses` and `written_off` are cumulative and never fall, so recognising a loss buys nobody any room. It is also the right base under a real default, because agUSD redeems one for one and a loss does not reduce what the Vault owes
 - Queued withdrawals are tracked on-chain and subtracted wherever a deployment limit is computed, so the floor measures free liquidity rather than a gross balance that includes money already owed
-- The withdrawal queue is strictly FIFO and cannot be stalled: `settle_withdrawal` pays the head claim to its recorded owner and is callable by anyone, with no argument that could redirect the payment or skip ahead
-- A credit loss can be recognised on-chain: `write_down` is admin gated, evented, and moves the Engine's exposure, the adapter's exposure and the Vault's deployed capital together. It does not decide who bears the loss
+- The withdrawal queue is strictly FIFO and cannot be stalled by either kind of absent claimant. `settle_withdrawal` pays the head claim to its recorded owner and is callable by anyone, with no argument that could redirect the payment or skip ahead, which covers the claimant who will not come back. The claimant who cannot be paid is stepped over: USDC is a Stellar Asset Contract, so a payout fails whenever the destination has no trustline, has a frozen one, has a limit below the claim or no longer exists, and a failed payout used to trap the call and freeze the queue for everybody behind it forever. Delivery is now attempted, and a claim the token refuses is marked deferred, left unpaid and still counted, and collected later by its owner out of head order
+- A credit loss can be recognised on-chain: `write_down` is admin gated, evented, and moves the Engine's exposure, the adapter's exposure and the Vault's deployed capital together, and adds the amount to a cumulative loss counter that never falls. It does not decide who bears the loss, and it does not buy its caller any room under the reserve floor
 - Every contract carries a two step admin handover, `propose_admin` then `accept_admin`, with the successor authorizing the second step itself. A lost or compromised admin key used to be unrecoverable everywhere
 - **The admin is a trusted role in V1 and the contracts do not pretend otherwise.** The admin sets the caps and both reserve floors and chooses which pools are registered, so an admin willing to register a pool it controls can move up to what the floor releases to itself. The floor is a limit on the size of that, not a prohibition. What protects depositors from the admin is the 2-of-3 multi-signature admin in V1 and governance with a 48h timelock in V2, both below, not a check in a contract
 - Oracle reporter set: `push_nav()` validates caller, rotation requires admin + event
