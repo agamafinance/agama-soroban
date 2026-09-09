@@ -35,18 +35,27 @@ fn setup() -> Fix {
         &FEED_USDC_USD,
         &REFLECTOR_STALENESS,
         &REFLECTOR_DEVIATION_BPS,
+        &REFLECTOR_MIN_NAV,
+        &REFLECTOR_MAX_NAV,
+        &REFLECTOR_MIN_INTERVAL,
     );
     oracle.register_feed(
         &admin,
         &FEED_PC_NAV,
         &PRIVATE_CREDIT_STALENESS,
         &PRIVATE_CREDIT_DEVIATION_BPS,
+        &NAV_BAND_MIN,
+        &NAV_BAND_MAX,
+        &NAV_MIN_INTERVAL,
     );
     oracle.register_feed(
         &admin,
         &FEED_EF_BOND,
         &ETHERFUSE_STALENESS,
         &ETHERFUSE_DEVIATION_BPS,
+        &NAV_BAND_MIN,
+        &NAV_BAND_MAX,
+        &NAV_MIN_INTERVAL,
     );
 
     Fix {
@@ -91,13 +100,21 @@ fn valid_push_updates_nav() {
     f.oracle.push_nav(&f.reporter, &FEED_USDC_USD, &ONE, &T0);
     assert_eq!(f.oracle.get_nav(&FEED_USDC_USD), ONE);
 
-    // A second report inside the bound (1% move against a 2% bound) lands.
-    f.e.ledger().set_timestamp(T0 + 60);
+    // A second report inside the bound (1% move against a 2% bound), far
+    // enough after the first to clear the feed's minimum interval, lands.
+    f.e.ledger().set_timestamp(T0 + REFLECTOR_MIN_INTERVAL);
     let moved = ONE * 101 / 100;
-    f.oracle
-        .push_nav(&f.reporter, &FEED_USDC_USD, &moved, &(T0 + 60));
+    f.oracle.push_nav(
+        &f.reporter,
+        &FEED_USDC_USD,
+        &moved,
+        &(T0 + REFLECTOR_MIN_INTERVAL),
+    );
     assert_eq!(f.oracle.get_nav(&FEED_USDC_USD), moved);
-    assert_eq!(f.oracle.last_update(&FEED_USDC_USD).timestamp, T0 + 60);
+    assert_eq!(
+        f.oracle.last_update(&FEED_USDC_USD).timestamp,
+        T0 + REFLECTOR_MIN_INTERVAL
+    );
 }
 
 #[test]
@@ -153,7 +170,7 @@ fn stale_read_errors_with_oracle_stale() {
 #[test]
 fn private_credit_tolerates_a_week_of_silence() {
     let f = setup();
-    let nav = 1_000 * ONE;
+    let nav = ONE;
     f.oracle.push_nav(&f.reporter, &FEED_PC_NAV, &nav, &T0);
 
     // Six days without a report is normal for a credit book.
@@ -171,7 +188,7 @@ fn private_credit_tolerates_a_week_of_silence() {
 #[test]
 fn out_of_bounds_deviation_fails_push_nav() {
     let f = setup();
-    let nav = 1_000 * ONE;
+    let nav = ONE;
     f.oracle.push_nav(&f.reporter, &FEED_PC_NAV, &nav, &T0);
 
     // 4% move against a 5% bound: accepted.
@@ -196,7 +213,7 @@ fn out_of_bounds_deviation_fails_push_nav() {
 #[test]
 fn out_of_bounds_deviation_emits_nav_rejected_on_submit_nav() {
     let f = setup();
-    let nav = 1_000 * ONE;
+    let nav = ONE;
     assert_eq!(
         f.oracle.submit_nav(&f.reporter, &FEED_PC_NAV, &nav, &T0),
         PushOutcome::Accepted
@@ -314,7 +331,15 @@ fn feed_guards_are_write_once() {
     // disarm the guard for every consumer already reading that feed id.
     let r = f
         .oracle
-        .try_register_feed(&f.admin, &FEED_USDC_USD, &3_600u64, &10_000u32);
+        .try_register_feed(
+            &f.admin,
+            &FEED_USDC_USD,
+            &3_600u64,
+            &10_000u32,
+            &1i128,
+            &(i128::MAX),
+            &0u64,
+        );
     assert_eq!(r, Err(Ok(OracleError::FeedAlreadyRegistered)));
     assert_eq!(f.oracle.get_feed(&FEED_USDC_USD).deviation_bps, 200);
 }
@@ -326,13 +351,55 @@ fn feed_config_is_validated() {
     // A zero staleness window would make the feed unreadable one second after
     // every report.
     assert_eq!(
-        f.oracle.try_register_feed(&f.admin, &new_feed, &0u64, &200u32),
+        f.oracle.try_register_feed(
+            &f.admin,
+            &new_feed,
+            &0u64,
+            &200u32,
+            &NAV_BAND_MIN,
+            &NAV_BAND_MAX,
+            &NAV_MIN_INTERVAL
+        ),
         Err(Ok(OracleError::InvalidFeedConfig))
     );
     // A bound above 100% is not a bound.
     assert_eq!(
         f.oracle
-            .try_register_feed(&f.admin, &new_feed, &3_600u64, &10_001u32),
+            .try_register_feed(
+                &f.admin,
+                &new_feed,
+                &3_600u64,
+                &10_001u32,
+                &NAV_BAND_MIN,
+                &NAV_BAND_MAX,
+                &NAV_MIN_INTERVAL
+            ),
+        Err(Ok(OracleError::InvalidFeedConfig))
+    );
+    // A band that is not a band: no lower edge, or an upper edge below the
+    // lower one. Both would leave the first report unconstrained again.
+    assert_eq!(
+        f.oracle.try_register_feed(
+            &f.admin,
+            &new_feed,
+            &3_600u64,
+            &200u32,
+            &0i128,
+            &NAV_BAND_MAX,
+            &NAV_MIN_INTERVAL
+        ),
+        Err(Ok(OracleError::InvalidFeedConfig))
+    );
+    assert_eq!(
+        f.oracle.try_register_feed(
+            &f.admin,
+            &new_feed,
+            &3_600u64,
+            &200u32,
+            &NAV_BAND_MAX,
+            &NAV_BAND_MIN,
+            &NAV_MIN_INTERVAL
+        ),
         Err(Ok(OracleError::InvalidFeedConfig))
     );
 }
@@ -347,7 +414,15 @@ fn non_admin_cannot_manage_reporters_or_feeds() {
     );
     assert_eq!(
         f.oracle
-            .try_register_feed(&stranger, &Symbol::new(&f.e, "X"), &3_600u64, &200u32),
+            .try_register_feed(
+                &stranger,
+                &Symbol::new(&f.e, "X"),
+                &3_600u64,
+                &200u32,
+                &NAV_BAND_MIN,
+                &NAV_BAND_MAX,
+                &NAV_MIN_INTERVAL
+            ),
         Err(Ok(OracleError::NotAdmin))
     );
 }
@@ -364,3 +439,137 @@ fn cannot_be_reinitialized() {
 }
 
 
+
+/// The first value for a feed had nothing to be compared against, so it was
+/// accepted unconditionally: `push_nav(i128::MAX)` landed, and every deviation
+/// bound afterwards was measured as a percentage of it.
+///
+/// A deviation bound cannot cover this by construction, because a bound on a
+/// move needs something to move from. The absolute band does, and it applies to
+/// every report rather than only the first, which is what makes it the outer
+/// wall rather than a special case.
+#[test]
+fn the_first_value_for_a_feed_is_bounded_too() {
+    let f = setup();
+    let fresh = Symbol::new(&f.e, "FRESH");
+    f.oracle.register_feed(
+        &f.admin,
+        &fresh,
+        &PRIVATE_CREDIT_STALENESS,
+        &PRIVATE_CREDIT_DEVIATION_BPS,
+        &NAV_BAND_MIN,
+        &NAV_BAND_MAX,
+        &NAV_MIN_INTERVAL,
+    );
+
+    assert_eq!(
+        f.oracle.try_push_nav(&f.reporter, &fresh, &i128::MAX, &T0),
+        Err(Ok(OracleError::NavOutOfBand))
+    );
+    assert_eq!(
+        f.oracle
+            .try_push_nav(&f.reporter, &fresh, &(NAV_BAND_MAX + 1), &T0),
+        Err(Ok(OracleError::NavOutOfBand))
+    );
+    assert_eq!(
+        f.oracle
+            .try_push_nav(&f.reporter, &fresh, &(NAV_BAND_MIN - 1), &T0),
+        Err(Ok(OracleError::NavOutOfBand))
+    );
+    assert_eq!(
+        f.oracle.try_get_nav(&fresh),
+        Err(Ok(OracleError::NoNavReported))
+    );
+
+    // Both edges are inclusive: the band is a wall, not a step.
+    f.oracle.push_nav(&f.reporter, &fresh, &NAV_BAND_MAX, &T0);
+    assert_eq!(f.oracle.get_nav(&fresh), NAV_BAND_MAX);
+}
+
+/// The deviation bound is per push and says nothing about how many pushes there
+/// can be. Forty of them at +5% moved a NAV by a factor of seven in forty
+/// seconds, every one of them inside the bound and every one of them accepted.
+///
+/// The rate limit is measured in ledger time between accepted values, not in
+/// the timestamps the reporter supplies, because the reporter chooses those:
+/// forty timestamps a day apart can all be pushed in the same minute.
+#[test]
+fn a_feed_cannot_be_walked_by_repetition() {
+    let f = setup();
+    f.oracle
+        .push_nav(&f.reporter, &FEED_PC_NAV, &ONE, &(T0 - 100));
+
+    // The attack, as reported: each push inside the 500 bps bound, each
+    // timestamp strictly later than the last and none of them in the future,
+    // all of them submitted in the same second of ledger time. Fourteen steps
+    // is where the compounding reaches the band, so the walk is over twice by
+    // then; every one of them is refused on the interval first.
+    let mut nav = ONE;
+    for i in 1..=14u64 {
+        nav = nav * 105 / 100;
+        assert_eq!(
+            f.oracle
+                .try_push_nav(&f.reporter, &FEED_PC_NAV, &nav, &(T0 - 100 + i)),
+            Err(Ok(OracleError::TooSoon))
+        );
+    }
+    // And the fifteenth would have left the band anyway: the two guards
+    // compose, one limiting how fast and one limiting how far.
+    nav = nav * 105 / 100;
+    assert!(nav > NAV_BAND_MAX);
+    assert_eq!(f.oracle.get_nav(&FEED_PC_NAV), ONE);
+
+    // One step per interval is all it gets, and the band stops the walk long
+    // before it reaches a factor of seven.
+    let mut clock = T0;
+    let mut accepted = 0;
+    loop {
+        clock += NAV_MIN_INTERVAL;
+        f.e.ledger().set_timestamp(clock);
+        let next = nav_step(f.oracle.get_nav(&FEED_PC_NAV));
+        if f.oracle
+            .try_push_nav(&f.reporter, &FEED_PC_NAV, &next, &clock)
+            .is_err()
+        {
+            break;
+        }
+        accepted += 1;
+        assert!(accepted < 100);
+    }
+    assert!(f.oracle.get_nav(&FEED_PC_NAV) <= NAV_BAND_MAX);
+}
+
+fn nav_step(nav: i128) -> i128 {
+    nav * 105 / 100
+}
+
+/// The reference point is the thing every guard is measured against, and it
+/// used to live in temporary storage. When a temporary entry expires there is
+/// no reference left, so a report with nothing to compare against skips the
+/// monotonicity check, the deviation bound and the rate limit in one go, and
+/// waiting out a TTL is not an attack anybody has to work at.
+#[test]
+fn the_reference_value_outlives_the_old_temporary_ttl() {
+    let f = setup();
+    f.oracle.push_nav(&f.reporter, &FEED_PC_NAV, &ONE, &T0);
+    let start = f.e.ledger().sequence();
+
+    // Well past the 30 day window the reference used to be kept for.
+    f.e.ledger().set_sequence_number(start + 45 * 17_280);
+    f.e.ledger().set_timestamp(T0 + 45 * 86_400);
+
+    // The reference is still there, so a doubling is still refused for
+    // breaking the deviation bound rather than waved through as a first
+    // report, and a stale timestamp is still refused for going backwards.
+    assert_eq!(f.oracle.last_update(&FEED_PC_NAV).nav, ONE);
+    assert_eq!(
+        f.oracle
+            .try_push_nav(&f.reporter, &FEED_PC_NAV, &(ONE * 2), &(T0 + 45 * 86_400)),
+        Err(Ok(OracleError::DeviationOutOfBounds))
+    );
+    assert_eq!(
+        f.oracle
+            .try_push_nav(&f.reporter, &FEED_PC_NAV, &ONE, &(T0 - 1)),
+        Err(Ok(OracleError::NonMonotonicTimestamp))
+    );
+}

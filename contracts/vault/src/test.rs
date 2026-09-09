@@ -71,6 +71,9 @@ fn setup() -> Fix {
         &oracle_adapter::FEED_PC_NAV,
         &oracle_adapter::PRIVATE_CREDIT_STALENESS,
         &oracle_adapter::PRIVATE_CREDIT_DEVIATION_BPS,
+        &oracle_adapter::NAV_BAND_MIN,
+        &oracle_adapter::NAV_BAND_MAX,
+        &oracle_adapter::NAV_MIN_INTERVAL,
     );
     vault.set_oracle(&admin, &oracle_id, &oracle_adapter::FEED_PC_NAV);
 
@@ -382,7 +385,7 @@ fn total_assets_count_idle_reserves_plus_deployed_capital() {
 #[test]
 fn get_nav_reads_the_oracle_and_propagates_staleness() {
     let f = setup();
-    let nav = 1_000 * USDC;
+    let nav = USDC;
     f.oracle
         .push_nav(&f.reporter, &oracle_adapter::FEED_PC_NAV, &nav, &T0);
     assert_eq!(f.vault.get_nav(), nav);
