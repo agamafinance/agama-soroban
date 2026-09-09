@@ -9,7 +9,7 @@
   "contracts": {
     "usdc": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
     "agusd": "CCXEP6QAAYEMFMV2JGBULD2NS6AQB6KQSBHLPPBJSDBCN6HOYIHNQ6H3",
-    "staking": "CBMEW3QALCS6FFJMK5FR7LVKUWX3MPIP26LQQQAFYMQFYVG6VUWFTHZF",
+    "staking": "CCBEDKRQHKAP2W3NC4UIYC4WZSMJVYRXN6EQERHFII45M3PD4JL6HFO2",
     "vault": "CCGPF36PDG2WBBK6ZROLMNMHD67UV4MNG6PHQCN2PXWLLRBXCYF5KVRR",
     "allocationEngine": "CAFJKWLUGUSYEC7L5ZBNFIFEPSO5MLI7SKDMVVJCGC6Z2TGVP5SZ5HUX",
     "oracleAdapter": "CDV5BC4XCNT5ASOZNFXBQXRGKVXGKHLRVK5EDX6XP5J6EBIZWSXCSV7G",
@@ -175,6 +175,14 @@
       "address": "CDY3ED6T72VJDX5RCMQOZNCV5XKJBHQVAYPNOXTWB66RNBVOS5BTC345",
       "supersededBy": "staking",
       "reason": "Replaced by scripts/deploy-rewire.sh. This sagUSD staking carried the counterparty setters but the guards on them were too loose: Vault.set_engine accepted any address, including an ordinary account, which made the pointer that releases the Vault's reserves a one call instruction to hand them over, and the adapters could be repointed at a Vault their own Engine did not govern, which would have misdirected repayments one allocation later. Deployed and replaced the same day, before it held anything but the deploying admin's own working capital."
+    },
+    {
+      "contract": "staking",
+      "generation": 3,
+      "label": "sagUSD staking, third deployment",
+      "address": "CBMEW3QALCS6FFJMK5FR7LVKUWX3MPIP26LQQQAFYMQFYVG6VUWFTHZF",
+      "supersededBy": "staking",
+      "reason": "Replaced by scripts/deploy-sagusd.sh. Exposes accrue_yield and share_price, the names this contract shipped with, rather than distribute_yield and exchange_rate, the names Agama committed to in its answer to the SCF panel and that DeFindex compatibility is a funded deliverable for. A wallet looking for the committed convention did not find it on this contract. Superseded holding nothing: NAV and share supply were both zero at handover, so it strands no staker."
     }
   ]
 }
