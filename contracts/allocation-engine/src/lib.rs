@@ -82,6 +82,17 @@
 //! it decrements, so a defaulted originator holding no USDC panics the transfer
 //! and the exposure reports face value indefinitely, which leaves every reserve
 //! ratio derived from it overstated by the size of the loss.
+//!
+//! A write-down has to be free, in the sense of buying its caller nothing, and
+//! for one release of this contract it was not. The floor was a share of total
+//! assets, `write_down` lowers total assets with no cash moving, so every
+//! write-down created releasable headroom worth `floor_bps` of what was written
+//! off. Allocating to the floor and writing the position off, over and over,
+//! moved 999.9999999 of 1000 USDC out of a Vault holding a 25% floor, with
+//! every call individually inside the limit. `written_off` is the answer: a
+//! cumulative total that never falls, in the denominator of the floor and of
+//! `get_reserve_ratio` for good, and deliberately not in the denominator of the
+//! concentration caps, where a larger base would loosen rather than tighten.
 
 use soroban_sdk::{
     contract, contractclient, contracterror, contractevent, contractimpl, contracttype, Address,
@@ -217,6 +228,12 @@ enum Cfg {
 enum Store {
     Exposure(Address),
     TotalAllocated,
+    /// Exposure written off since deployment, cumulative and never reduced. It
+    /// is not an asset and it is not counted as one; it stays on the books
+    /// because it is part of the denominator of the reserve floor, and a
+    /// denominator a write-down can shrink is a floor a write-down can walk
+    /// through.
+    WrittenOff,
 }
 
 #[contractevent]
@@ -554,8 +571,23 @@ impl AllocationEngine {
 
         // Reserve floor: what the Vault is left holding as instantly available
         // cash once this release settles.
+        //
+        // Measured against total assets plus everything ever written off, and
+        // not against total assets alone. `write_down` lowers total assets with
+        // no cash moving, so a floor that is a share of total assets is a floor
+        // whose absolute size a write-down lowers: allocate to the floor, write
+        // the position off, allocate to the new floor, and the whole of the
+        // reserves walks out in slices that are each individually inside the
+        // limit. Keeping recognised losses in the base makes a write-down buy
+        // nothing.
+        //
+        // The concentration caps above deliberately do not do this. Their
+        // denominator is the same total assets, and adding to a cap's
+        // denominator loosens the cap, which is the wrong direction; the floor
+        // is the only limit here that a larger base makes tighter.
         let idle_after = idle - amount;
-        if idle_after * BPS < Self::reserve_floor_bps(e.clone()) as i128 * total_assets {
+        let floor_base = total_assets + Self::written_off(e.clone());
+        if idle_after * BPS < Self::reserve_floor_bps(e.clone()) as i128 * floor_base {
             return Err(EngineError::ReserveFloorBreached);
         }
 
@@ -641,6 +673,17 @@ impl AllocationEngine {
     /// arriving is the one move that would otherwise let an Engine reset the
     /// limit its releases are measured against.
     ///
+    /// What it must not do is buy the caller anything, and until the second
+    /// review it did. The reserve floor was a share of total assets, a
+    /// write-down lowers total assets, so every write-down created fresh
+    /// releasable headroom worth `floor_bps` of what was written off. Allocate
+    /// to the floor, write the position down, allocate to the new floor:
+    /// forty rounds of that moved 999.9999999 of 1000 USDC out of a Vault
+    /// holding a 25% floor, with every call inside the limit and the adapter
+    /// keeping every dollar. `written_off` is the answer, and both this
+    /// contract and the Vault now keep one: a cumulative total that never
+    /// falls, sitting in the denominator of the floor for good.
+    ///
     /// It does not decide who bears the loss. Nothing here touches agUSD
     /// supply, the withdrawal queue or the sagUSD share price, because agUSD is
     /// a synthetic dollar redeemed one for one and the queue is paid in order:
@@ -674,6 +717,7 @@ impl AllocationEngine {
         let pool_exposure = exposure - amount;
         Self::write_exposure(&e, &pool_id, pool_exposure);
         Self::write_total_allocated(&e, Self::total_allocated(e.clone()) - amount);
+        Self::write_written_off(&e, Self::written_off(e.clone()) + amount);
         Self::bump_instance(&e);
 
         WrittenDown {
@@ -744,21 +788,52 @@ impl AllocationEngine {
 
     // ---- views ----
 
-    /// Free Vault reserves as a share of net assets, in bps. This is the number
-    /// `set_reserve_floor` sets a lower bound on.
+    /// Free Vault reserves as a share of the floor's base, in bps. This is the
+    /// number `set_reserve_floor` sets a lower bound on, and it is measured
+    /// against the same base `allocate` measures the floor against, so the
+    /// sentence stays true after a loss as well as before one.
     ///
     /// Free, not gross: USDC owed to a queued withdrawal is not reserve, it is
     /// a payment that has not happened yet. Counting it was what let a Vault
     /// with every dollar queued for withdrawal report a healthy ratio.
+    ///
+    /// Over the floor's base, not over net assets, for the same reason. With
+    /// net assets underneath it, recognising a loss made this number go *up*,
+    /// which is the opposite of what losing money should do to a liquidity
+    /// ratio: 800 idle against a 1000 book that had just lost 200 reported
+    /// 8888 bps rather than 8000. `floor_base` keeps the loss in the
+    /// denominator, so the ratio holds still when a loss is recognised and
+    /// falls when cash actually leaves.
     pub fn get_reserve_ratio(e: Env) -> Result<u32, EngineError> {
         let vault_address = Self::vault(e.clone())?;
         let idle = VaultClient::new(&e, &vault_address).free_reserves();
-        let total_assets = idle + Self::total_allocated(e.clone());
-        if total_assets <= 0 {
+        let base = idle + Self::total_allocated(e.clone()) + Self::written_off(e.clone());
+        if base <= 0 {
             // No assets means nothing is at risk, so the reserve is complete.
             return Ok(BPS as u32);
         }
-        Ok((idle * BPS / total_assets) as u32)
+        Ok((idle * BPS / base) as u32)
+    }
+
+    /// Exposure written off since deployment, cumulative. It only ever rises,
+    /// and there is no entry point that lowers it.
+    ///
+    /// It is not an asset and `total_allocated` correctly excludes it. It
+    /// exists because the reserve floor needs a base a write-down cannot move.
+    pub fn written_off(e: Env) -> i128 {
+        e.storage()
+            .persistent()
+            .get(&Store::WrittenOff)
+            .unwrap_or(0)
+    }
+
+    /// The denominator `reserve_floor_bps` is a share of: the Vault's free
+    /// reserves, plus what this Engine has booked as deployed, plus everything
+    /// it has ever written off.
+    pub fn floor_base(e: Env) -> Result<i128, EngineError> {
+        let vault_address = Self::vault(e.clone())?;
+        let idle = VaultClient::new(&e, &vault_address).free_reserves();
+        Ok(idle + Self::total_allocated(e.clone()) + Self::written_off(e))
     }
 
     /// Capital currently deployed into `pool_id`, in USDC.
@@ -889,6 +964,13 @@ impl AllocationEngine {
             EXPOSURE_LIFETIME,
             EXPOSURE_BUMP,
         );
+    }
+
+    fn write_written_off(e: &Env, value: i128) {
+        e.storage().persistent().set(&Store::WrittenOff, &value);
+        e.storage()
+            .persistent()
+            .extend_ttl(&Store::WrittenOff, EXPOSURE_LIFETIME, EXPOSURE_BUMP);
     }
 
     fn pool_map(e: &Env) -> Map<Address, Pool> {

@@ -16,7 +16,7 @@ June 2026, revised September 2026 · Confidential
 >
 > The Blend v2 integration described in earlier versions of this document has been removed, following the Comet BLND-USDC exploit and Blend's removal from the SCF Integration List, where Blend V2 is being wound down. It is not replaced by another protocol.
 >
-> The instant-withdrawal liquidity role Blend played is now an on-chain reserve floor, enforced by the Allocation Engine and again by the Vault itself. The floor is a **share of net assets, expressed in basis points**, not a fixed sum of USDC: an allocation reverts if the call would leave the Vault holding less free USDC than `floor_bps` of everything the protocol holds that the withdrawal queue has no claim on, free plus deployed. It is set to **2500 bps — 25%** — on testnet.
+> The instant-withdrawal liquidity role Blend played is now an on-chain reserve floor, enforced by the Allocation Engine and again by the Vault itself. The floor is a **share of a base, expressed in basis points**, not a fixed sum of USDC: an allocation reverts if the call would leave the Vault holding less free USDC than `floor_bps` of that base. The base is everything the protocol holds that the withdrawal queue has no claim on — free plus deployed — **plus everything it has ever written off**, because a write-down lowers recorded exposure with no cash moving and a base the caller can lower is not a floor. It is set to **2500 bps — 25%** — on testnet.
 >
 > The unit is the substance of the replacement, not a detail of it. A liquidity buffer parked in a lending protocol is only as instant as that protocol's utilization on the day it is needed; USDC that never left the Vault has no such dependency. But a buffer denominated as a fixed amount stops meaning anything as the book moves — it is most of a small vault and a rounding error in a large one — and it is the *ratio* of cash to obligations that decides whether a withdrawal can be paid. Expressing the floor as a share is what makes it scale with the book it is protecting, and it is why the guarantee survives growth instead of being re-tuned by hand after it.
 >
@@ -53,7 +53,8 @@ The protocol composes existing Stellar ecosystem primitives rather than reimplem
 | sagUSD | Staked agUSD. Yield accrues via increasing sagUSD/agUSD exchange rate. |
 | NAV | Net Asset Value — on-chain reported value of the portfolio backing agUSD. |
 | Allocation Engine | Soroban contract routing vault capital across pool adapters with cap enforcement. |
-| Reserve Floor | Minimum share of net assets the Vault must retain as free USDC, in basis points. Enforced by the Allocation Engine at allocation time and by the Vault at release time, against its own book. 2500 bps (25%) on testnet. |
+| Reserve Floor | Minimum share of `floor_base` the Vault must retain as free USDC, in basis points. Enforced by the Allocation Engine at allocation time and by the Vault at release time, against its own book. 2500 bps (25%) on testnet. |
+| `floor_base` | The denominator of the reserve floor: net assets plus cumulative recognised losses. Equal to net assets for a protocol that has never written anything off, and deliberately larger afterwards, so that recognising a loss cannot create room to deploy. |
 | Free reserves | Idle USDC in the Vault less what the withdrawal queue is owed. Queued claims have already burned their agUSD, so the cash behind them is a liability rather than deployable capital. |
 | Net assets | Free reserves plus deployed capital. The denominator every cap and the floor are measured against. |
 | Originator | Vetted private credit counterparty receiving vault allocations. |
@@ -270,12 +271,15 @@ The dApp includes a "Bridge" tab using Circle's Bridge Kit SDK.
 | `initialize(admin, usdc_token, agusd_token, allocation_engine)` | One-time setup storing core addresses and admin. Refuses a second call. |
 | `deposit(from, amount) → i128` | Transfers USDC, mints agUSD. Returns minted amount. |
 | `request_withdrawal(from, amount) → u64` | Burns agUSD, enqueues claim. Returns claim_id. |
-| `claim_withdrawal(from, claim_id)` | Pays USDC when Ready. FIFO order. |
-| `settle_withdrawal()` | Pays the head claim to its recorded owner. Permissionless: no claim id, no recipient, so the caller can neither redirect nor reorder. |
+| `claim_withdrawal(from, claim_id)` | Pays USDC when Ready. FIFO order, or out of order for a claim the queue has already deferred. Fails with `PaymentRejected` rather than trapping if the token refuses to deliver. |
+| `settle_withdrawal()` | Pays the head claim to its recorded owner. Permissionless: no claim id, no recipient, so the caller can neither redirect nor reorder. If the token refuses to deliver, the claim is marked deferred and stepped over, unpaid and still owed. |
+| `is_deferred(claim_id) → bool` | Whether the queue stepped over this claim because it could not be delivered. Its owner collects it through `claim_withdrawal` whenever the obstruction is gone. |
 | `set_reserve_floor(admin, floor_bps)` | The Vault's own copy of the floor, enforced in `settle_allocation`. Ships closed at 10000. |
 | `record_repayment(amount)` | Engine-called. The Vault verifies the cash arrived in its own balance before reducing `deployed_capital`. |
-| `record_writedown(admin, amount)` | Engine-called and admin-signed. Reduces `deployed_capital` with no cash arriving. |
-| `free_reserves() / outstanding_liabilities() / get_net_assets() / deployed_capital()` | The four numbers the floor is computed from, all readable by anyone. |
+| `record_writedown(admin, amount)` | Engine-called and admin-signed. Reduces `deployed_capital` with no cash arriving, and raises `recognised_losses` by the same amount so the floor's base does not move. |
+| `free_reserves() / outstanding_liabilities() / get_net_assets() / deployed_capital()` | The four numbers the book is computed from, all readable by anyone. |
+| `recognised_losses() → i128` | Deployed capital written off since deployment, cumulative and never reduced. Not an asset, and `get_net_assets()` correctly excludes it. |
+| `floor_base() → i128` | The denominator the reserve floor is a share of: net assets plus `recognised_losses()`. |
 | `propose_admin(admin, new_admin)` / `accept_admin(new_admin)` | Two-step admin handover. |
 | `settle_allocation(pool, amount)` | Releases idle USDC to a pool. Callable only by the Allocation Engine, which has already checked the caps and the floor. |
 | `set_agusd(admin, agusd_token)` | Repoints the token the Vault mints. Closes at the first deposit. |
@@ -289,22 +293,22 @@ The dApp includes a "Bridge" tab using Circle's Bridge Kit SDK.
 | `claim_status(claim_id) → ClaimStatus` | Pending, Ready or Claimed. `Ready` is computed, not stored: a claim becomes payable when the queue reaches it and reserves cover it, without anyone touching it. |
 | `queue_head() → u64` | Next claim id that may be paid. |
 | `queue_tail() → u64` | Next claim id to be handed out. |
-| `queue_length() → u64` | Claims requested and not yet paid. |
+| `queue_length() → u64` | Claims the queue has not reached yet. A deferred claim is not counted here; it is still owed, and `outstanding_liabilities()` is the number that says so. |
 | `deposits() → u64` | Deposits taken since deployment. What `set_agusd` keys off. |
 
 **Storage**
 
-**Instance:** Admin, PendingAdmin, UsdcToken, AgusdToken, AllocationEngine, Oracle, OracleFeed, Paused, QueueHead, QueueTail, Deposits, FloorBps, Deployed, Queued, Booked.  
-**Persistent:** Withdrawal claims (keyed by claim_id).  
+**Instance:** Admin, PendingAdmin, UsdcToken, AgusdToken, AllocationEngine, Oracle, OracleFeed, Paused, QueueHead, QueueTail, Deposits, FloorBps, Deployed, Queued, Booked, WrittenOff.  
+**Persistent:** Withdrawal claims (keyed by claim_id), and a deferred flag per claim id for the ones the queue has stepped over.  
 TTL management with archival thresholds and periodic bump renewal.
 
 **Events**
 
-`Deposit(user, amount, minted)` · `WithdrawalRequested(user, claim_id, amount, queue_position)` · `WithdrawalClaimed(user, claim_id, amount)` · `PauseToggled(paused)` · `AgUsdRepointed(agusd)` · `EngineRepointed(engine)` · `ReserveFloorSet(floor_bps)` · `RepaymentRecorded(amount, deployed)` · `WriteDownRecorded(amount, deployed)` · `AdminProposed(new_admin)` · `AdminChanged(admin)`
+`Deposit(user, amount, minted)` · `WithdrawalRequested(user, claim_id, amount, queue_position)` · `WithdrawalClaimed(user, claim_id, amount)` · `PauseToggled(paused)` · `AgUsdRepointed(agusd)` · `EngineRepointed(engine)` · `ReserveFloorSet(floor_bps)` · `RepaymentRecorded(amount, deployed)` · `WriteDownRecorded(amount, deployed, recognised_losses)` · `WithdrawalDeferred(user, claim_id, amount)` · `AdminProposed(new_admin)` · `AdminChanged(admin)`
 
 **Security**
 
-Initialization guard · `require_auth()` on all state-changing calls · Zero/negative validation · Pause circuit breaker on deposits, requests and allocations, never on payouts · Minimum withdrawal amount · FIFO queue (no priority, and no stalling either) · The reserve floor enforced against the Vault's own book, so no Allocation Engine can take reserves below it · Two-step admin handover.
+Initialization guard · `require_auth()` on all state-changing calls · Zero/negative validation · Pause circuit breaker on deposits, requests and allocations, never on payouts · Minimum withdrawal amount · FIFO queue (no priority, no stalling, and no freezing on a payout the token refuses) · The reserve floor enforced against the Vault's own book, so no Allocation Engine can take reserves below it, and against a base a write-down cannot move, so no admin can either · Two-step admin handover.
 
 ### 4.2 agUSD Token Contract (SEP-41)
 
@@ -343,7 +347,7 @@ Standard SEP-41 interface: `transfer`, `transfer_from`, `approve`, `allowance`, 
 
 ### 4.4 Allocation Engine Contract
 
-**Purpose:** Routes vault capital across pool adapters (Etherfuse, private credit) with on-chain concentration cap enforcement and a reserve floor. All four limits are measured in basis points of net assets, so the floor is read in the same units as the caps and the two cannot be compared wrongly.
+**Purpose:** Routes vault capital across pool adapters (Etherfuse, private credit) with on-chain concentration cap enforcement and a reserve floor. All four limits are measured in basis points, so they are read in the same units and cannot be compared wrongly. The three caps are a share of net assets; the floor is a share of `floor_base`, which is net assets plus everything ever written off. The difference is deliberate and it only ever runs one way: a larger base makes the floor *tighter* and would make a cap *looser*, so the write-off term belongs in one and not in the other.
 
 **Key Functions**
 
@@ -352,18 +356,20 @@ Standard SEP-41 interface: `transfer`, `transfer_from`, `approve`, `allowance`, 
 | `initialize(admin, vault)` | One-time setup. Ships fail-closed: every cap at zero and the reserve floor at 10000 bps, so an unconfigured Engine can deploy nothing. |
 | `register_pool(admin, pool_id, originator, jurisdiction, cap_bps)` | Whitelists a pool with metadata and cap. Refuses any adapter that does not name this Engine and this Engine's Vault: an adapter pointed elsewhere takes capital from this Vault and repays a third party while `deallocate` decrements the book as though the money had come home. |
 | `set_caps(admin, pool_cap_bps, originator_cap_bps, jurisdiction_cap_bps)` | Updates global concentration limits, in bps of net assets. |
-| `set_reserve_floor(admin, floor_bps: u32)` | Sets the minimum **share of net assets**, in basis points, that must stay as free USDC in the Vault. Rejects anything above 10000. Admin-gated; emits an event. The Vault keeps its own copy and enforces it independently. |
+| `set_reserve_floor(admin, floor_bps: u32)` | Sets the minimum **share of `floor_base`**, in basis points, that must stay as free USDC in the Vault. Rejects anything above 10000. Admin-gated; emits an event. The Vault keeps its own copy and enforces it independently. |
 | `set_vault(admin, vault)` | Repoints the Engine at a different Vault. Refused while any capital is deployed, so the book and the balance sheet the caps measure it against stay one Vault's. |
-| `allocate(admin, pool_id, amount)` | Deploys capital. Reverts if any cap is exceeded, or if the call would leave free reserves below `floor_bps` of net assets. The Vault applies the same floor again when it releases. |
-| `write_down(admin, pool_id, amount, reason)` | Recognises a credit loss. Reduces this Engine's exposure, the adapter's own, and the Vault's deployed capital, in one transaction, with no cash required. Admin-gated; emits an event carrying the reason. |
+| `allocate(admin, pool_id, amount)` | Deploys capital. Reverts if any cap is exceeded, or if the call would leave free reserves below `floor_bps` of `floor_base`. The Vault applies the same floor again when it releases. |
+| `write_down(admin, pool_id, amount, reason)` | Recognises a credit loss. Reduces this Engine's exposure, the adapter's own, and the Vault's deployed capital, in one transaction, with no cash required, and raises `written_off` by the same amount so the floor's base does not move. Admin-gated; emits an event carrying the reason. |
 | `deallocate(pool_id, amount)` | Records repayments returning to the Vault, and tells the Vault, which verifies the cash arrived before its own book is allowed to fall. |
 | `propose_admin(admin, new_admin)` / `accept_admin(new_admin)` | Two-step admin handover. |
 | `get_exposure(pool_id) → i128` | Current allocation per pool. |
 | `get_exposures() → Map` | Full allocation state. Pools with no exposure appear as zero, so the map doubles as the whitelist. |
 | `total_allocated() → i128` | Total booked as deployed across every pool. |
 | `caps() → Caps` | The three concentration limits currently in force, in bps. |
-| `reserve_floor_bps() → u32` | Current reserve floor, in bps of net assets. Readable by anyone. |
-| `get_reserve_ratio() → u32` | Free reserves as an actual share of net assets, in bps: the number the floor is a lower bound on, read in the same units. |
+| `reserve_floor_bps() → u32` | Current reserve floor, in bps of `floor_base`. Readable by anyone. |
+| `written_off() → i128` | Exposure written off since deployment, cumulative and never reduced. Not an asset, and `total_allocated()` correctly excludes it. |
+| `floor_base() → i128` | The denominator the floor is a share of: the Vault's free reserves, plus what this Engine has booked as deployed, plus `written_off()`. |
+| `get_reserve_ratio() → u32` | Free reserves as an actual share of `floor_base`, in bps: the number the floor is a lower bound on, read against the same base. Measured against net assets instead, this went *up* when a loss was recognised, which is the opposite of what losing money does to a liquidity position. |
 | `get_pool(pool_id) → Pool` | A registered pool's originator, jurisdiction and cap. |
 | `pools() → Vec<Address>` | Every registered pool adapter. |
 
@@ -455,8 +461,9 @@ Originator (fiat repayment: principal + interest)
 1. **Detection:** Backend flags the missed payment. The Oracle receives a reduced NAV on the pool's feed, within that feed's deviation bound and rate limit.
 2. **Write-down:** `write_down(admin, pool_id, amount, reason)` on the Allocation Engine reduces the recorded exposure without requiring the cash back. It is admin-gated, it emits an event carrying a reason, and it moves three books in the same transaction so they cannot disagree: the Engine's exposure record, the adapter's own exposure, and the Vault's `deployed_capital`. The Vault leg additionally requires the Vault admin's signature, because reducing the Vault's deployed book with no cash arriving is the one move that would otherwise let an Engine reset the limit its releases are measured against.
 3. **Why it has to exist:** without it a default could not be recognised on-chain at all. Exposure moved only through `allocate` and `deallocate`, and `deallocate` transfers the USDC to the Vault *before* it decrements the book. A defaulted originator leaves the adapter holding nothing, so the transfer panics, the deallocation reverts, and the exposure reports full face value for the life of the contract. Every reserve ratio derived from it is then overstated by exactly the size of the loss — and that ratio is the number the concentration caps and the reserve floor are measured against.
-4. **Pool removal:** Admin delists the defaulting pool. Existing exposure runs off naturally.
-5. **Recovery:** A partial repayment later is a normal `deallocate` against whatever exposure remains. There is no path that writes an exposure back *up*, because there is no path that increases the book without capital leaving the Vault.
+4. **What a write-down must not buy:** nothing. Two signatures were never going to be enough on their own, because both of them are the same key and a real loss and an invented one pass identically — the arithmetic has to be the thing that says no. So the amount is added to `written_off` on the Engine and `recognised_losses` on the Vault, both cumulative, neither ever reduced, and both inside the denominator of the reserve floor for the life of the contract. Without that, the floor was a share of net assets, a write-down lowers net assets, and every write-off handed back releasable headroom worth `floor_bps` of itself: allocate to the floor, write the position off, allocate to the new floor, and 999.9999999 of every 1000 USDC left a Vault holding a 25% floor while the adapter kept every dollar, with every individual call inside both floors. Keeping the loss in the base is also the more correct treatment under a genuine default, because agUSD is redeemed one for one, so a loss reduces the assets and not one stroop of what the Vault owes: a book in that state should hold *more* cash against its liabilities, not conclude that it may now lend out more. New deposits raise the base and release headroom in the ordinary way, so it fails closed without stranding the contract.
+5. **Pool removal:** Admin delists the defaulting pool. Existing exposure runs off naturally.
+6. **Recovery:** A partial repayment later is a normal `deallocate` against whatever exposure remains. There is no path that writes an exposure back *up*, because there is no path that increases the book without capital leaving the Vault.
 
 **Where the loss lands, stated as it actually is.** A write-down makes the loss visible and stops the reserve ratio lying. It does not distribute it, and nothing else in the contracts does either. agUSD is a synthetic dollar: `deposit` mints exactly `amount`, `claim_withdrawal` pays exactly `claim.amount`, and NAV is read on neither path, so there is no share price for a loss to flow through. The withdrawal queue is strictly first in, first out. Put together, a shortfall lands on whoever is at the back of the queue when the cash runs out. That is a first-mover advantage and it is a run incentive, and it is written down here rather than glossed.
 
@@ -485,15 +492,23 @@ Two-step FIFO withdrawal queue:
 
 **Step 2, without the claimant:** `settle_withdrawal()`. Pays whichever claim is at the head of the queue to the owner recorded on it, and any address may call it. It takes no `claim_id` and no recipient, so the caller has no lever to redirect a payment or skip ahead: the only thing it can do is what the head claim's own owner could have done. Without it, the head advanced only when that owner returned, which gave the holder of the head a veto over everyone behind them that they could exercise by doing nothing at all — one claim at the 1 agUSD anti-dust minimum, never claimed, froze every withdrawal in the protocol for as long as its owner cared to wait.
 
+**Step 2, when the claimant cannot be paid at all.** That covered the head claimant who *will not* come back. It did not cover the one who *cannot* be paid, which is worse, because their own return does not fix it either. Paying a claim is a token transfer, and USDC is a Stellar Asset Contract over a classic asset, so the transfer fails whenever the destination has no trustline for USDC, has had it frozen by the issuer, has a limit below the claim, or no longer exists. Any of those trapped the whole invocation, so the head pointer never moved and every withdrawal behind it stopped permanently, with no admin path around it because there deliberately is not one. It cost one USDC and a lowered trustline limit, and it also happens by accident the first time an issuer freezes a claimant.
+
+Delivery is therefore attempted rather than assumed. If the token refuses, `settle_withdrawal` writes nothing about the payment, marks the claim **deferred**, advances the head over it and emits `WithdrawalDeferred`. The claim stays unpaid and stays counted in `outstanding_liabilities`, so the cash behind it stays reserved and undeployable, and its owner collects it through `claim_withdrawal` — out of head order, from the recorded owner and nobody else, once — whenever the obstruction is gone. Called by the owner, a refused delivery still fails the call, with `PaymentRejected` rather than a trap, because the owner is the one party who can fix a missing or frozen trustline and should be told so.
+
+The trade this makes is real and belongs in the open: a deferred claim loses its place in the queue, so claims behind it may be paid first. That cost falls on the only party who can do anything about its cause, and the alternative is one unpayable claimant holding every other depositor hostage indefinitely.
+
 ### 6.1 Reserve Floor
 
 The Allocation Engine enforces the reserve floor as a contract-level invariant, and it enforces it **as a share of net assets rather than as an amount of USDC**. `set_reserve_floor(admin, floor_bps)` takes basis points; `reserve_floor_bps()` returns them; `get_reserve_ratio()` returns what free reserves actually are as a share of net assets, in the same units, so the limit and the reality are read off the same scale. Testnet runs at **2500 bps, 25%**.
 
-Net assets are free reserves plus everything booked as deployed, and free reserves are the Vault's idle USDC less what the withdrawal queue is owed. `allocate()` computes what the Vault would be left holding once the release settles and reverts if that is below `floor_bps` of the total, so the check happens in the same transaction as the transfer and a refused allocation moves no funds and books no exposure.
+Net assets are free reserves plus everything booked as deployed, and free reserves are the Vault's idle USDC less what the withdrawal queue is owed. `allocate()` computes what the Vault would be left holding once the release settles and reverts if that is below `floor_bps` of the base, so the check happens in the same transaction as the transfer and a refused allocation moves no funds and books no exposure.
+
+**The base is not net assets, and the difference is the point.** `floor_base` is net assets *plus cumulative recognised losses*, because `record_writedown` lowers net assets with no cash moving anywhere, so a floor measured against them is a floor whose absolute size its own caller can lower at will. Allocating to the floor and then writing the position off, over and over, walked the whole of the reserves out of a Vault a slice at a time with every individual call inside the limit. `written_off` on the Engine and `recognised_losses` on the Vault never fall, so the base is invariant under a write-down exactly as it is under an allocation, and that invariance is what makes the floor hold across calls rather than only within one. For a protocol that has never taken a loss the two numbers are identical, which is the ordinary case and the one the deployed configuration is sized against. The three concentration caps keep net assets as their denominator, because a larger base loosens a cap and tightens a floor, and the write-off term belongs only where it tightens.
 
 **Free, not gross.** `request_withdrawal` burns the agUSD immediately and leaves the USDC in the Vault until the claim is paid, so between those two moments the money sits on the balance sheet and already belongs to somebody. It appeared in no on-chain quantity at all: not in agUSD supply, which had been burned, not in idle reserves, not in total assets, not in the reserve ratio. Deposit 1000, queue all 1000 for withdrawal, and the Engine would still deploy 400 while `get_reserve_ratio()` reported a healthy 6000 bps, leaving a claim that could not be paid. `Vault::outstanding_liabilities()` is now the running total, `Vault::free_reserves()` is idle reserves net of it, and `Vault::get_net_assets()` is free reserves plus deployed capital. Every limit that asks how much may be deployed reads those.
 
-**The Vault enforces the same floor, on its own numbers.** `settle_allocation` used to release USDC on the Engine's say-so and check nothing itself, on the reasoning that duplicating the Engine's limits would mean two implementations that can disagree. The Engine, however, is simply an address the Vault authorizes, and `set_engine`'s guard — which asks an incoming Engine whether it governs this Vault — is answered correctly by any contract that stores one address and returns it. So a floor enforced only in the Engine is a floor that any contract holding that authorization can skip. The Vault therefore keeps its own `reserve_floor_bps` and its own `deployed_capital()` book, incremented by every release it performs and reduced only by a repayment it can verify in its own balance or by a write-down carrying the admin's signature. Net assets are invariant under an allocation, so the limit holds across repeated calls and not only within one: a hostile Engine gets the first release an honest one would have been allowed, and then gets nothing. An honest Engine never meets the check at all, because it applied the same arithmetic to the same book one call earlier.
+**The Vault enforces the same floor, on its own numbers.** `settle_allocation` used to release USDC on the Engine's say-so and check nothing itself, on the reasoning that duplicating the Engine's limits would mean two implementations that can disagree. The Engine, however, is simply an address the Vault authorizes, and `set_engine`'s guard — which asks an incoming Engine whether it governs this Vault — is answered correctly by any contract that stores one address and returns it. So a floor enforced only in the Engine is a floor that any contract holding that authorization can skip. The Vault therefore keeps its own `reserve_floor_bps` and its own `deployed_capital()` book, incremented by every release it performs and reduced only by a repayment it can verify in its own balance or by a write-down carrying the admin's signature. The base is invariant under an allocation and under a write-down, so the limit holds across repeated calls and not only within one: a hostile Engine gets the first release an honest one would have been allowed, and then gets nothing. An honest Engine never meets the check at all, because it applied the same arithmetic to the same book one call earlier.
 
 **Why a share and not a sum.** This is what replaced the Blend v2 liquidity buffer, and the unit is the reason the replacement is stronger rather than merely different. Blend gave fast-exit liquidity by holding a withdrawable position in someone else's lending market, which is only as instant as that market's utilization on the day it is needed. The floor gives it by never letting the USDC leave the Vault at all, which has no such dependency. But had the floor been written as a fixed number of dollars it would have inherited a different weakness: it would be most of a small book and a rounding error in a large one, and it would need re-tuning by hand every time the protocol grew. Withdrawal pressure scales with the size of the book, so the liquidity guaranteed against it has to scale too. A ratio does that on its own.
 
@@ -522,6 +537,7 @@ The floor is set by the Curator through an admin-gated call, and every change em
 - Queue depth monitoring — backend alerts trigger proactive Etherfuse redemptions.
 - Strict FIFO — no priority, no jumping, including admin.
 - No stalling either — `settle_withdrawal()` is permissionless and pays the head claim to its recorded owner, so an absent claimant cannot hold the queue.
+- And no freezing — a claim the USDC contract refuses to deliver, which for a Stellar Asset Contract means any claimant without a trustline, with a frozen one or with a limit below the claim, is deferred and stepped over rather than trapping the call. It stays unpaid, stays owed, stays counted, and is collected later by its owner out of head order.
 - Queued claims are subtracted from free reserves, so the capital behind them cannot be deployed out from under them.
 - Payouts are outside the circuit breaker — a queued claim has already burned its agUSD, so pausing it would leave the holder with neither the token nor the cash.
 - No claim expiry — persistent storage with TTL bumps.
@@ -536,11 +552,13 @@ The floor is set by the Curator through an admin-gated call, and every change em
 | **Tampering** | Allocation to compromised pool | On-chain concentration caps (pool, originator, jurisdiction) and the reserve floor, all four in bps of net assets. `allocate()` reverts if any is exceeded. `register_pool` refuses an adapter that does not name this Engine and this Engine's Vault. |
 | **Tampering** | Hostile or mis-wired Allocation Engine | The Vault enforces the reserve floor itself in `settle_allocation`, against its own deployed capital book, which no Engine can write to. `set_engine`'s interrogation of an incoming Engine catches mis-wiring and is not relied on for more than that. |
 | **Tampering** | Exposure that no longer exists | `write_down` recognises a credit loss on-chain, admin-gated and evented, so the reserve ratio stops overstating the book by the size of the loss. |
+| **Elevation of Privilege** | An admin using a write-down to create room under the reserve floor | Recognised losses stay in `floor_base` permanently, so a write-down moves net assets and does not move the floor's denominator. Alternating `allocate` and `write_down` releases nothing an honest single allocation would not have. |
 | **Repudiation** | Originator denies allocation | Soroban events on every `allocate` / `deallocate`. Indexed with block provenance. |
 | **Repudiation** | Disputed yield | Every distribution moves real agUSD in, so it leaves a SEP-41 `transfer` event and a matching move in `nav()` and `exchange_rate()`. Fully reconstructable from the chain. A dedicated `yield_distributed` event is planned. |
 | **Info Disclosure** | LP position exposure | Public chain by design. No private data in contracts. |
 | **DoS** | Withdrawal queue flood | Minimum amount + agUSD burn cost. TTL on claim records. |
 | **DoS** | Withdrawal queue stall | `settle_withdrawal()` is permissionless and pays the head claim to its recorded owner, so a claimant who never returns cannot hold the queue behind them. |
+| **DoS** | Withdrawal queue freeze on an undeliverable payout | Delivery is attempted rather than assumed. A claim the token refuses is deferred and stepped over, unpaid and still owed, so a claimant with no USDC trustline, a frozen one or a limit below the claim cannot stop everybody else's withdrawals. |
 | **DoS** | Reserves lent out from under a queued claim | Queued liabilities are subtracted from free reserves and net assets before any cap or floor is computed. |
 | **DoS** | Oracle starvation | Deposits/stakes continue. Only withdrawals/allocations revert. Admin updates reporter set. |
 | **Elev. of Privilege** | Admin key compromise | Admin cannot transfer USDC directly. Only `allocate()` (cap-bound and floor-bound, at both the Engine and the Vault) or `pause()`. Multi-sig (2-of-3) planned. |
@@ -551,6 +569,8 @@ The floor is set by the Curator through an admin-gated call, and every change em
 | Role | V1 Holder | Permissions | Evolution |
 |---|---|---|---|
 | Admin | 2-of-3 multi-sig | Pause, register pools, set caps, set the reserve floor in bps on both the Engine and the Vault, write down a defaulted exposure, repoint counterparties while the guards allow it, update reporters, propose a successor admin | Governance + 48h timelock |
+
+The write-down entry in that table is worth reading precisely, because it is the most dangerous call in the system and the one whose bound is arithmetic rather than a signature. It reduces recorded exposure with nothing arriving, so it is the move an admin would reach for to make a book look solvent or to create room under the floor. It cannot do the second: recognised losses stay in the floor's denominator permanently, so alternating `allocate` with `write_down` releases nothing that a single honest allocation would not have released. It can still do the first, in the sense that an operator who writes off a healthy position is misreporting; what stops that is the multi-signature admin and the timelock in this table, and the event every write-down emits, not a check inside a contract. It also requires the same address to be the admin of both the Engine and the Vault, so a partial rotation of one key disables loss recognition rather than weakening it.
 | Reporter | Dedicated hot wallet | Push NAV to Oracle | Multi-reporter quorum (2-of-3) |
 | Yield Distributor | = Admin in V1 | `distribute_yield()`, which moves the distributor's own agUSD | Dedicated service key, then keeper network |
 | Curator | = Admin in V1 | Whitelist pools, risk params | Independent risk committee |

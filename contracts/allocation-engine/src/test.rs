@@ -785,8 +785,9 @@ fn a_default_can_be_written_down_and_the_reserve_ratio_stops_lying() {
     assert_eq!(f.engine.get_exposure(&f.pool_a), 200 * USDC);
     assert_eq!(f.engine.get_reserve_ratio(), 8_000); // 800 idle over 1000 that no longer exists
 
-    // Recognise half of it. Three books move together: this Engine's exposure,
-    // the adapter's own, and the Vault's deployed capital.
+    // Recognise half of it. Four books move together: this Engine's exposure,
+    // the adapter's own, the Vault's deployed capital, and the cumulative
+    // write-off that keeps the loss in the floor's denominator.
     f.engine.write_down(
         &f.admin,
         &f.pool_a,
@@ -797,8 +798,17 @@ fn a_default_can_be_written_down_and_the_reserve_ratio_stops_lying() {
     assert_eq!(f.engine.total_allocated(), 100 * USDC);
     assert_eq!(f.adapter_a.get_exposure(), 100 * USDC);
     assert_eq!(MockVaultClient::new(&f.e, &f.vault_id).written_down(), 100 * USDC);
-    // 800 idle over 900 of book, which is now the truth.
-    assert_eq!(f.engine.get_reserve_ratio(), 8_888);
+    assert_eq!(f.engine.written_off(), 100 * USDC);
+    // 800 idle over a base of 1000, which is still 8000 bps.
+    //
+    // The base does not move, and that is the point. This assertion used to
+    // read 8888, on the reasoning that 800 over 900 was "now the truth", and it
+    // was the wrong truth twice over. A liquidity ratio that goes *up* when the
+    // book loses money is telling the operator the opposite of what happened,
+    // and the same arithmetic underneath `allocate` meant every recognised loss
+    // handed back releasable headroom worth a quarter of itself.
+    assert_eq!(f.engine.floor_base(), 1_000 * USDC);
+    assert_eq!(f.engine.get_reserve_ratio(), 8_000);
 
     // And the rest, which takes the exposure to zero without a stroop moving.
     f.engine.write_down(
@@ -809,7 +819,11 @@ fn a_default_can_be_written_down_and_the_reserve_ratio_stops_lying() {
     );
     assert_eq!(f.engine.get_exposure(&f.pool_a), 0);
     assert_eq!(f.engine.total_allocated(), 0);
-    assert_eq!(f.engine.get_reserve_ratio(), 10_000);
+    assert_eq!(f.engine.written_off(), 200 * USDC);
+    // The whole position is gone and the ratio has still not moved: no cash
+    // left the Vault, so no liquidity was gained or lost.
+    assert_eq!(f.engine.floor_base(), 1_000 * USDC);
+    assert_eq!(f.engine.get_reserve_ratio(), 8_000);
 
     // It cannot write off more than is booked, and it is not a second
     // deallocation path: nothing was transferred anywhere.
@@ -965,5 +979,84 @@ fn the_admin_role_moves_only_to_an_address_that_signs_for_it() {
     assert_eq!(
         f.engine.try_accept_admin(&successor),
         Err(Ok(EngineError::NoPendingAdmin))
+    );
+}
+
+/// The Engine's own copy of the reserve floor does not reopen when a position
+/// is written off.
+///
+/// The floor used to be a share of total assets, and `write_down` lowers total
+/// assets with no cash moving, so every write-off handed back releasable
+/// headroom worth `floor_bps` of itself. Allocate to the floor, write the
+/// position off, allocate to the new floor: the loop converges on emptying the
+/// Vault, and every individual call passes the check.
+///
+/// `written_off` is the denominator term that closes it. It never falls, so the
+/// base is invariant under a write-down exactly as it is under an allocation,
+/// and that is what makes the floor hold across calls rather than within one.
+///
+/// This is the Engine half of the property. The Vault enforces it a second time
+/// on its own numbers, and its crate has the same test against the real
+/// contract; this one runs against the mock Vault, which enforces nothing, so a
+/// limit that holds here is a limit this Engine is holding by itself.
+#[test]
+fn a_write_down_does_not_reopen_the_engines_reserve_floor() {
+    let f = setup();
+    // Open every concentration cap on a pool of its own, so the floor is the
+    // only limit under test and a refusal cannot be a cap wearing its name.
+    let pool = extra_private_credit_pool(&f);
+    f.engine.register_pool(
+        &f.admin,
+        &pool,
+        &symbol_short!("SOLO"),
+        &symbol_short!("LU"),
+        &10_000,
+    );
+    f.engine.set_caps(&f.admin, &10_000, &10_000, &10_000);
+    f.engine.set_reserve_floor(&f.admin, &2_000);
+
+    // Allocate everything the floor will release, and confirm it is binding.
+    f.engine.allocate(&f.admin, &pool, &(800 * USDC));
+    assert_eq!(f.engine.get_reserve_ratio(), 2_000);
+    assert_eq!(
+        f.engine.try_allocate(&f.admin, &pool, &1),
+        Err(Ok(EngineError::ReserveFloorBreached))
+    );
+
+    // Write the whole position off. Nothing moves: the adapter still holds it.
+    f.engine
+        .write_down(&f.admin, &pool, &(800 * USDC), &symbol_short!("DEFAULT"));
+    assert_eq!(f.engine.total_allocated(), 0);
+    assert_eq!(f.engine.written_off(), 800 * USDC);
+    assert_eq!(f.usdc.balance(&pool), 800 * USDC);
+
+    // The base has not moved, so the floor has not moved either.
+    assert_eq!(f.engine.floor_base(), 1_000 * USDC);
+    assert_eq!(f.engine.get_reserve_ratio(), 2_000);
+    assert_eq!(
+        f.engine.try_allocate(&f.admin, &pool, &1),
+        Err(Ok(EngineError::ReserveFloorBreached))
+    );
+
+    // Run the loop it used to fall to, and watch the reserves stay put.
+    for _ in 0..40 {
+        let free = f.usdc.balance(&f.vault_id);
+        if free <= 0 {
+            break;
+        }
+        let mut take = free;
+        while take > 0 && f.engine.try_allocate(&f.admin, &pool, &take).is_err() {
+            take = take * 9 / 10;
+        }
+        if take == 0 {
+            break;
+        }
+        f.engine
+            .write_down(&f.admin, &pool, &take, &symbol_short!("DEFAULT"));
+    }
+    assert_eq!(
+        f.usdc.balance(&f.vault_id),
+        200 * USDC,
+        "the 20% floor has to survive write-downs, not only allocations"
     );
 }

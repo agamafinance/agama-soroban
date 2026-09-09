@@ -36,6 +36,20 @@
 //! owner simply never returns freezes every withdrawal behind it forever, and
 //! the attacker keeps their agUSD.
 //!
+//! That covered the claimant who will not come back. It did not cover the
+//! claimant who cannot be paid, which is worse, because the owner cannot fix it
+//! by showing up either. The Vault's USDC is a Stellar Asset Contract over a
+//! classic asset, so a payout fails whenever the destination has no trustline,
+//! has had it frozen by the issuer, has a limit below the claim, or no longer
+//! exists, and a failed payout used to trap the whole call and leave the head
+//! pointer where it was. One USDC and a lowered trustline limit stopped every
+//! withdrawal in the protocol permanently. `settle_withdrawal` now attempts the
+//! delivery instead of assuming it: if the token refuses, the claim is marked
+//! deferred and stepped over, unpaid and still owed, and its owner collects it
+//! through `claim_withdrawal` whenever the obstruction is gone. A deferred
+//! claim loses its place in the queue, which is a real cost and falls on the
+//! only party who can do anything about the cause of it.
+//!
 //! # A queued claim is a liability, and the Vault counts it
 //!
 //! `request_withdrawal` burns the agUSD immediately and leaves the USDC here,
@@ -91,6 +105,7 @@
 //!    only by a repayment it can see in its own balance or by an admin
 //!    authorized write-down
 //!  - `outstanding_liabilities`, the queued withdrawals it already owes
+//!  - `recognised_losses`, everything it has written off, which never falls
 //!  - `reserve_floor_bps`, its own copy of the floor, admin set and fail closed
 //!    at 100% until it is configured
 //!
@@ -100,6 +115,18 @@
 //! same book one call earlier. A hostile one meets it on the first call and
 //! cannot get past it on any subsequent one, because the Vault's own record of
 //! what it has released is not something the Engine can rewrite.
+//!
+//! The floor is a share of `floor_base`, not of net assets, and the difference
+//! between those two is the whole of the second review's first finding.
+//! `record_writedown` lowers `deployed_capital` with no cash moving, so a floor
+//! measured against net assets is a floor whose absolute size the admin can
+//! lower at will: allocate to the floor, write the position down, and the floor
+//! has come down with it. Forty rounds of that took all but one stroop of a
+//! 1000 USDC book out of a Vault holding a 25% floor, with every individual
+//! call inside the limit and the pool adapter keeping every dollar. Recognised
+//! losses therefore stay in the base for good, which makes a write-down buy
+//! nothing, and which is also the more honest base: agUSD redeems one for one,
+//! so a default does not reduce by a stroop what this Vault owes.
 //!
 //! # What the admin can still do, stated plainly
 //!
@@ -221,6 +248,9 @@ pub enum VaultError {
     NoPendingAdmin = 320,
     /// `accept_admin` was called by an address that was not the one proposed.
     NotPendingAdmin = 321,
+    /// The Vault holds the cash and tried to send it, and the token refused to
+    /// deliver it to the claim's owner.
+    PaymentRejected = 322,
 }
 
 /// A queued withdrawal. The agUSD is burned at request time, so this record is
@@ -275,15 +305,26 @@ enum Cfg {
     /// balance holds above this arrived without the Vault being told, which is
     /// exactly what a pool repayment looks like from in here, and is what
     /// `record_repayment` is checked against.
-    Booked,    /// Half finished admin handover: proposed, not yet accepted.
+    Booked,
+    /// Deployed capital written off since deployment, cumulative and never
+    /// reduced. It is not an asset and it is not counted as one; it stays on
+    /// the books because it is the denominator of the reserve floor, and a
+    /// denominator a write-down can shrink is a floor a write-down can walk
+    /// through.
+    WrittenOff,
+    /// Half finished admin handover: proposed, not yet accepted.
     PendingAdmin,
 }
 
-/// Persistent storage: the claim records, keyed by claim id.
+/// Persistent storage: the claim records, keyed by claim id, and the flag that
+/// marks one the queue has stepped over.
 #[derive(Clone)]
 #[contracttype]
 enum Store {
     Claim(u64),
+    /// Set on a claim `settle_withdrawal` could not deliver. The claim is still
+    /// owed and still counted; what it has lost is its place in the queue.
+    Deferred(u64),
 }
 
 /// Emitted when an admin handover is proposed. The role has not moved yet: this
@@ -614,9 +655,22 @@ impl Vault {
     /// having: one that cannot be reordered by whoever is running the protocol
     /// on the day it is under stress.
     ///
-    /// The head advances only when a claim is paid. If its owner never returns
-    /// to call this, `settle_withdrawal` is how the queue moves on without
-    /// them: same recipient, same amount, same position, different caller.
+    /// The head advances only when a claim is paid or stepped over. If its
+    /// owner never returns to call this, `settle_withdrawal` is how the queue
+    /// moves on without them: same recipient, same amount, same position,
+    /// different caller.
+    ///
+    /// There is a second door into this function, and it is not a way round the
+    /// ordering. A claim `settle_withdrawal` could not deliver is marked
+    /// deferred and left unpaid, and its owner collects it here whenever the
+    /// obstruction is gone, which by then is no longer at the head. Only a
+    /// claim the queue has already stepped over can arrive that way, only its
+    /// recorded owner can take it, and it can only be taken once.
+    ///
+    /// If the token refuses to deliver, this call fails rather than deferring.
+    /// The owner is the party who can fix a missing trustline, a frozen one or
+    /// one whose limit is too low, so the owner is the party who should be told
+    /// about it, by a named error rather than a trap.
     pub fn claim_withdrawal(e: Env, from: Address, claim_id: u64) -> Result<(), VaultError> {
         from.require_auth();
 
@@ -627,10 +681,21 @@ impl Vault {
         if claim.claimed {
             return Err(VaultError::AlreadyClaimed);
         }
-        if claim_id != Self::queue_head(e.clone()) {
+        let at_head = claim_id == Self::queue_head(e.clone());
+        let deferred = Self::is_deferred(e.clone(), claim_id);
+        if !at_head && !deferred {
             return Err(VaultError::NotAtQueueHead);
         }
-        Self::pay_head(&e, claim_id, claim)
+        if !Self::deliver(&e, claim_id, claim)? {
+            return Err(VaultError::PaymentRejected);
+        }
+        if deferred {
+            e.storage().persistent().remove(&Store::Deferred(claim_id));
+        } else {
+            e.storage().instance().set(&Cfg::QueueHead, &(claim_id + 1));
+        }
+        Self::bump_instance(&e);
+        Ok(())
     }
 
     /// Pay the claim at the head of the queue to its recorded owner, and
@@ -650,6 +715,31 @@ impl Vault {
     /// nothing: one claim at the anti-dust minimum, never claimed, froze every
     /// withdrawal in the protocol for as long as its owner cared to wait, and
     /// the owner kept the agUSD's worth of USDC at the end of it.
+    ///
+    /// # The head that cannot be paid, rather than will not
+    ///
+    /// Paying the head is a token transfer, and the Vault's USDC is a Stellar
+    /// Asset Contract over a classic asset, so the transfer fails whenever the
+    /// destination account has no trustline for USDC, has had it frozen by the
+    /// issuer, has a limit below the claim, or no longer exists. Any one of
+    /// those used to trap the whole invocation, which meant the head never
+    /// advanced and every withdrawal behind it stopped for good, with no admin
+    /// path around it because there deliberately is not one. It cost an
+    /// attacker one USDC and a lowered trustline limit, and it happened by
+    /// accident the first time an issuer froze a claimant.
+    ///
+    /// So delivery is attempted rather than assumed. If the token refuses, this
+    /// call writes nothing about the payment, marks the claim deferred,
+    /// advances the head over it and says so in an event. The claim stays unpaid
+    /// and stays counted in `outstanding_liabilities`, so its cash stays
+    /// reserved and undeployable, and its owner collects it through
+    /// `claim_withdrawal` once the obstruction is gone.
+    ///
+    /// The trade is real and it is worth stating: a deferred claim loses its
+    /// place in the queue, so claims behind it may be paid first. That cost
+    /// falls on the only party who can do anything about the cause of it, which
+    /// is the right party to bear it, and the alternative is letting one
+    /// unpayable claimant hold every other depositor hostage indefinitely.
     pub fn settle_withdrawal(e: Env) -> Result<u64, VaultError> {
         let claim_id = Self::queue_head(e.clone());
         if claim_id >= Self::queue_tail(e.clone()) {
@@ -662,7 +752,20 @@ impl Vault {
             // unreachable is the one an audit should not have to take on trust.
             return Err(VaultError::AlreadyClaimed);
         }
-        Self::pay_head(&e, claim_id, claim)?;
+        let owner = claim.owner.clone();
+        let amount = claim.amount;
+        let delivered = Self::deliver(&e, claim_id, claim)?;
+        e.storage().instance().set(&Cfg::QueueHead, &(claim_id + 1));
+        if !delivered {
+            Self::set_deferred(&e, claim_id);
+            WithdrawalDeferred {
+                user: owner,
+                claim_id,
+                amount,
+            }
+            .publish(&e);
+        }
+        Self::bump_instance(&e);
         Ok(claim_id)
     }
 
@@ -684,14 +787,34 @@ impl Vault {
     ///    have already burned their agUSD and are owed this cash; lending it
     ///    out is how a claim becomes unpayable.
     ///  - free reserves after the release cannot fall below `reserve_floor_bps`
-    ///    of net assets, where net assets are free reserves plus the capital
-    ///    this Vault has released and not seen back.
+    ///    of `floor_base`, which is free reserves, plus the capital this Vault
+    ///    has released and not seen back, plus everything it has ever written
+    ///    off.
     ///
-    /// Net assets are invariant under an allocation, which is what makes the
-    /// second limit hold across repeated calls rather than only within one. A
-    /// hostile Engine gets the first release an honest one would have been
-    /// allowed, and then gets nothing, because `deployed_capital` went up by
-    /// exactly what it took and is not a number the Engine can write.
+    /// The base is invariant under an allocation, which is what makes the second
+    /// limit hold across repeated calls rather than only within one. A hostile
+    /// Engine gets the first release an honest one would have been allowed, and
+    /// then gets nothing, because `deployed_capital` went up by exactly what it
+    /// took and is not a number the Engine can write.
+    ///
+    /// The write-off term is why the base is not simply net assets, and it is
+    /// the whole of the second review's first finding. `record_writedown` is
+    /// the one call that lowers `deployed_capital` with no cash moving, so if
+    /// the floor were a percentage of net assets it would be a percentage of a
+    /// number the admin can lower at will. Allocate to the floor, write the
+    /// position down, and the floor has moved down with it; forty rounds of
+    /// that took 999.9999999 of 1000 USDC out of a Vault holding a 25% floor
+    /// while the adapter kept every dollar. Keeping recognised losses in the
+    /// base makes a write-down buy exactly nothing.
+    ///
+    /// It is also the more correct base under a real default, which is the test
+    /// of whether a guard is a hack. agUSD is redeemed one for one, so the
+    /// protocol's nominal liability does not shrink when its assets do: a book
+    /// that has just lost a quarter of itself owes precisely what it owed
+    /// before and has less to pay it with, and the last thing it should do is
+    /// conclude that it may now lend out more. New deposits raise the base and
+    /// restore deployable headroom in the ordinary way, so this fails closed
+    /// without stranding the contract.
     pub fn settle_allocation(e: Env, pool: Address, amount: i128) -> Result<(), VaultError> {
         let engine: Address = e
             .storage()
@@ -709,8 +832,8 @@ impl Vault {
             return Err(VaultError::InsufficientLiquidity);
         }
         let deployed_after = Self::deployed_capital(e.clone()) + amount;
-        let net_assets = free_after + deployed_after;
-        if free_after * BPS < Self::reserve_floor_bps(e.clone()) as i128 * net_assets {
+        let base = free_after + deployed_after + Self::recognised_losses(e.clone());
+        if free_after * BPS < Self::reserve_floor_bps(e.clone()) as i128 * base {
             return Err(VaultError::ReserveFloorBreached);
         }
 
@@ -782,6 +905,17 @@ impl Vault {
     /// Recognising a loss is the honest action, not the suspicious one. Until
     /// it happens the Vault reports capital it does not have, and the reserve
     /// ratio is overstated by exactly the size of the loss.
+    ///
+    /// What the loss must not do is buy the caller anything. The amount is
+    /// added to `recognised_losses`, which never falls, and which stays in the
+    /// denominator of the reserve floor for the life of the contract. Without
+    /// that, this call lowered the base the floor is a percentage of, so
+    /// alternating `allocate` and `write_down` walked the whole of the reserves
+    /// out of the Vault a slice at a time with every individual call inside the
+    /// floor. Two authorizations were never going to be enough on their own,
+    /// because both of them are the same key, and a guard that a legitimate
+    /// operation and an attack pass identically is not a guard: the arithmetic
+    /// has to be the thing that says no.
     pub fn record_writedown(e: Env, admin: Address, amount: i128) -> Result<(), VaultError> {
         let engine: Address = e
             .storage()
@@ -797,11 +931,14 @@ impl Vault {
         if amount > deployed {
             return Err(VaultError::DeployedUnderflow);
         }
+        let losses = Self::recognised_losses(e.clone()) + amount;
         e.storage().instance().set(&Cfg::Deployed, &(deployed - amount));
+        e.storage().instance().set(&Cfg::WrittenOff, &losses);
         Self::bump_instance(&e);
         WriteDownRecorded {
             amount,
             deployed: deployed - amount,
+            recognised_losses: losses,
         }
         .publish(&e);
         Ok(())
@@ -936,12 +1073,40 @@ impl Vault {
     }
 
     /// Assets the queued withdrawals have no claim on: free reserves plus
-    /// deployed capital. This is the denominator of the reserve floor.
+    /// deployed capital. The honest measure of what the Vault is worth, and for
+    /// that reason not the denominator of the reserve floor: see `floor_base`.
     pub fn get_net_assets(e: Env) -> Result<i128, VaultError> {
         if !e.storage().instance().has(&Cfg::Engine) {
             return Err(VaultError::NotInitialized);
         }
         Ok(Self::free_reserves(e.clone()) + Self::deployed_capital(e))
+    }
+
+    /// Deployed capital written off since deployment, cumulative. It only ever
+    /// rises, and there is no entry point that lowers it.
+    ///
+    /// It is not an asset and `get_net_assets` correctly excludes it. It exists
+    /// because the reserve floor needs a base that a write-down cannot move: a
+    /// floor measured as a share of net assets is a floor whose absolute size
+    /// falls every time the admin recognises a loss, real or otherwise, and
+    /// that is enough to walk the whole of the reserves out of the contract in
+    /// slices that are each individually within the floor.
+    pub fn recognised_losses(e: Env) -> i128 {
+        e.storage().instance().get(&Cfg::WrittenOff).unwrap_or(0)
+    }
+
+    /// The denominator `reserve_floor_bps` is a share of: net assets plus
+    /// everything ever written off.
+    ///
+    /// Under a protocol that has never taken a loss this is exactly
+    /// `get_net_assets`, which is the ordinary case and the one the deployed
+    /// configuration is sized against. After a loss the two part company, and
+    /// the floor keeps asking for a buffer against the book as it was rather
+    /// than the book as it is. That is the conservative direction and it is
+    /// also the correct one: agUSD redeems one for one, so a default does not
+    /// reduce by one stroop what the Vault owes.
+    pub fn floor_base(e: Env) -> Result<i128, VaultError> {
+        Ok(Self::get_net_assets(e.clone())? + Self::recognised_losses(e))
     }
 
     /// NAV for the Vault's feed, straight from the Oracle Adapter. A stale feed
@@ -973,20 +1138,34 @@ impl Vault {
     /// pool repays. Storing a flag would mean someone has to remember to
     /// refresh it, and a claim that is payable but marked pending is worse
     /// than no status at all.
+    /// A deferred claim is one `settle_withdrawal` could not deliver, because
+    /// the token refused to hand the USDC to its owner. It is unpaid, still
+    /// owed, still counted in `outstanding_liabilities`, and no longer in the
+    /// way of anybody else. Its owner collects it through `claim_withdrawal`,
+    /// out of head order, once whatever blocked the delivery is gone.
+    pub fn is_deferred(e: Env, claim_id: u64) -> bool {
+        e.storage()
+            .persistent()
+            .get(&Store::Deferred(claim_id))
+            .unwrap_or(false)
+    }
+
     pub fn claim_status(e: Env, claim_id: u64) -> Result<ClaimStatus, VaultError> {
         let claim = Self::read_claim(&e, claim_id)?;
         if claim.claimed {
             return Ok(ClaimStatus::Claimed);
         }
-        if claim_id == Self::queue_head(e.clone())
-            && Self::idle_reserves(e.clone()) >= claim.amount
-        {
+        let collectable =
+            claim_id == Self::queue_head(e.clone()) || Self::is_deferred(e.clone(), claim_id);
+        if collectable && Self::idle_reserves(e.clone()) >= claim.amount {
             return Ok(ClaimStatus::Ready);
         }
         Ok(ClaimStatus::Pending)
     }
 
-    /// Next claim id that may be paid. Nothing behind it can be paid first.
+    /// Next claim id the queue has not reached. Nothing behind it can be paid
+    /// first, and the only claims in front of it that can still be paid are the
+    /// deferred ones, which are out of everyone else's way by construction.
     pub fn queue_head(e: Env) -> u64 {
         e.storage().instance().get(&Cfg::QueueHead).unwrap_or(1)
     }
@@ -996,7 +1175,9 @@ impl Vault {
         e.storage().instance().get(&Cfg::QueueTail).unwrap_or(1)
     }
 
-    /// Claims requested and not yet paid.
+    /// Claims the queue has not reached yet. A deferred claim is not counted
+    /// here, because it is no longer in the queue; it is still owed, and
+    /// `outstanding_liabilities` is the number that says so.
     pub fn queue_length(e: Env) -> u64 {
         Self::queue_tail(e.clone()) - Self::queue_head(e)
     }
@@ -1070,30 +1251,49 @@ impl Vault {
             .ok_or(VaultError::ClaimNotFound)
     }
 
-    /// Pay `claim` and advance the head. Shared by `claim_withdrawal` and
-    /// `settle_withdrawal` so the two cannot drift: the caller differs, the
-    /// payment does not. The claim is marked and the head moved before the
-    /// transfer, so the record is written whatever the token does.
-    fn pay_head(e: &Env, claim_id: u64, mut claim: Claim) -> Result<(), VaultError> {
+    /// Try to hand `claim` to its owner, and book the payment only if the USDC
+    /// actually moved. `Ok(true)` means paid, `Ok(false)` means the token
+    /// refused and nothing at all has been written. Shared by
+    /// `claim_withdrawal` and `settle_withdrawal` so the two cannot drift: the
+    /// caller differs, the payment does not.
+    ///
+    /// The transfer happens before the bookkeeping, which is the reverse of the
+    /// usual advice and is the only order that can work here, because the
+    /// bookkeeping is what the outcome of the transfer decides. It is safe for
+    /// a reason specific to this platform rather than by luck: the Soroban host
+    /// refuses to re-enter a contract that is already on the call stack, so a
+    /// token that tried to call back into the Vault mid-payment would abort the
+    /// invocation rather than observe a half-written queue. Everything written
+    /// after a failed transfer is written after the host has already rolled the
+    /// failed frame back.
+    ///
+    /// Advancing the head is deliberately not done here. A deferred claim is
+    /// collected long after the head has moved past it, and paying one must not
+    /// drag the pointer backwards, so the two callers each move it or do not.
+    fn deliver(e: &Env, claim_id: u64, mut claim: Claim) -> Result<bool, VaultError> {
         if Self::idle_reserves(e.clone()) < claim.amount {
             return Err(VaultError::InsufficientLiquidity);
         }
+        let usdc = Self::usdc(e.clone())?;
+        let delivered = matches!(
+            TokenClient::new(e, &usdc).try_transfer(
+                &e.current_contract_address(),
+                &claim.owner,
+                &claim.amount,
+            ),
+            Ok(Ok(()))
+        );
+        if !delivered {
+            return Ok(false);
+        }
+
         claim.claimed = true;
         Self::write_claim(e, claim_id, &claim);
-        e.storage().instance().set(&Cfg::QueueHead, &(claim_id + 1));
         Self::set_queued(
             e,
             Self::outstanding_liabilities(e.clone()) - claim.amount,
         );
         Self::add_booked(e, -claim.amount);
-        Self::bump_instance(e);
-
-        let usdc = Self::usdc(e.clone())?;
-        TokenClient::new(e, &usdc).transfer(
-            &e.current_contract_address(),
-            &claim.owner,
-            &claim.amount,
-        );
 
         WithdrawalClaimed {
             user: claim.owner,
@@ -1101,7 +1301,15 @@ impl Vault {
             amount: claim.amount,
         }
         .publish(e);
-        Ok(())
+        Ok(true)
+    }
+
+    fn set_deferred(e: &Env, claim_id: u64) {
+        let key = Store::Deferred(claim_id);
+        e.storage().persistent().set(&key, &true);
+        e.storage()
+            .persistent()
+            .extend_ttl(&key, CLAIM_LIFETIME, CLAIM_BUMP);
     }
 
     fn set_queued(e: &Env, value: i128) {
@@ -1161,6 +1369,21 @@ pub struct WithdrawalClaimed {
     pub amount: i128,
 }
 
+/// Emitted when `settle_withdrawal` could not hand a claim to its owner and
+/// stepped over it. The claim is unpaid and still owed; what has changed is
+/// that it is no longer blocking the queue. It belongs in the event stream
+/// because it is the only way a claim leaves the queue without being paid, and
+/// because the owner needs to know their payment bounced.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WithdrawalDeferred {
+    #[topic]
+    pub user: Address,
+    #[topic]
+    pub claim_id: u64,
+    pub amount: i128,
+}
+
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PauseToggled {
@@ -1195,6 +1418,11 @@ pub struct WriteDownRecorded {
     pub amount: i128,
     /// Capital still out at the pools after the write-down.
     pub deployed: i128,
+    /// Everything written off since deployment, after this one. It never falls,
+    /// and it stays in the denominator of the reserve floor, so the event
+    /// carries the number that says how much of the floor's base is a memory of
+    /// capital rather than capital.
+    pub recognised_losses: i128,
 }
 
 /// Emitted when the Vault is repointed at a different agUSD. Repointing the
