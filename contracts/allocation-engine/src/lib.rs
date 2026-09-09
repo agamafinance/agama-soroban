@@ -62,9 +62,10 @@
 //!
 //! # Fail closed
 //!
-//! `initialize` leaves every cap at zero and the reserve floor at 100%, so an
-//! Engine that has been deployed but not yet configured cannot deploy capital
-//! at all. Opening it up is an explicit admin action with an event attached.
+//! `__constructor` leaves every cap at zero and the reserve floor at 100%, so
+//! an Engine that has been deployed but not yet configured cannot deploy
+//! capital at all. Opening it up is an explicit admin action with an event
+//! attached.
 //!
 //! # Accounting
 //!
@@ -93,6 +94,61 @@
 //! cumulative total that never falls, in the denominator of the floor and of
 //! `get_reserve_ratio` for good, and deliberately not in the denominator of the
 //! concentration caps, where a larger base would loosen rather than tighten.
+//!
+//! # The caps needed the same treatment, in the numerator
+//!
+//! The floor was fixed and the concentration caps were not, and they had the
+//! same hole for the same reason. Every cap was measured against *current*
+//! exposure, and `write_down` sets current exposure to zero while the adapter
+//! goes on holding every dollar it was ever sent. So the same pool could be
+//! filled to its cap, written off, filled to its cap again, and the real
+//! concentration behind one originator was bounded by nothing at all while all
+//! three caps read as satisfied. Fixing the floor did not touch it: a pool
+//! capped at 30% could still take everything the floor was willing to release,
+//! and the originator and jurisdiction sums followed it up, because all three
+//! are built from the same per-pool numbers.
+//!
+//! The correction is symmetric with the floor's, on the other side of the
+//! ratio: a write-down is charged against the pool's cap permanently, so the
+//! quantity the caps measure is `exposure + written_off_pool` rather than
+//! exposure alone. The denominator stays real total assets, because adding
+//! losses there would loosen a cap rather than tighten it, which is the wrong
+//! direction and the reason the floor and the caps take the two terms
+//! differently.
+//!
+//! It is a product decision as much as a fix, and it is worth stating as one,
+//! including how strong it is. A pool that has lost `W` cannot take another
+//! dollar until `cap_bps` of total assets covers `W` again, and because the
+//! loss also lowered total assets, a pool that defaulted at its cap needs the
+//! book to grow back to roughly the size it had before the default. That is
+//! deliberately the same shape as the floor's relief and deliberately not a
+//! prohibition: new deposits raise the denominator and reopen the pool in the
+//! ordinary way, `recover` releases the charge outright if the cash comes back,
+//! and an operator who has decided the originator is good for it can widen the
+//! cap or register a new adapter. What none of those are is automatic. A
+//! defaulted originator does not get its limit back as a side effect of the
+//! loss being recognised; somebody has to decide to give it back.
+//!
+//! # Capital that comes back after it was written off
+//!
+//! A write-down is a statement about what is expected, not a receipt, and
+//! private credit recovers. `deallocate` is capped at booked exposure, so once
+//! a position is written down to zero there was no entry point that could move
+//! the cash home: it sat in the adapter, and because `set_counterparties`
+//! refuses an adapter with a non-zero balance, one stroop of it also bricked
+//! the adapter's only repair path. That is not hypothetical; it cost this
+//! protocol three redeployments of the private credit adapter, each recorded in
+//! `deployments/testnet.json`.
+//!
+//! `recover` is the way out, and its shape is chosen so that it cannot become
+//! a way in. The adapter sends its surplus to the Vault it already names, never
+//! to an address the caller supplies, so there is no version of this call that
+//! extracts anything; the Vault verifies the cash arrived in its own balance
+//! before it believes a stroop of it; and what the Vault then does with it is
+//! release the loss, not the floor. Recognised losses come down by the recovery,
+//! and free reserves go up by the same number in the same transaction, so
+//! `floor_base` is unchanged and the C1 invariant, that the base the floor is a
+//! percentage of never falls, still holds exactly.
 
 use soroban_sdk::{
     contract, contractclient, contracterror, contractevent, contractimpl, contracttype, Address,
@@ -128,6 +184,14 @@ pub trait VaultInterface {
     /// Tell the Vault that `amount` of deployed capital is not coming back.
     /// Needs the Vault admin's signature as well as this Engine's call.
     fn record_writedown(e: Env, admin: Address, amount: i128);
+    /// Tell the Vault that `amount` of capital it had already written off has
+    /// come back. Needs the Vault admin's signature as well as this Engine's
+    /// call, and the Vault checks the cash against its own balance.
+    fn record_recovery(e: Env, admin: Address, amount: i128);
+    /// The Vault's admin. Read rather than assumed, because `record_writedown`
+    /// and `record_recovery` are authorized by it and this Engine's admin is a
+    /// separate role that rotates separately.
+    fn admin(e: Env) -> Address;
 }
 
 /// The uniform pool interface. Every adapter implements exactly this, which is
@@ -140,6 +204,11 @@ pub trait PoolAdapter {
     /// Reduce the booked exposure without returning capital, for a loss that
     /// has been recognised.
     fn write_down(e: Env, amount: i128);
+    /// Send whatever USDC the adapter holds above its booked exposure to the
+    /// Vault it names. The destination is the adapter's own stored Vault and
+    /// not a parameter, which is what makes this a way home for stranded
+    /// capital rather than a withdrawal.
+    fn recover_surplus(e: Env, caller: Address) -> i128;
     fn get_exposure(e: Env) -> i128;
     /// The Engine this adapter takes instructions from.
     fn engine(e: Env) -> Address;
@@ -153,6 +222,10 @@ pub trait PoolAdapter {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u32)]
 pub enum EngineError {
+    /// Retired with `initialize`, which a `__constructor` replaced. The host
+    /// runs a constructor exactly once, inside the deploy, so there is no
+    /// second call for this to be the answer to. The number is kept rather than
+    /// reused so that an old error code never means something new.
     AlreadyInitialized = 400,
     NotInitialized = 401,
     NotAdmin = 402,
@@ -183,6 +256,12 @@ pub enum EngineError {
     NoPendingAdmin = 416,
     /// `accept_admin` was called by an address that was not the one proposed.
     NotPendingAdmin = 417,
+    /// This Engine's admin and the Vault's admin are not the same address, so
+    /// the calls that need both signatures cannot be made at all.
+    AdminMismatch = 418,
+    /// The address offered as this Engine's Vault does not answer the Vault
+    /// interface, or answers it with a different admin.
+    VaultMismatch = 419,
 }
 
 /// Whitelist entry for a pool. `originator` and `jurisdiction` are the keys the
@@ -216,7 +295,8 @@ enum Cfg {
     Vault,
     Caps,
     ReserveFloorBps,
-    Pools,    /// Half finished admin handover: proposed, not yet accepted.
+    Pools,
+    /// Half finished admin handover: proposed, not yet accepted.
     PendingAdmin,
 }
 
@@ -234,6 +314,17 @@ enum Store {
     /// denominator a write-down can shrink is a floor a write-down can walk
     /// through.
     WrittenOff,
+    /// Exposure written off against one pool, cumulative. It is charged against
+    /// that pool's concentration cap, and against its originator's and its
+    /// jurisdiction's, for as long as it stands: a cap measured on current
+    /// exposure alone is a cap a write-down resets, and the capital behind the
+    /// written-off exposure is still sitting in the adapter.
+    ///
+    /// Unlike `WrittenOff` this one does come down, and only in the one way
+    /// that is not a statement: `recover`, which requires the cash to have
+    /// reached the Vault. A loss that turns out not to have happened should not
+    /// go on consuming a limit.
+    WrittenOffPool(Address),
 }
 
 #[contractevent]
@@ -306,6 +397,27 @@ pub struct WrittenDown {
     pub reason: Symbol,
 }
 
+/// Emitted when stranded capital is brought back from an adapter. It is the
+/// mirror of `WrittenDown` and belongs in the stream for the same reason: an
+/// exposure book that moves without an allocation or a repayment should never
+/// be something an observer has to infer.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Recovered {
+    #[topic]
+    pub pool: Address,
+    /// USDC the adapter sent to the Vault.
+    pub amount: i128,
+    /// How much of that was applied against this pool's written-off charge, and
+    /// so released from its concentration cap. Anything above it is surplus
+    /// over principal, which was never written off and never charged.
+    pub released: i128,
+    /// Everything still written off across every pool, after this recovery.
+    /// It is reduced by the recovery in full where there is a loss to reduce,
+    /// which is the same rule the Vault applies, so the two stay equal.
+    pub written_off: i128,
+}
+
 /// Emitted when an admin handover is proposed. The role has not moved yet: this
 /// is the first half of a two step transfer, and it is in the event stream so
 /// that a pending handover is visible to anyone watching rather than only to
@@ -330,17 +442,39 @@ pub struct AllocationEngine;
 
 #[contractimpl]
 impl AllocationEngine {
-    /// Wire the Engine to the Vault whose capital it governs.
+    /// Wire the Engine to the Vault whose capital it governs, in the
+    /// transaction that deploys it.
+    ///
+    /// This was `initialize`, a separate call, and being separate was the
+    /// problem. A contract sitting deployed and uninitialized is a contract
+    /// whose admin is whoever sends the next transaction, and the gap between
+    /// the deploy and the wiring is a public one: the deployer's `initialize`
+    /// can be front-run by an identical call naming somebody else as admin,
+    /// which on this contract is the authority to register pools and move the
+    /// Vault's capital into them. A constructor runs inside the deploy, so
+    /// there is no gap to race.
+    ///
+    /// It also runs the check the repair path runs, which `initialize` did not.
+    /// `set_vault` interrogates its counterparty and `initialize` took the same
+    /// address on trust, so the one call that creates the wiring was the one
+    /// call that validated nothing, on a protocol whose deployment record is a
+    /// list of mis-wirings. The Vault has to answer `admin()`, which rules out
+    /// an ordinary account and a mistyped contract, and it has to answer with
+    /// this Engine's own admin.
+    ///
+    /// That last condition is finding M4 made structural rather than
+    /// documented. `write_down` needs this Engine's admin and the Vault's admin
+    /// to be the same signature, so an Engine wired to a Vault with a different
+    /// admin is an Engine that can never recognise a loss. Refusing the wiring
+    /// at deploy time is cheaper than discovering it during a default.
     ///
     /// Deliberately fail closed: caps start at zero and the reserve floor at
     /// 100%, so a deployed but unconfigured Engine refuses every allocation.
     /// The alternative, defaulting to unlimited, would make a forgotten
     /// configuration step indistinguishable from an intentional one.
-    pub fn initialize(e: Env, admin: Address, vault: Address) -> Result<(), EngineError> {
-        if e.storage().instance().has(&Cfg::Admin) {
-            return Err(EngineError::AlreadyInitialized);
-        }
+    pub fn __constructor(e: Env, admin: Address, vault: Address) -> Result<(), EngineError> {
         admin.require_auth();
+        Self::require_vault_answers(&e, &vault, &admin)?;
         e.storage().instance().set(&Cfg::Admin, &admin);
         e.storage().instance().set(&Cfg::Vault, &vault);
         e.storage().instance().set(
@@ -378,11 +512,16 @@ impl AllocationEngine {
     /// one Vault's assets and the exposure would belong to another's. Unwinding
     /// to zero first is not a formality; it is what makes the two halves of the
     /// ratio belong to the same book again.
+    /// The incoming Vault is interrogated exactly as the constructor
+    /// interrogates it: it has to answer `admin()`, and it has to answer with
+    /// this Engine's admin, so a repair cannot leave the pair in the state the
+    /// constructor refuses to create.
     pub fn set_vault(e: Env, admin: Address, vault: Address) -> Result<(), EngineError> {
         Self::require_admin(&e, &admin)?;
         if Self::total_allocated(e.clone()) > 0 {
             return Err(EngineError::CapitalDeployed);
         }
+        Self::require_vault_answers(&e, &vault, &admin)?;
         e.storage().instance().set(&Cfg::Vault, &vault);
         Self::bump_instance(&e);
         VaultRepointed { vault }.publish(&e);
@@ -548,24 +687,40 @@ impl AllocationEngine {
 
         let caps = Self::caps(e.clone());
 
-        // Per pool: the tighter of the pool's own cap and the global one.
+        // Every cap below is measured on `charged_exposure`, which is live
+        // exposure plus everything ever written off against that pool and not
+        // recovered, rather than on live exposure alone.
+        //
+        // Live exposure alone is a quantity `write_down` sets to zero while the
+        // adapter goes on holding the cash, so the same pool could be filled to
+        // its cap, written off, and filled again without limit: a pool capped
+        // at 40% of the book took everything the reserve floor would release,
+        // in slices that each read as inside the cap, and the originator and
+        // jurisdiction sums followed it up because they are built from the same
+        // per-pool numbers. Charging the write-off against the cap is the
+        // numerator half of the fix the floor got in its denominator.
+        //
+        // The denominator stays real total assets. Losses belong in the floor's
+        // base, where a bigger base is a tighter constraint, and not in a cap's,
+        // where a bigger base is a looser one.
         let pool_cap_bps = pool.cap_bps.min(caps.pool_bps) as i128;
         let pool_exposure = Self::get_exposure(e.clone(), pool_id.clone()) + amount;
-        if pool_exposure * BPS > pool_cap_bps * total_assets {
+        let pool_charged = Self::charged_exposure(e.clone(), pool_id.clone()) + amount;
+        if pool_charged * BPS > pool_cap_bps * total_assets {
             return Err(EngineError::PoolCapExceeded);
         }
 
         // Per originator: summed across every pool that counterparty fronts.
-        let originator_exposure =
-            Self::exposure_where_originator(&e, &pools, &pool.originator) + amount;
-        if originator_exposure * BPS > caps.originator_bps as i128 * total_assets {
+        let originator_charged =
+            Self::charged_where_originator(&e, &pools, &pool.originator) + amount;
+        if originator_charged * BPS > caps.originator_bps as i128 * total_assets {
             return Err(EngineError::OriginatorCapExceeded);
         }
 
         // Per jurisdiction: summed across every pool under that legal regime.
-        let jurisdiction_exposure =
-            Self::exposure_where_jurisdiction(&e, &pools, &pool.jurisdiction) + amount;
-        if jurisdiction_exposure * BPS > caps.jurisdiction_bps as i128 * total_assets {
+        let jurisdiction_charged =
+            Self::charged_where_jurisdiction(&e, &pools, &pool.jurisdiction) + amount;
+        if jurisdiction_charged * BPS > caps.jurisdiction_bps as i128 * total_assets {
             return Err(EngineError::JurisdictionCapExceeded);
         }
 
@@ -711,13 +866,32 @@ impl AllocationEngine {
             return Err(EngineError::WriteDownExceedsExposure);
         }
 
+        // The Vault leg needs the Vault's admin signature, and this Engine's
+        // admin is a separate role that rotates separately. If the two have
+        // diverged, say so here, with an error that names the cause, rather
+        // than letting the call trap on the Vault's own NotAdmin four frames
+        // down. The failure was never silent; it was illegible, which during an
+        // incident is close enough to the same thing.
+        let vault_address = Self::vault(e.clone())?;
+        let vault = VaultClient::new(&e, &vault_address);
+        if vault.admin() != admin {
+            return Err(EngineError::AdminMismatch);
+        }
+
         PoolAdapterClient::new(&e, &pool_id).write_down(&amount);
-        VaultClient::new(&e, &Self::vault(e.clone())?).record_writedown(&admin, &amount);
+        vault.record_writedown(&admin, &amount);
 
         let pool_exposure = exposure - amount;
         Self::write_exposure(&e, &pool_id, pool_exposure);
         Self::write_total_allocated(&e, Self::total_allocated(e.clone()) - amount);
         Self::write_written_off(&e, Self::written_off(e.clone()) + amount);
+        // Charged against this pool's cap, and through it against its
+        // originator's and its jurisdiction's, until the cash comes back.
+        Self::write_written_off_pool(
+            &e,
+            &pool_id,
+            Self::written_off_pool(e.clone(), pool_id.clone()) + amount,
+        );
         Self::bump_instance(&e);
 
         WrittenDown {
@@ -728,6 +902,87 @@ impl AllocationEngine {
         }
         .publish(&e);
         Ok(())
+    }
+
+    /// Bring capital home from an adapter that is holding more USDC than it has
+    /// booked as exposure, and release the loss it was written off against.
+    ///
+    /// A write-down is a forecast, not a receipt. Private credit recovers, and
+    /// until this existed a recovery had nowhere to go: `deallocate` is capped
+    /// at booked exposure, a written-off position has none, and interest above
+    /// principal was in the same position for the same reason. The cash sat in
+    /// the adapter, and because `set_counterparties` correctly refuses to
+    /// repoint an adapter holding USDC, a single stroop of it also closed the
+    /// adapter's only repair path. Three generations of the private credit
+    /// adapter were retired over exactly this, each one recorded in
+    /// `deployments/testnet.json`.
+    ///
+    /// The design constraint is that a way out for stranded capital must not be
+    /// a way out for anything else, so the caller chooses nothing except which
+    /// pool to sweep:
+    ///
+    ///  - the destination is not a parameter. The adapter sends to the Vault
+    ///    address it already stores, which is the Vault this Engine governs,
+    ///    checked when the adapter was registered.
+    ///  - the amount is not a parameter either. It is whatever the adapter holds
+    ///    above its booked exposure, so a live position cannot be swept out from
+    ///    under itself and `deallocate` stays funded.
+    ///  - the Vault verifies the money reached its own balance before it changes
+    ///    a number, the same way it verifies a repayment.
+    ///
+    /// What the Vault then does with it is release the loss, not the floor.
+    /// `recognised_losses` falls by the recovery and free reserves rise by the
+    /// same number in the same transaction, so `floor_base` does not move and
+    /// the invariant the first Critical finding was fixed to establish, that the
+    /// base the floor is a percentage of never falls, is preserved exactly. An
+    /// admin who donates USDC to an adapter and sweeps it gets back the
+    /// deployable headroom their own dollars just bought, and not a stroop more.
+    ///
+    /// The pool's concentration charge is released by the same amount, because
+    /// a loss that did not happen should not go on consuming a limit.
+    pub fn recover(e: Env, admin: Address, pool_id: Address) -> Result<i128, EngineError> {
+        Self::require_admin(&e, &admin)?;
+        if !Self::pool_map(&e).contains_key(pool_id.clone()) {
+            return Err(EngineError::PoolNotRegistered);
+        }
+        let vault_address = Self::vault(e.clone())?;
+        let vault = VaultClient::new(&e, &vault_address);
+        if vault.admin() != admin {
+            return Err(EngineError::AdminMismatch);
+        }
+
+        // The adapter moves the cash to the Vault it names and tells us how
+        // much. It refuses if there is nothing above its booked exposure.
+        let amount = PoolAdapterClient::new(&e, &pool_id)
+            .recover_surplus(&e.current_contract_address());
+        vault.record_recovery(&admin, &amount);
+
+        // Two counters, each reduced against itself rather than against the
+        // other, because they answer different questions and can legitimately
+        // disagree. The global total is reduced by exactly the rule the Vault
+        // applies to `recognised_losses`, which is what keeps the Engine's copy
+        // of the floor's base equal to the Vault's; the pool's charge is
+        // reduced by what this pool actually had against it, so a recovery that
+        // exceeds one pool's write-off does not release another pool's cap.
+        // Where they differ the caps stay the tighter of the two, which is the
+        // direction to differ in.
+        let charged = Self::written_off_pool(e.clone(), pool_id.clone());
+        let released = if amount < charged { amount } else { charged };
+        Self::write_written_off_pool(&e, &pool_id, charged - released);
+
+        let total = Self::written_off(e.clone());
+        let applied = if amount < total { amount } else { total };
+        Self::write_written_off(&e, total - applied);
+        Self::bump_instance(&e);
+
+        Recovered {
+            pool: pool_id,
+            amount,
+            released,
+            written_off: total - applied,
+        }
+        .publish(&e);
+        Ok(amount)
     }
 
     /// Hand the admin role to another address, in two steps.
@@ -815,16 +1070,71 @@ impl AllocationEngine {
         Ok((idle * BPS / base) as u32)
     }
 
-    /// Exposure written off since deployment, cumulative. It only ever rises,
-    /// and there is no entry point that lowers it.
+    /// Exposure written off since deployment and not recovered. It rises on a
+    /// write-down and falls only when `recover` brings the cash back to the
+    /// Vault, which is the one event that is a receipt rather than a statement.
     ///
     /// It is not an asset and `total_allocated` correctly excludes it. It
-    /// exists because the reserve floor needs a base a write-down cannot move.
+    /// exists because the reserve floor needs a base a write-down cannot move,
+    /// and `recover` cannot move it either: what a recovery takes out of this
+    /// number it puts into the Vault's free reserves in the same transaction.
     pub fn written_off(e: Env) -> i128 {
         e.storage()
             .persistent()
             .get(&Store::WrittenOff)
             .unwrap_or(0)
+    }
+
+    /// Exposure written off against one pool and not recovered. This is what a
+    /// write-down costs the pool permanently: it is charged against the pool's
+    /// concentration cap, and against its originator's and its jurisdiction's,
+    /// exactly as if the capital were still deployed there, because it is.
+    pub fn written_off_pool(e: Env, pool_id: Address) -> i128 {
+        e.storage()
+            .persistent()
+            .get(&Store::WrittenOffPool(pool_id))
+            .unwrap_or(0)
+    }
+
+    /// The quantity the three concentration caps are actually measured on: what
+    /// is deployed into this pool plus what has been written off against it.
+    ///
+    /// It differs from `get_exposure` only after a write-down, and that
+    /// difference is the finding. `get_exposure` is what the pool owes; this is
+    /// what the pool has had, which is what a concentration limit is a limit
+    /// on while the adapter is still holding the money.
+    pub fn charged_exposure(e: Env, pool_id: Address) -> i128 {
+        Self::get_exposure(e.clone(), pool_id.clone()) + Self::written_off_pool(e, pool_id)
+    }
+
+    /// The Vault's admin, as the Vault reports it.
+    pub fn vault_admin(e: Env) -> Result<Address, EngineError> {
+        Ok(VaultClient::new(&e, &Self::vault(e.clone())?).admin())
+    }
+
+    /// Whether this Engine's admin and the Vault's admin are the same address.
+    ///
+    /// `write_down` and `recover` both need one signature that satisfies both
+    /// contracts, and the two admin roles rotate independently, so a handover
+    /// completed on one side and not the other leaves loss recognition
+    /// impossible until it is completed on the other. Nothing can stop the
+    /// operator rotating one at a time, and nothing should: an admin rotation
+    /// that required a counterparty's cooperation would be a rotation that a
+    /// hostile counterparty could block. What was missing was any way to see
+    /// the divergence before an incident put a number on it. This is that way,
+    /// it is one call, and it is false exactly when the two calls that need
+    /// both keys will refuse.
+    pub fn admin_aligned(e: Env) -> bool {
+        let Ok(vault_address) = Self::vault(e.clone()) else {
+            return false;
+        };
+        let Ok(admin) = Self::admin(e.clone()) else {
+            return false;
+        };
+        matches!(
+            VaultClient::new(&e, &vault_address).try_admin(),
+            Ok(Ok(vault_admin)) if vault_admin == admin
+        )
     }
 
     /// The denominator `reserve_floor_bps` is a share of: the Vault's free
@@ -917,10 +1227,21 @@ impl AllocationEngine {
         Ok(())
     }
 
-    /// Exposure summed across every registered pool fronted by `originator`.
-    /// The cap is on the counterparty, not on the contract, so three pools
-    /// from the same originator count as one position.
-    fn exposure_where_originator(
+    /// The Vault offered has to answer `admin()`, which an ordinary account
+    /// cannot do, and it has to answer with `admin`. See `__constructor` for
+    /// why the second half is a wiring condition rather than a preference.
+    fn require_vault_answers(e: &Env, vault: &Address, admin: &Address) -> Result<(), EngineError> {
+        match VaultClient::new(e, vault).try_admin() {
+            Ok(Ok(vault_admin)) if vault_admin == *admin => Ok(()),
+            _ => Err(EngineError::VaultMismatch),
+        }
+    }
+
+    /// Charged exposure summed across every registered pool fronted by
+    /// `originator`. The cap is on the counterparty, not on the contract, so
+    /// three pools from the same originator count as one position, and a
+    /// position written off at one of them goes on counting against all three.
+    fn charged_where_originator(
         e: &Env,
         pools: &Map<Address, Pool>,
         originator: &Symbol,
@@ -928,14 +1249,14 @@ impl AllocationEngine {
         let mut total: i128 = 0;
         for (pool_id, pool) in pools.iter() {
             if pool.originator == *originator {
-                total += Self::get_exposure(e.clone(), pool_id);
+                total += Self::charged_exposure(e.clone(), pool_id);
             }
         }
         total
     }
 
-    /// Exposure summed across every registered pool in `jurisdiction`.
-    fn exposure_where_jurisdiction(
+    /// Charged exposure summed across every registered pool in `jurisdiction`.
+    fn charged_where_jurisdiction(
         e: &Env,
         pools: &Map<Address, Pool>,
         jurisdiction: &Symbol,
@@ -943,7 +1264,7 @@ impl AllocationEngine {
         let mut total: i128 = 0;
         for (pool_id, pool) in pools.iter() {
             if pool.jurisdiction == *jurisdiction {
-                total += Self::get_exposure(e.clone(), pool_id);
+                total += Self::charged_exposure(e.clone(), pool_id);
             }
         }
         total
@@ -971,6 +1292,14 @@ impl AllocationEngine {
         e.storage()
             .persistent()
             .extend_ttl(&Store::WrittenOff, EXPOSURE_LIFETIME, EXPOSURE_BUMP);
+    }
+
+    fn write_written_off_pool(e: &Env, pool_id: &Address, value: i128) {
+        let key = Store::WrittenOffPool(pool_id.clone());
+        e.storage().persistent().set(&key, &value);
+        e.storage()
+            .persistent()
+            .extend_ttl(&key, EXPOSURE_LIFETIME, EXPOSURE_BUMP);
     }
 
     fn pool_map(e: &Env) -> Map<Address, Pool> {

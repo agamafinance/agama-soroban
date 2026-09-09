@@ -37,10 +37,18 @@ fn setup() -> Fix {
 
     // two credit vaults, 60/40 target weights
     let mk = |name: &str, sym: &str| {
-        let id = e.register(Staking, ());
+        let id = e.register(
+            Staking,
+            (
+                admin.clone(),
+                usdc_id.clone(),
+                COOLDOWN,
+                7u32,
+                String::from_str(&e, name),
+                String::from_str(&e, sym),
+            ),
+        );
         let c = StakingClient::new(&e, &id);
-        c.initialize(&admin, &usdc_id, &COOLDOWN, &7u32,
-            &String::from_str(&e, name), &String::from_str(&e, sym));
         (id, c)
     };
     let (v1_id, v1) = mk("Vault One", "V1");
