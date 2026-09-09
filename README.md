@@ -81,7 +81,7 @@ Network: **Stellar Testnet** · RPC: `https://soroban-testnet.stellar.org`
 | agUSD | [`CCUGWQ5D...JFHA7V`](https://stellar.expert/explorer/testnet/contract/CCUGWQ5DRO66BASGU5UZIX6YWIWJ6GKQOBAABT2246OE5WZOI6JFHA7V) |
 | sagUSD | [`CDFKRDCD...CHYLEZ`](https://stellar.expert/explorer/testnet/contract/CDFKRDCD7U4YU4DM2DJ4C76KQHB3B6UTYPH64HVUZLGEIITFVYCHYLEZ) |
 | Vault Contract | [`CBNAGG47...Y2BUSB`](https://stellar.expert/explorer/testnet/contract/CBNAGG47MEXJQ3KQYXU75VLU4QC5CAEZ6VHY43MSOWHUZWVREPY2BUSB) |
-| Allocation Engine | [`CAOUV6AA...VVULBX`](https://stellar.expert/explorer/testnet/contract/CAOUV6AA632DFRAUZ33J24OS2QNUMWQESH5HVZNOCT52JYCKHEVVULBX) |
+| Allocation Engine | [`CAPMQI4U...5MQYH`](https://stellar.expert/explorer/testnet/contract/CAPMQI4UWL3KJ2CCN252EYCRL3XIBHMY3ZTCKSXYYOLBY455LVTXMQYH) |
 | Oracle Adapter | [`CCTAZFQ3...INL6SX`](https://stellar.expert/explorer/testnet/contract/CCTAZFQ35P5KAAWTD2MLTYGEETKVF3N5ZR6MM6SVPQ22M2TKALINL6SX) |
 
 ### Pool Adapters
@@ -102,14 +102,21 @@ contract differed from the source it was supposed to be, and a setter cannot
 install code. The Oracle Adapter and the Etherfuse adapter had been reused in
 place through the previous two deployments and could not be this time.
 
-The Allocation Engine then moved once more on its own, and that one was a
-rewiring rather than a redeployment of the stack: `scripts/rewire-engine.sh`
-deployed the replacement, the Vault took it through `set_engine` and both
-adapters followed through `set_counterparties`, with nothing else touched. Those
-two setters were added by the first review on the argument that a pointer with
-no way back had already cost this protocol six contracts. That is the first time
-a change to one contract has been absorbed by the rest without anything else
-being redeployed, which is what they were for.
+The Allocation Engine has moved twice more on its own since, and both of those
+were rewirings rather than redeployments of the stack: `scripts/rewire-engine.sh`
+and then `scripts/rewire-engine-review3.sh` deployed the replacement, the Vault
+took it through `set_engine` and both adapters followed through
+`set_counterparties`, with nothing else touched either time. Those two setters
+were added by the first review on the argument that a pointer with no way back
+had already cost this protocol six contracts, and this is what they were for: a
+change to one contract absorbed by the rest without anything else being
+redeployed.
+
+The second of those rewirings had an order the first did not need.
+`register_pool` now runs the same adapter check `allocate` runs, so the adapters
+are repointed **before** the pools are registered rather than after. Registering
+first and repointing second would leave the registry in exactly the state the
+third review's fix exists to refuse.
 
 ### Superseded Contracts
 
@@ -162,6 +169,7 @@ replaced. None of them is deleted, and none of them is quietly reused.
 | Etherfuse adapter, fourth deployment | [`CADNIBDB...KF4ZFV`](https://stellar.expert/explorer/testnet/contract/CADNIBDB5LZHGOOSVTL2LF47XCRPEL53IHBES2Y4RIORI4I3VCKF4ZFV) | Replaced by scripts/deploy-mediums.sh, which closes the Medium findings of the second adversarial review. Every contract in this generation wires itself through an initialize() that runs in its own transaction after the deploy, which is a public window in which the same call naming a different admin can land first, and which took its counterparties on trust while the setters that repair those same pointers interrogated them. A __constructor replaces it in all seven contracts, so the bytecode of every one of them differs from the source and none of them could be reused. This adapter also has no recover_surplus. It was repointed in place rather than redeployed in the two previous deployments, being empty both times, and could have been again; what it could not do is carry code it does not have. |
 | sagUSD staking, sixth deployment | [`CALOJ3UH...SRQWKX`](https://stellar.expert/explorer/testnet/contract/CALOJ3UHHZ7V4LU5J4WY3DIFIXCTL37K36SZTIKSNGVB4TANNMSRQWKX) | Replaced by scripts/deploy-mediums.sh, which closes the Medium findings of the second adversarial review. Every contract in this generation wires itself through an initialize() that runs in its own transaction after the deploy, which is a public window in which the same call naming a different admin can land first, and which took its counterparties on trust while the setters that repair those same pointers interrogated them. A __constructor replaces it in all seven contracts, so the bytecode of every one of them differs from the source and none of them could be reused. It stores the agUSD it accepts and closes that pointer once it has taken custody, so it would have had to follow the new token in any case. Its stake was unwound and redeemed before the handover, so it strands nobody. |
 | Allocation Engine, eighth deployment | [`CAX576TM...7L4OCG`](https://stellar.expert/explorer/testnet/contract/CAX576TM42RAHPIQVV72JRT23XY6K4RP7UBO5Y4ZSU6QXVW2Y27L4OCG) | Replaced by scripts/rewire-engine.sh. In this Engine write_down checks the amount and the pool before it checks that its own admin and the Vault's are still the same address, so an operator whose rotation is half finished is told the amount is wrong, which sends them to look at the position rather than at the rotation. The alignment is a condition on the wiring rather than on the call and now runs first. It is a legibility change and not a security one: the same call is refused either way. Nothing else was redeployed alongside it. The Vault took the replacement through set_engine and both adapters followed through set_counterparties, which is what those setters exist for and the first time a change to one contract has been absorbed by the rest without a redeployment. |
+| Allocation Engine, ninth deployment | [`CAOUV6AA...VVULBX`](https://stellar.expert/explorer/testnet/contract/CAOUV6AA632DFRAUZ33J24OS2QNUMWQESH5HVZNOCT52JYCKHEVVULBX) | Replaced by scripts/rewire-engine-review3.sh, for the one High finding of the third adversarial review. In this Engine `register_pool` proves an adapter names this Engine and this Engine's Vault, and nothing re-runs that check afterwards, while `set_vault` can move the Engine's own end of it. Every pool already registered then names the Vault the Engine has just stopped governing, and the next `allocate` releases the new Vault's USDC to an adapter that repays the old one, which in this protocol is a superseded Vault where nothing can move USDC at all. The position cannot be unwound either: `deallocate` sends the cash to the old Vault and asks the new one to confirm it arrived. `allocate`, `deallocate` and `recover` now re-run the check through the same helper `register_pool` uses. Nothing else was redeployed alongside it, for the second time. |
 
 | Vault Contract, fifth deployment | [`CCW5EQCV...KDSIWP`](https://stellar.expert/explorer/testnet/contract/CCW5EQCVHXA2PTXN4Y4QMO4O4YMG6BRMB7M2PYASILFI53BL3CKDSIWP) | Replaced after a second adversarial security review. Its reserve floor was a share of net assets, and `record_writedown` lowers net assets with no cash moving, so every write-down handed back releasable headroom worth `floor_bps` of itself: allocate to the floor, write the position off, allocate to the new floor, and 999.9999999 of every 1000 USDC leaves a Vault holding a 25% floor with every individual call inside the limit. It also trapped on a withdrawal payout the USDC contract refused to deliver, and USDC is a Stellar Asset Contract, so a claimant with no trustline, a frozen one or a limit below the claim froze the whole FIFO queue permanently for everybody behind them. This is the contract the exploit in [The Second Security Review, On-Chain](#the-second-security-review-on-chain) is submitted against. |
 | Allocation Engine, fourth deployment | [`CAOGJDWH...KJDONN`](https://stellar.expert/explorer/testnet/contract/CAOGJDWH5SZAVPGLBB2NCKGPT4OUFT3YEKUCKEJP6BVN3CR2WUKJDONN) | Replaced after a second adversarial security review. Its reserve floor was a share of net assets, and `record_writedown` lowers net assets with no cash moving, so every write-down handed back releasable headroom worth `floor_bps` of itself: allocate to the floor, write the position off, allocate to the new floor, and 999.9999999 of every 1000 USDC leaves a Vault holding a 25% floor with every individual call inside the limit. `get_reserve_ratio` had the same denominator, so recognising a loss made the reported liquidity ratio go up. |
@@ -544,8 +552,106 @@ it now runs first.
 | `etherfuse.set_counterparties` | [`c2927c75`](https://stellar.expert/explorer/testnet/tx/c2927c7546022621608875aba3e145b064c83f44742238eb18e94af4222ae72e) |
 
 Nothing else was deployed. That is what `set_engine` and `set_counterparties`
-were added for, and it is the first time a change to one contract has been
-absorbed by the rest without anything else moving.
+were added for, and it was the first time a change to one contract had been
+absorbed by the rest without anything else moving. It has happened twice now.
+
+### The Third Security Review, On-Chain
+
+The repository was reviewed a third time, adversarially, against the surface the
+second review's fixes added: `charged_exposure` under all three concentration
+caps, `recover_surplus` on the adapters with `Engine::recover` and
+`Vault::record_recovery` behind it, an unauthenticated `bump_claim`, and a
+`__constructor` on all seven contracts.
+
+**Nothing was found at Critical.** The claim the second round rested on, that
+what a write-down cannot buy a recovery cannot buy back, was re-derived from
+scratch rather than re-read, and it holds for a stronger reason than the one
+given for it: `floor_base` is lowered only by `record_repayment` and
+`record_recovery`, both of which are gated on `idle_reserves` less
+`booked_reserves`, a quantity that rises only when USDC arrives unannounced and
+that each unit of that cash had already added to the base. The base therefore
+never falls below where it would have been, whatever the order of `allocate`,
+`write_down` and `recover`, and whether or not the recovered cash came from the
+position that was written down.
+
+**One finding at High, and it was not in the new surface.** `register_pool`
+proves an adapter names this Engine and this Engine's Vault; half of that is a
+fact about the Engine, and `set_vault` can change it. Every pool already
+registered then names the Vault the Engine has just stopped governing, and the
+next `allocate` releases the new Vault's USDC to an adapter that repays the old
+one. `allocate`, `deallocate` and `recover` now re-run the check. It is the one
+edge of this wiring that was checked in a single direction, on a protocol whose
+deployment record is a list of contracts pointed at counterparties that had
+moved on.
+
+Only the Engine changed, so only the Engine moved:
+`scripts/rewire-engine-review3.sh` deployed the replacement and the Vault and
+both adapters were repointed through their setters.
+
+`scripts/smoke-review3.sh` proves it in three independently runnable stages:
+**42 assertions, no failures.** From the run of 9 September 2026.
+
+The exploit is submitted rather than described. The Engine from the commit
+before the fix was built out of a `git worktree` and given a two Vault stack, so
+this is the contract that has the bug and not an argument about one.
+
+| Step | Result | Transaction |
+|---|---|---|
+| The Engine follows its Vault; the registered adapter does not | The registry names a Vault the Engine does not govern | [`set_vault`, in the stage setup](https://stellar.expert/explorer/testnet/contract/CCEOMRG5WBWC4V37SZUSMZB2LYXAGVGCH6MQDKWLSOZRRF5YHD7SIK43) |
+| Allocate 20 of the funding Vault's 100 | **Accepted.** The new Vault paid and the adapter that received it repays the old one | [`7583fb31`](https://stellar.expert/explorer/testnet/tx/7583fb3123a6010183220bf903e1321611dae86e33d02df8c114d15042b6402e) |
+| Unwind it | Refused, `RepaymentNotReceived` (317): the cash goes to the old Vault and the new one is asked to confirm it arrived | simulated, error code asserted |
+
+The funding Vault was filled through `deposit` rather than by faucet on purpose.
+A Vault handed cash it was never told about holds a balance it cannot account
+for, and `record_repayment` is measured against exactly that difference, so a
+faucet-funded Vault would have **confirmed** the repayment of money that went to
+a third party and settled its book on it. That is the same finding wearing a
+worse face, and the honest Vault is the harder case to demonstrate, so the
+honest Vault is what the script builds.
+
+The same construction against the fixed Engine:
+
+| Step | Result | Transaction |
+|---|---|---|
+| The identical allocation | Refused, `AdapterMismatch` (414). No exposure booked, no cash moved | simulated, error code asserted |
+| `deallocate` and `recover` on the same stale pool | Refused the same way; the surplus is left where it is rather than swept to a Vault this Engine does not govern | simulated, error codes asserted |
+| Bring the adapter across | `set_counterparties`, which first refuses with `NotEmpty` (605) until the surplus is cleared | [`431ecdd8`](https://stellar.expert/explorer/testnet/tx/431ecdd820d803745853b1d6f97578d86d370b5030f5b93085953c40cc130030) |
+| The same allocation again | **Accepted.** It is a check and not a wall | [`2a417f6e`](https://stellar.expert/explorer/testnet/tx/2a417f6e727bd73f1228c9a3366cb282a55be71288a68df433e43d110705fcac) |
+| And unwind it | Settles, which the pre-fix stack could not do | [`88769474`](https://stellar.expert/explorer/testnet/tx/88769474c76009382bdd1f8c89da92f51973a94a87ccf31a84ab6cc24e7cf8d1) |
+
+And on the production deployment, with the real Circle USDC:
+
+| Step | Result | Transaction |
+|---|---|---|
+| Half a USDC of the Vault's own reserves out to the private credit adapter | The honest path still works with the extra check in it | [`df861650`](https://stellar.expert/explorer/testnet/tx/df86165050b6fd6f1a26e0255e45d8429acb3dcfd623fc5e0c827c68fd958c1a) |
+| And back | To the stroop, leaving no exposure | [`96a1764f`](https://stellar.expert/explorer/testnet/tx/96a1764f44c822f70aab8b537013314cc0510210778c1ad482c0b21c89f8aab2) |
+| Move the live Engine to a throwaway Vault | A new generation, with the registered adapters left where they are | [`c30885c1`](https://stellar.expert/explorer/testnet/tx/c30885c16539c8f8770c36b2d3f4280c941e266ea13a2bcbe3a44a90f78bfb30) |
+| Allocate to a pool that still names the real Vault | Refused, `AdapterMismatch` (414) | simulated, error code asserted |
+| Move it back | The Vault's reserves never moved and the book ends empty | [`86938c6d`](https://stellar.expert/explorer/testnet/tx/86938c6d5e507b05cbda831109908ccc54b2754c4f0bbc6f30da595e64aa080d) |
+
+**The deployed bytecode was verified rather than assumed.** All seven protocol
+contracts were fetched from the ledger and their sha256 compared against a local
+`stellar contract build` before anything was changed: seven matches, zero
+differences. The replacement Engine was checked the same way after deployment.
+
+**`__constructor` cannot be reached twice, and that was worth checking rather
+than believing.** Seven contracts changed shape at once, and a second
+constructor call would rewrite the admin of every one of them, so the whole
+protocol would be takeable by anyone. `__constructor` is a genuine WASM export,
+it is in the export section of `vault.wasm`, so the only thing between it and
+that outcome is the host. `soroban-env-host` 23.0.1 refuses any function whose
+name begins with `__` unless the call is an internal host call, and both
+`InvokeHostFunction` and every cross-contract call use
+`CallParams::default_external_call`, which is not one. The guard holds in both
+directions.
+
+Nothing was left on the live deployment. The first two stages run against their
+own Vaults and a mock USDC with an open faucet, deliberately: the operator key
+holds well under a USDC of the real asset and some of it is stranded below the
+Vault's anti-dust minimum, and nothing about this finding needs the real one.
+The live stage borrows and returns, so the Vault ends holding 2 USDC against an
+agUSD supply of 2 USDC, exactly backed, with no recognised losses and an empty
+exposure book.
 
 ### The Whole Journey, On-Chain
 
@@ -787,6 +893,8 @@ Free reserves and net assets, not the gross balance and gross assets. USDC owed 
 
 `register_pool` requires the adapter to name this Engine and this Engine's Vault. An adapter takes `allocate` and `deallocate` from the Engine it stores and sends repayments to the Vault it stores, and neither has to be the pair registering it: registered without the check, an adapter pointed at somebody else's Vault takes capital from this one and repays a third party while `deallocate` here decrements the book as though the money had come home, with nothing reverting.
 
+**That check runs on every use, not only at registration, and the third review is why.** Half of the condition is a fact about this Engine, and `set_vault` can change it. The registry is a map with no way to clear it, so the moment the Vault pointer moved, every pool already in it went on naming the Vault the Engine had just stopped governing, and nothing looked again. The next `allocate` released the **new** Vault's USDC to an adapter that repays the **old** one, which in this protocol is a superseded Vault where nothing can move USDC at all, and the position could not be unwound either, because `deallocate` sends the cash to the old Vault and then asks the new one to confirm it arrived. `allocate`, `deallocate` and `recover` now re-run the check on the pool they touch, through the same helper `register_pool` uses, so the two cannot drift apart. `write_down` deliberately does not: it moves no capital, and it is the only call that can unwind an adapter whose Vault pointer has already gone stale, since `set_counterparties` refuses an adapter that is not empty and `deallocate` cannot empty one. Every other edge of this wiring was checked on both sides; this was the one checked once.
+
 `write_down(admin, pool_id, amount, reason)` recognises a credit loss, and adds the amount to `written_off()`, which never falls and stays in the denominator of the reserve floor for good. That last part is not bookkeeping: without it the floor was a share of total assets, `write_down` lowers total assets with no cash moving, and every write-off handed back releasable headroom worth `floor_bps` of itself. The concentration caps deliberately keep the old denominator, because adding to a cap's denominator loosens the cap, and the floor is the only limit here that a larger base makes tighter. They take the write-off in their numerator instead, which is the other half of the same fix and is described below. Until it existed, one could not be recognised at all: exposure moved only through `allocate` and `deallocate`, and `deallocate` transfers the USDC before it decrements the book, so a defaulted originator leaves the adapter holding nothing, the transfer panics, and the exposure reports full face value for the life of the contract, with every reserve ratio derived from it overstated by exactly the size of the loss. The write-down moves three books in one transaction, this Engine's exposure record, the adapter's own and the Vault's deployed capital, so they cannot disagree, and it emits an event carrying a reason. It deliberately does not decide who bears the loss; see [Where a loss lands](#where-a-loss-lands).
 
 **The caps had the floor's hole, on the other side of the ratio.** Every cap was measured on live exposure, and `write_down` sets live exposure to zero while the adapter goes on holding every dollar, so the same pool could be filled to its cap, written off and filled again without limit, and the originator and jurisdiction sums followed it up because all three are built from the same per-pool numbers. Fixing the floor did not touch it. The caps are now measured on `charged_exposure()`, which is deployed plus written off and not recovered, so a write-down is charged against the pool it happened at, its originator and its jurisdiction for as long as it stands. It is a product decision as much as a fix and it is a strong one: a pool that defaulted at its cap needs the book to grow back to roughly its old size before it can take a dollar again. New deposits do that in the ordinary way, `recover` releases the charge outright if the cash comes back, and an operator can widen the cap or register a new adapter. None of those happen by themselves, which is the point: a defaulted originator does not get its limit back as a side effect of the loss being recognised.
@@ -801,7 +909,7 @@ Whether the floor can ever bind is a property of the configuration, not of the c
 
 `__constructor(admin, vault)` replaces `initialize`, runs inside the deploy transaction so there is no window to front-run, and requires the Vault to answer `admin()` with this Engine's own admin. An ordinary account cannot answer it at all, and a Vault under a different admin is the state the paragraph above describes, so both are refused at the point the wiring is created rather than during a default. `set_vault` runs the identical check, because a constructor guard one transaction away from being undone is not a guard.
 
-`set_vault` repoints the Engine and is refused while `total_allocated()` is non-zero. That is not ceremony: every cap and the floor are a ratio of booked exposure to total assets, and total assets are the Vault's idle USDC plus that exposure. Moving the Vault mid-book would put the numerator and the denominator on two different balance sheets, so the limits would still be computed and would no longer mean anything.
+`set_vault` repoints the Engine and is refused while `total_allocated()` is non-zero. That is not ceremony: every cap and the floor are a ratio of booked exposure to total assets, and total assets are the Vault's idle USDC plus that exposure. Moving the Vault mid-book would put the numerator and the denominator on two different balance sheets, so the limits would still be computed and would no longer mean anything. What it cannot do is repair the pools already registered, which go on naming the outgoing Vault; that is why the adapter check is a condition of use rather than of registration, and why the adapters have to be brought across with `set_counterparties` before anything can be allocated to them again.
 
 ### Oracle Adapter (`contracts/oracle-adapter`) (deployed on testnet)
 
@@ -834,7 +942,9 @@ fn engine() -> Address        // The Engine this adapter answers to
 fn vault() -> Address         // The Vault this adapter repays
 ```
 
-`engine()` and `vault()` are read by `register_pool`, which refuses an adapter that does not name the Engine registering it and that Engine's Vault.
+`engine()` and `vault()` are read by `register_pool`, which refuses an adapter that does not name the Engine registering it and that Engine's Vault, and by `allocate`, `deallocate` and `recover`, which read them again on every call because `set_vault` can move the Engine's end of that pairing after a pool is registered.
+
+`recover_surplus(caller)` is the seventh call and the only one that is not the Engine's alone: the adapter's admin may take it too, which is the path that still works when the Engine an adapter is stuck to has itself been superseded.
 
 | Adapter | Underlying | Settlement | Oracle |
 |---|---|---|---|
@@ -942,6 +1052,30 @@ bash scripts/smoke-mediums.sh wiring    # M5, initialize became a constructor
 # that is the anti-dust minimum, and it is the only stage that hands every
 # stroop of it back. M2 has to follow M1, because what it recovers is what M1
 # wrote off. The other three are independent of everything.
+
+# Replace the Allocation Engine alone for the third review's High finding, and
+# rewire the stack around it through the setters rather than redeploying any of
+# it. The adapters are repointed BEFORE the pools are registered, because
+# register_pool now runs the same check allocate runs and an adapter that has
+# not been brought across yet fails it. Preconditions are checked before
+# anything is deployed.
+bash scripts/rewire-engine-review3.sh
+
+# Prove that fix in three independently runnable stages: 42 assertions, no
+# failures. The exploit stage builds the Engine from the commit before the fix
+# out of a git worktree and submits the allocation the fixed one refuses, so it
+# is evidence about the chain and not only about the source.
+bash scripts/smoke-review3.sh           # all three
+bash scripts/smoke-review3.sh exploit   # the pre-fix Engine, exploit submitted
+bash scripts/smoke-review3.sh fixed     # the same construction, refused
+bash scripts/smoke-review3.sh live      # the production deployment
+# exploit and fixed use a mock USDC with an open faucet and Vaults of their
+# own, because the operator key holds well under a USDC of the real asset and
+# nothing about this finding needs the real one. live borrows half a USDC of
+# the Vault's own reserves and hands every stroop back. Note that it moves the
+# production Engine's Vault pointer and moves it back: if it is interrupted
+# between the two, set_vault it back by hand, which the script's header spells
+# out.
 
 # Deploy the agUSD + sagUSD + credit vault set (already live on testnet)
 cp .env.example .env
