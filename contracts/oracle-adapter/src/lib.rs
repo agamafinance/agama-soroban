@@ -136,6 +136,10 @@ pub enum OracleError {
     /// The feed's minimum interval has not elapsed since the last accepted
     /// value, measured in ledger time.
     TooSoon = 514,
+    /// `accept_admin` was called with no handover in flight.
+    NoPendingAdmin = 515,
+    /// `accept_admin` was called by an address that was not the one proposed.
+    NotPendingAdmin = 516,
 }
 
 /// Per feed validation guards, fixed at registration time.
@@ -190,7 +194,8 @@ pub struct NavPoint {
 enum Cfg {
     Admin,
     Reporters,
-    Feeds,
+    Feeds,    /// Half finished admin handover: proposed, not yet accepted.
+    PendingAdmin,
 }
 
 /// Persistent storage: the latest NAV of a feed. It is replaced on every
@@ -258,6 +263,25 @@ pub struct NavRejected {
     pub rejected_nav: i128,
     pub deviation_bps: u32,
     pub bound_bps: u32,
+}
+
+/// Emitted when an admin handover is proposed. The role has not moved yet: this
+/// is the first half of a two step transfer, and it is in the event stream so
+/// that a pending handover is visible to anyone watching rather than only to
+/// whoever thinks to read the state.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposed {
+    #[topic]
+    pub new_admin: Address,
+}
+
+/// Emitted when a proposed admin accepts and the role actually moves.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminChanged {
+    #[topic]
+    pub admin: Address,
 }
 
 #[contract]
@@ -431,6 +455,62 @@ impl OracleAdapter {
                 Ok(PushOutcome::Accepted)
             }
         }
+    }
+
+    /// Hand the admin role to another address, in two steps.
+    ///
+    /// This contract had no rotation at all, which made the admin key a single
+    /// point of failure with no way back from either of the two ways it fails.
+    /// A key that is lost takes every admin gated call in this contract with
+    /// it, permanently. A key that is compromised cannot be replaced, so the
+    /// only remedy left is redeploying the contract and migrating whatever it
+    /// holds, which for a custodian is not a remedy.
+    ///
+    /// Two steps rather than one, because a one step setter aimed at an
+    /// address nobody controls produces exactly the unrecoverable state the
+    /// rotation exists to fix, and it does it in a single transaction with no
+    /// second chance. The proposed address has to authorize a transaction of
+    /// its own before anything changes, and that signature is the proof the
+    /// key is real and reachable.
+    ///
+    /// A proposal replaces any earlier one. An admin that changes its mind
+    /// proposes a different address; an admin that wants to withdraw a
+    /// proposal proposes itself, which is a no-op if it is ever accepted.
+    pub fn propose_admin(e: Env, admin: Address, new_admin: Address) -> Result<(), OracleError> {
+        Self::require_admin(&e, &admin)?;
+        e.storage().instance().set(&Cfg::PendingAdmin, &new_admin);
+        Self::bump_instance(&e);
+        AdminProposed { new_admin }.publish(&e);
+        Ok(())
+    }
+
+    /// Complete a handover. Only the proposed address can call it, and it has
+    /// to authorize the call itself: that authorization is the entire point of
+    /// the second step.
+    pub fn accept_admin(e: Env, new_admin: Address) -> Result<(), OracleError> {
+        let pending: Address = e
+            .storage()
+            .instance()
+            .get(&Cfg::PendingAdmin)
+            .ok_or(OracleError::NoPendingAdmin)?;
+        if pending != new_admin {
+            return Err(OracleError::NotPendingAdmin);
+        }
+        new_admin.require_auth();
+        e.storage().instance().set(&Cfg::Admin, &new_admin);
+        e.storage().instance().remove(&Cfg::PendingAdmin);
+        Self::bump_instance(&e);
+        AdminChanged {
+            admin: new_admin,
+        }
+        .publish(&e);
+        Ok(())
+    }
+
+    /// The address that has been proposed as admin and has not accepted yet.
+    /// `None` means no handover is in flight.
+    pub fn pending_admin(e: Env) -> Option<Address> {
+        e.storage().instance().get(&Cfg::PendingAdmin)
     }
 
     // ---- views ----

@@ -3,8 +3,8 @@ use super::*;
 use agusd::{AgUsd, AgUsdClient};
 use mock_usdc::{MockUsdc, MockUsdcClient};
 use soroban_sdk::{
-    testutils::{Address as _, Ledger as _},
-    vec, Address, Env, String,
+    testutils::{Address as _, Ledger as _, MockAuth, MockAuthInvoke},
+    vec, Address, Env, IntoVal, String,
 };
 
 const COOLDOWN: u64 = 300; // 5 min
@@ -324,4 +324,53 @@ fn distribute_yield_raises_the_rate_without_issuing_shares() {
     // The agUSD is really in the contract, not just booked in the NAV.
     assert_eq!(f.ag.balance(&f.vault.address), 220 * ONE);
     assert_eq!(f.vault.nav(), 220 * ONE);
+}
+
+/// Admin rotation, in the two steps that make it safe: a proposal that changes
+/// nothing, and an acceptance signed by the address it hands the role to. An
+/// unreachable key can therefore never be handed the role, which is the
+/// unrecoverable state a one call setter would create in one transaction.
+#[test]
+fn the_admin_role_moves_only_to_an_address_that_signs_for_it() {
+    let f = setup();
+    let successor = Address::generate(&f.e);
+    let mallory = Address::generate(&f.e);
+    assert_eq!(f.vault.pending_admin(), None);
+
+    // A stranger cannot propose.
+    assert_eq!(
+        f.vault.try_propose_admin(&mallory, &mallory),
+        Err(Ok(StakingError::NotAdmin))
+    );
+
+    // The admin proposes and nothing moves yet.
+    f.vault.propose_admin(&f.admin, &successor);
+    assert_eq!(f.vault.pending_admin(), Some(successor.clone()));
+    assert_eq!(f.vault.admin(), f.admin);
+
+    // Only the proposed address can accept, and it has to sign for itself.
+    assert_eq!(
+        f.vault.try_accept_admin(&mallory),
+        Err(Ok(StakingError::NotPendingAdmin))
+    );
+    f.e.mock_auths(&[MockAuth {
+        address: &mallory,
+        invoke: &MockAuthInvoke {
+            contract: &f.vault.address,
+            fn_name: "accept_admin",
+            args: (successor.clone(),).into_val(&f.e),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(f.vault.try_accept_admin(&successor).is_err());
+    assert_eq!(f.vault.admin(), f.admin);
+
+    f.e.mock_all_auths();
+    f.vault.accept_admin(&successor);
+    assert_eq!(f.vault.admin(), successor);
+    assert_eq!(f.vault.pending_admin(), None);
+    assert_eq!(
+        f.vault.try_accept_admin(&successor),
+        Err(Ok(StakingError::NoPendingAdmin))
+    );
 }

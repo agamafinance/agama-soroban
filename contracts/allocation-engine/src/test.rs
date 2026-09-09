@@ -918,3 +918,52 @@ fn deallocation_reports_the_repayment_to_the_vault() {
     assert_eq!(vault.repaid(), 120 * USDC);
     assert_eq!(f.engine.get_exposure(&f.pool_a), 80 * USDC);
 }
+
+/// Admin rotation, in the two steps that make it safe: a proposal that changes
+/// nothing, and an acceptance signed by the address it hands the role to. An
+/// unreachable key can therefore never be handed the role, which is the
+/// unrecoverable state a one call setter would create in one transaction.
+#[test]
+fn the_admin_role_moves_only_to_an_address_that_signs_for_it() {
+    let f = setup();
+    let successor = Address::generate(&f.e);
+    let mallory = Address::generate(&f.e);
+    assert_eq!(f.engine.pending_admin(), None);
+
+    // A stranger cannot propose.
+    assert_eq!(
+        f.engine.try_propose_admin(&mallory, &mallory),
+        Err(Ok(EngineError::NotAdmin))
+    );
+
+    // The admin proposes and nothing moves yet.
+    f.engine.propose_admin(&f.admin, &successor);
+    assert_eq!(f.engine.pending_admin(), Some(successor.clone()));
+    assert_eq!(f.engine.admin(), f.admin);
+
+    // Only the proposed address can accept, and it has to sign for itself.
+    assert_eq!(
+        f.engine.try_accept_admin(&mallory),
+        Err(Ok(EngineError::NotPendingAdmin))
+    );
+    f.e.mock_auths(&[MockAuth {
+        address: &mallory,
+        invoke: &MockAuthInvoke {
+            contract: &f.engine.address,
+            fn_name: "accept_admin",
+            args: (successor.clone(),).into_val(&f.e),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(f.engine.try_accept_admin(&successor).is_err());
+    assert_eq!(f.engine.admin(), f.admin);
+
+    f.e.mock_all_auths();
+    f.engine.accept_admin(&successor);
+    assert_eq!(f.engine.admin(), successor);
+    assert_eq!(f.engine.pending_admin(), None);
+    assert_eq!(
+        f.engine.try_accept_admin(&successor),
+        Err(Ok(EngineError::NoPendingAdmin))
+    );
+}

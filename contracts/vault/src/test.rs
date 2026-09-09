@@ -1067,3 +1067,105 @@ fn a_repayment_has_to_have_actually_arrived() {
     assert_eq!(f.vault.booked_reserves(), 1_000 * USDC);
     assert_eq!(f.vault.idle_reserves(), 1_000 * USDC);
 }
+
+/// The admin key was a single point of failure with no way back from either of
+/// the two ways it fails: lost, and every admin gated call in the contract goes
+/// with it; compromised, and it cannot be replaced.
+///
+/// Checked with targeted authorizations, because the whole property under test
+/// is who signed what, and `mock_all_auths` would answer that question for
+/// everybody at once.
+#[test]
+fn the_admin_role_can_be_handed_over_in_two_steps_and_only_to_a_live_key() {
+    let f = setup();
+    let successor = Address::generate(&f.e);
+    let mallory = Address::generate(&f.e);
+    assert_eq!(f.vault.pending_admin(), None);
+
+    // A stranger cannot propose.
+    f.e.mock_auths(&[MockAuth {
+        address: &mallory,
+        invoke: &MockAuthInvoke {
+            contract: &f.vault.address,
+            fn_name: "propose_admin",
+            args: (mallory.clone(), mallory.clone()).into_val(&f.e),
+            sub_invokes: &[],
+        },
+    }]);
+    assert_eq!(
+        f.vault.try_propose_admin(&mallory, &mallory),
+        Err(Ok(VaultError::NotAdmin))
+    );
+
+    // The admin proposes. Nothing has moved yet: that is the point of the
+    // second step, and it is what stops a one call transfer to a typo.
+    f.e.mock_auths(&[MockAuth {
+        address: &f.admin,
+        invoke: &MockAuthInvoke {
+            contract: &f.vault.address,
+            fn_name: "propose_admin",
+            args: (f.admin.clone(), successor.clone()).into_val(&f.e),
+            sub_invokes: &[],
+        },
+    }]);
+    f.vault.propose_admin(&f.admin, &successor);
+    assert_eq!(f.vault.pending_admin(), Some(successor.clone()));
+    assert_eq!(f.vault.admin(), f.admin);
+
+    // Nobody but the proposed address can accept, and naming it is not enough:
+    // the signature has to be theirs.
+    f.e.mock_auths(&[MockAuth {
+        address: &mallory,
+        invoke: &MockAuthInvoke {
+            contract: &f.vault.address,
+            fn_name: "accept_admin",
+            args: (mallory.clone(),).into_val(&f.e),
+            sub_invokes: &[],
+        },
+    }]);
+    assert_eq!(
+        f.vault.try_accept_admin(&mallory),
+        Err(Ok(VaultError::NotPendingAdmin))
+    );
+    f.e.mock_auths(&[MockAuth {
+        address: &mallory,
+        invoke: &MockAuthInvoke {
+            contract: &f.vault.address,
+            fn_name: "accept_admin",
+            args: (successor.clone(),).into_val(&f.e),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(f.vault.try_accept_admin(&successor).is_err());
+    assert_eq!(f.vault.admin(), f.admin);
+
+    // The successor signs for itself, which is the proof the key is real and
+    // reachable, and the role moves.
+    f.e.mock_auths(&[MockAuth {
+        address: &successor,
+        invoke: &MockAuthInvoke {
+            contract: &f.vault.address,
+            fn_name: "accept_admin",
+            args: (successor.clone(),).into_val(&f.e),
+            sub_invokes: &[],
+        },
+    }]);
+    f.vault.accept_admin(&successor);
+    assert_eq!(f.vault.admin(), successor);
+    assert_eq!(f.vault.pending_admin(), None);
+
+    // The old key is now an ordinary address, and the new one has the powers.
+    f.e.mock_all_auths();
+    assert_eq!(
+        f.vault.try_set_paused(&f.admin, &true),
+        Err(Ok(VaultError::NotAdmin))
+    );
+    f.vault.set_paused(&successor, &true);
+    assert!(f.vault.paused());
+
+    // Accepting twice is not a second transfer.
+    assert_eq!(
+        f.vault.try_accept_admin(&successor),
+        Err(Ok(VaultError::NoPendingAdmin))
+    );
+}

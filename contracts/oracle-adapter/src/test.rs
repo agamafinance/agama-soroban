@@ -1,6 +1,7 @@
 #![cfg(test)]
 use super::*;
-use soroban_sdk::testutils::{Address as _, Events as _, Ledger as _};
+use soroban_sdk::testutils::{Address as _, Events as _, Ledger as _, MockAuth, MockAuthInvoke};
+use soroban_sdk::IntoVal;
 use soroban_sdk::{Address, Env, TryFromVal};
 
 // Ledger time the fixtures start from, far enough into the epoch that the
@@ -571,5 +572,54 @@ fn the_reference_value_outlives_the_old_temporary_ttl() {
         f.oracle
             .try_push_nav(&f.reporter, &FEED_PC_NAV, &ONE, &(T0 - 1)),
         Err(Ok(OracleError::NonMonotonicTimestamp))
+    );
+}
+
+/// Admin rotation, in the two steps that make it safe: a proposal that changes
+/// nothing, and an acceptance signed by the address it hands the role to. An
+/// unreachable key can therefore never be handed the role, which is the
+/// unrecoverable state a one call setter would create in one transaction.
+#[test]
+fn the_admin_role_moves_only_to_an_address_that_signs_for_it() {
+    let f = setup();
+    let successor = Address::generate(&f.e);
+    let mallory = Address::generate(&f.e);
+    assert_eq!(f.oracle.pending_admin(), None);
+
+    // A stranger cannot propose.
+    assert_eq!(
+        f.oracle.try_propose_admin(&mallory, &mallory),
+        Err(Ok(OracleError::NotAdmin))
+    );
+
+    // The admin proposes and nothing moves yet.
+    f.oracle.propose_admin(&f.admin, &successor);
+    assert_eq!(f.oracle.pending_admin(), Some(successor.clone()));
+    assert_eq!(f.oracle.admin(), f.admin);
+
+    // Only the proposed address can accept, and it has to sign for itself.
+    assert_eq!(
+        f.oracle.try_accept_admin(&mallory),
+        Err(Ok(OracleError::NotPendingAdmin))
+    );
+    f.e.mock_auths(&[MockAuth {
+        address: &mallory,
+        invoke: &MockAuthInvoke {
+            contract: &f.oracle.address,
+            fn_name: "accept_admin",
+            args: (successor.clone(),).into_val(&f.e),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(f.oracle.try_accept_admin(&successor).is_err());
+    assert_eq!(f.oracle.admin(), f.admin);
+
+    f.e.mock_all_auths();
+    f.oracle.accept_admin(&successor);
+    assert_eq!(f.oracle.admin(), successor);
+    assert_eq!(f.oracle.pending_admin(), None);
+    assert_eq!(
+        f.oracle.try_accept_admin(&successor),
+        Err(Ok(OracleError::NoPendingAdmin))
     );
 }

@@ -1,7 +1,8 @@
 #![cfg(test)]
 use super::*;
 use mock_usdc::{MockUsdc, MockUsdcClient};
-use soroban_sdk::testutils::Address as _;
+use soroban_sdk::testutils::{Address as _, MockAuth, MockAuthInvoke};
+use soroban_sdk::IntoVal;
 use soroban_sdk::{contract, contractimpl, symbol_short, Address, Env, String};
 
 const USDC: i128 = 10_000_000; // 1 USDC at 7 decimals
@@ -269,4 +270,53 @@ fn a_defaulted_position_can_be_written_off_without_returning_capital() {
     f.e.mock_auths(&[]);
     assert!(f.adapter.try_write_down(&(100 * USDC)).is_err());
     assert_eq!(f.adapter.get_exposure(), 300 * USDC);
+}
+
+/// Admin rotation, in the two steps that make it safe: a proposal that changes
+/// nothing, and an acceptance signed by the address it hands the role to. An
+/// unreachable key can therefore never be handed the role, which is the
+/// unrecoverable state a one call setter would create in one transaction.
+#[test]
+fn the_admin_role_moves_only_to_an_address_that_signs_for_it() {
+    let f = setup();
+    let successor = Address::generate(&f.e);
+    let mallory = Address::generate(&f.e);
+    assert_eq!(f.adapter.pending_admin(), None);
+
+    // A stranger cannot propose.
+    assert_eq!(
+        f.adapter.try_propose_admin(&mallory, &mallory),
+        Err(Ok(AdapterError::NotAdmin))
+    );
+
+    // The admin proposes and nothing moves yet.
+    f.adapter.propose_admin(&f.admin, &successor);
+    assert_eq!(f.adapter.pending_admin(), Some(successor.clone()));
+    assert_eq!(f.adapter.admin(), f.admin);
+
+    // Only the proposed address can accept, and it has to sign for itself.
+    assert_eq!(
+        f.adapter.try_accept_admin(&mallory),
+        Err(Ok(AdapterError::NotPendingAdmin))
+    );
+    f.e.mock_auths(&[MockAuth {
+        address: &mallory,
+        invoke: &MockAuthInvoke {
+            contract: &f.adapter.address,
+            fn_name: "accept_admin",
+            args: (successor.clone(),).into_val(&f.e),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(f.adapter.try_accept_admin(&successor).is_err());
+    assert_eq!(f.adapter.admin(), f.admin);
+
+    f.e.mock_all_auths();
+    f.adapter.accept_admin(&successor);
+    assert_eq!(f.adapter.admin(), successor);
+    assert_eq!(f.adapter.pending_admin(), None);
+    assert_eq!(
+        f.adapter.try_accept_admin(&successor),
+        Err(Ok(AdapterError::NoPendingAdmin))
+    );
 }
