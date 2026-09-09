@@ -1,7 +1,8 @@
 #![cfg(test)]
 use super::*;
 use mock_usdc::{MockUsdc, MockUsdcClient};
-use soroban_sdk::testutils::Address as _;
+use soroban_sdk::testutils::{Address as _, MockAuth, MockAuthInvoke};
+use soroban_sdk::IntoVal;
 use soroban_sdk::{contract, contractimpl, symbol_short, Address, Env, String};
 
 const USDC: i128 = 10_000_000; // 1 USDC at 7 decimals
@@ -233,4 +234,89 @@ fn the_counterparties_move_only_together_and_only_while_the_adapter_is_empty() {
         .set_counterparties(&f.admin, &other_engine, &other_vault);
     assert_eq!(f.adapter.engine(), other_engine);
     assert_eq!(f.adapter.vault(), other_vault);
+}
+
+/// A defaulted position cannot be deallocated: `deallocate` transfers the USDC
+/// before it decrements the book, and there is no USDC. Without a write-down
+/// the exposure reports face value for the life of the contract.
+#[test]
+fn a_defaulted_position_can_be_written_off_without_returning_capital() {
+    let f = setup();
+    f.usdc.faucet(&f.adapter_id, &(500 * USDC));
+    f.adapter.allocate(&(500 * USDC));
+
+    // The originator draws down and defaults: the cash is gone from here.
+    f.usdc.burn(&f.adapter_id, &(500 * USDC));
+    assert!(f.adapter.try_deallocate(&(500 * USDC)).is_err());
+    assert_eq!(f.adapter.get_exposure(), 500 * USDC);
+
+    // The write-down moves the book and nothing else.
+    f.adapter.write_down(&(200 * USDC));
+    assert_eq!(f.adapter.get_exposure(), 300 * USDC);
+    assert_eq!(f.usdc.balance(&f.vault), 0);
+
+    // It cannot write off more than is booked, and it is not a way to move
+    // capital: zero and negative are refused like everywhere else.
+    assert_eq!(
+        f.adapter.try_write_down(&(301 * USDC)),
+        Err(Ok(AdapterError::WriteDownExceedsExposure))
+    );
+    assert_eq!(
+        f.adapter.try_write_down(&0),
+        Err(Ok(AdapterError::InvalidAmount))
+    );
+
+    // And it is the Engine's call, not anybody's: same gate as allocate.
+    f.e.mock_auths(&[]);
+    assert!(f.adapter.try_write_down(&(100 * USDC)).is_err());
+    assert_eq!(f.adapter.get_exposure(), 300 * USDC);
+}
+
+/// Admin rotation, in the two steps that make it safe: a proposal that changes
+/// nothing, and an acceptance signed by the address it hands the role to. An
+/// unreachable key can therefore never be handed the role, which is the
+/// unrecoverable state a one call setter would create in one transaction.
+#[test]
+fn the_admin_role_moves_only_to_an_address_that_signs_for_it() {
+    let f = setup();
+    let successor = Address::generate(&f.e);
+    let mallory = Address::generate(&f.e);
+    assert_eq!(f.adapter.pending_admin(), None);
+
+    // A stranger cannot propose.
+    assert_eq!(
+        f.adapter.try_propose_admin(&mallory, &mallory),
+        Err(Ok(AdapterError::NotAdmin))
+    );
+
+    // The admin proposes and nothing moves yet.
+    f.adapter.propose_admin(&f.admin, &successor);
+    assert_eq!(f.adapter.pending_admin(), Some(successor.clone()));
+    assert_eq!(f.adapter.admin(), f.admin);
+
+    // Only the proposed address can accept, and it has to sign for itself.
+    assert_eq!(
+        f.adapter.try_accept_admin(&mallory),
+        Err(Ok(AdapterError::NotPendingAdmin))
+    );
+    f.e.mock_auths(&[MockAuth {
+        address: &mallory,
+        invoke: &MockAuthInvoke {
+            contract: &f.adapter.address,
+            fn_name: "accept_admin",
+            args: (successor.clone(),).into_val(&f.e),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(f.adapter.try_accept_admin(&successor).is_err());
+    assert_eq!(f.adapter.admin(), f.admin);
+
+    f.e.mock_all_auths();
+    f.adapter.accept_admin(&successor);
+    assert_eq!(f.adapter.admin(), successor);
+    assert_eq!(f.adapter.pending_admin(), None);
+    assert_eq!(
+        f.adapter.try_accept_admin(&successor),
+        Err(Ok(AdapterError::NoPendingAdmin))
+    );
 }

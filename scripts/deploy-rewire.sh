@@ -33,6 +33,11 @@
 # incident, rather than described in a comment. Each correction is a transaction
 # hash anybody can check.
 #
+# Superseded by scripts/deploy-hardening.sh, which redeploys the same stack plus
+# the Oracle Adapter with the fixes from the adversarial security review. This
+# is kept because the addresses and transactions it produced are still on the
+# ledger and still recorded.
+#
 # Usage: bash scripts/deploy-rewire.sh
 #
 # Requires the `agama-poc` identity, which is the admin recorded in
