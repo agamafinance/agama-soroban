@@ -8,9 +8,17 @@
 #
 # Covers, with assertions:
 #   core : deposit USDC -> mint agUSD 1:1 -> redeem 1:1 -> stake sagUSD ->
-#          accrue_yield (share price rises) -> cooldown blocks -> claim w/ profit
-#   per-vault (x6): deposit USDC -> shares -> accrue -> share price up ->
+#          distribute_yield (exchange rate rises) -> cooldown blocks ->
+#          claim w/ profit
+#   per-vault (x6): deposit USDC -> shares -> yield -> share price up ->
 #          request_unstake -> claim with profit
+#
+# Two generations of the staking contract are on-chain at once. sagUSD carries
+# the DeFindex names, distribute_yield and exchange_rate. The six credit vaults
+# are instances of an earlier build of the same contract, deployed before that
+# rename and not redeployed since, so they answer to accrue_yield and only to
+# share_price. The yield entry point is therefore resolved per contract off the
+# interface each instance actually publishes, rather than assumed.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 NET=testnet
@@ -31,6 +39,12 @@ assert_eq() { if [ "$(num "$2")" = "$3" ]; then ok "$1 ($2)"; else bad "$1: got 
 assert_gt() { if [ "$(python3 -c "print(1 if int('$(num "$2")') > int('$3') else 0)")" = "1" ]; then ok "$1 ($2 > $3)"; else bad "$1: got $2, want > $3"; fi; }
 
 inv() { stellar contract invoke --id "$1" --source $SRC --network $NET -- "${@:2}" 2>/dev/null; }
+
+# Which name this deployed instance gives the yield entry point.
+yield_fn() {
+  if stellar contract info interface --id "$1" --network $NET 2>/dev/null \
+     | grep -q 'fn distribute_yield'; then echo distribute_yield; else echo accrue_yield; fi
+}
 
 echo "== preflight: admin USDC balance (real Circle USDC) =="
 BAL=$(num "$(inv $USDC balance --id $ADMIN)")
@@ -54,15 +68,16 @@ inv $AGUSD redeem --from $ADMIN --amount 10000000 >/dev/null             # redee
 A2=$(num "$(inv $AGUSD balance --id $ADMIN)")
 assert_eq "redeem 1:1: -1 agUSD" "$((A1-A2))" "10000000"
 
-SP0=$(num "$(inv $SAG share_price)")
+SAG_YIELD_FN=$(yield_fn "$SAG")
+SP0=$(num "$(inv $SAG exchange_rate)")
 S0=$(num "$(inv $SAG balance --id $ADMIN)")
 inv $SAG stake --from $ADMIN --amount 30000000 >/dev/null                # stake 3 agUSD
 S1=$(num "$(inv $SAG balance --id $ADMIN)")
 assert_gt "stake: sagUSD shares minted" "$((S1-S0))" "0"
 
-inv $SAG accrue_yield --amount 5000000 >/dev/null                        # +0.5 agUSD yield
-SP1=$(num "$(inv $SAG share_price)")
-assert_gt "accrue_yield: share price rose" "$SP1" "$SP0"
+inv $SAG "$SAG_YIELD_FN" --amount 5000000 >/dev/null                     # +0.5 agUSD yield
+SP1=$(num "$(inv $SAG exchange_rate)")
+assert_gt "$SAG_YIELD_FN: exchange rate rose" "$SP1" "$SP0"
 
 inv $SAG request_unstake --from $ADMIN --shares $((S1-S0)) >/dev/null
 if inv $SAG claim --from $ADMIN >/dev/null 2>&1; then
@@ -86,7 +101,7 @@ for kv in $VAULTS; do
   V1=$(num "$(inv $VID balance --id $ADMIN)")
   assert_gt "deposit: shares minted" "$((V1-V0))" "0"
 
-  inv $VID accrue_yield --amount 1000000 >/dev/null                      # +0.1 USDC
+  inv $VID "$(yield_fn "$VID")" --amount 1000000 >/dev/null             # +0.1 USDC
   SP1=$(num "$(inv $VID share_price)")
   assert_gt "yield: share price rose" "$SP1" "$SP0"
 

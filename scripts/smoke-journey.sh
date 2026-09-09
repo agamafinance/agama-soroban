@@ -226,7 +226,12 @@ echo "== 2. STAKE: agUSD into sagUSD =="
 echo "  stake $STAKE  tx $(tx "$STAKING" stake --from "$ADMIN" --amount "$STAKE")"
 assert_eq "shares were issued one for one at a share price of 1.0" \
   "$(q "$STAKING" balance --id "$ADMIN")" "$STAKE"
-assert_eq "the share price starts at 1.0" "$(q "$STAKING" share_price)" "10000000"
+assert_eq "the exchange rate starts at 1.0" "$(q "$STAKING" exchange_rate)" "10000000"
+# Both names, one number. exchange_rate is the DeFindex-facing view a wallet
+# reads; share_price is the alias this contract shipped with and that the
+# generation 1 agUSD still calls on the credit vaults.
+assert_eq "share_price is the same view under the older name" \
+  "$(q "$STAKING" share_price)" "$(num "$(q "$STAKING" exchange_rate)")"
 assert_eq "the staking contract custodies the agUSD" \
   "$(q "$AGUSD" balance --id "$STAKING")" "$STAKE"
 
@@ -269,9 +274,9 @@ assert_eq "the Vault reads its own feed ($FEED) through the adapter" "$(q "$VAUL
 echo ""
 echo "== 5. YIELD: the sagUSD exchange rate rises =="
 NAV0=$(num "$(q "$STAKING" nav)")
-echo "  accrue_yield $YIELD  tx $(tx "$STAKING" accrue_yield --amount "$YIELD")"
+echo "  distribute_yield $YIELD  tx $(tx "$STAKING" distribute_yield --amount "$YIELD")"
 assert_eq "the staking NAV rose by the yield delivered" "$(q "$STAKING" nav)" "$((NAV0 + YIELD))"
-assert_eq "and the share price rose with it, to 1.1" "$(q "$STAKING" share_price)" \
+assert_eq "and the exchange rate rose with it, to 1.1" "$(q "$STAKING" exchange_rate)" \
   "$(( (NAV0 + YIELD) * 10000000 / STAKE ))"
 assert_eq "nobody minted shares to do it" "$(q "$STAKING" total_shares)" "$STAKE"
 
