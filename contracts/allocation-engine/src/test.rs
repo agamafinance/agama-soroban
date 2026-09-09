@@ -40,8 +40,16 @@ pub struct MockVault;
 
 #[contractimpl]
 impl MockVault {
-    pub fn initialize(e: Env, usdc: Address) {
+    pub fn initialize(e: Env, admin: Address, usdc: Address) {
+        e.storage().instance().set(&symbol_short!("admin"), &admin);
         e.storage().instance().set(&symbol_short!("usdc"), &usdc);
+    }
+
+    /// The Engine's constructor and `set_vault` both require the Vault to name
+    /// the same admin the Engine is being given, and `write_down` reads it
+    /// again before it asks the Vault to record the loss.
+    pub fn admin(e: Env) -> Address {
+        e.storage().instance().get(&symbol_short!("admin")).unwrap()
     }
 
     pub fn idle_reserves(e: Env) -> i128 {
@@ -96,6 +104,13 @@ impl MockVault {
     }
 
     pub fn record_writedown(e: Env, admin: Address, amount: i128) {
+        // The real Vault compares this against its own stored admin and refuses
+        // a stranger, so the mock does too. Without that, a test of the
+        // Engine's admin alignment check would pass whether the check existed
+        // or not, which is the opposite of what it is for.
+        if admin != Self::admin(e.clone()) {
+            panic!("not the vault admin");
+        }
         admin.require_auth();
         let seen: i128 = e
             .storage()
@@ -111,6 +126,32 @@ impl MockVault {
         e.storage()
             .instance()
             .get(&symbol_short!("written"))
+            .unwrap_or(0)
+    }
+
+    /// The Vault leg of `recover`. The real one verifies the cash reached its
+    /// own balance before it believes a stroop of it; that check has its own
+    /// test in the Vault crate, and what is under test here is that the Engine
+    /// makes the call with the right admin and the right amount.
+    pub fn record_recovery(e: Env, admin: Address, amount: i128) {
+        if admin != Self::admin(e.clone()) {
+            panic!("not the vault admin");
+        }
+        admin.require_auth();
+        let seen: i128 = e
+            .storage()
+            .instance()
+            .get(&symbol_short!("recov"))
+            .unwrap_or(0);
+        e.storage()
+            .instance()
+            .set(&symbol_short!("recov"), &(seen + amount));
+    }
+
+    pub fn recovered(e: Env) -> i128 {
+        e.storage()
+            .instance()
+            .get(&symbol_short!("recov"))
             .unwrap_or(0)
     }
 
@@ -150,26 +191,46 @@ fn setup() -> Fix {
     );
 
     let vault_id = e.register(MockVault, ());
-    MockVaultClient::new(&e, &vault_id).initialize(&usdc_id);
+    MockVaultClient::new(&e, &vault_id).initialize(&admin, &usdc_id);
     usdc.faucet(&vault_id, &FUNDING);
 
-    let engine_id = e.register(AllocationEngine, ());
+    let engine_id = e.register(AllocationEngine, (admin.clone(), vault_id.clone()));
     let engine = AllocationEngineClient::new(&e, &engine_id);
-    engine.initialize(&admin, &vault_id);
 
     // Two private credit pools fronted by the same originator, plus an
     // Etherfuse pool under the same jurisdiction as the first two. The Engine
     // routes to both adapter types through the identical interface.
-    let pool_a = e.register(PrivateCreditAdapter, ());
+    let pool_a = e.register(
+        PrivateCreditAdapter,
+        (
+            admin.clone(),
+            engine_id.clone(),
+            vault_id.clone(),
+            usdc_id.clone(),
+        ),
+    );
     let adapter_a = PrivateCreditAdapterClient::new(&e, &pool_a);
-    adapter_a.initialize(&admin, &engine_id, &vault_id, &usdc_id);
 
-    let pool_b = e.register(PrivateCreditAdapter, ());
-    PrivateCreditAdapterClient::new(&e, &pool_b).initialize(&admin, &engine_id, &vault_id, &usdc_id);
+    let pool_b = e.register(
+        PrivateCreditAdapter,
+        (
+            admin.clone(),
+            engine_id.clone(),
+            vault_id.clone(),
+            usdc_id.clone(),
+        ),
+    );
 
-    let pool_c = e.register(EtherfuseAdapter, ());
+    let pool_c = e.register(
+        EtherfuseAdapter,
+        (
+            admin.clone(),
+            engine_id.clone(),
+            vault_id.clone(),
+            usdc_id.clone(),
+        ),
+    );
     let adapter_c = EtherfuseAdapterClient::new(&e, &pool_c);
-    adapter_c.initialize(&admin, &engine_id, &vault_id, &usdc_id);
 
     engine.register_pool(
         &admin,
@@ -213,14 +274,15 @@ fn setup() -> Fix {
 /// Deploys and wires one more private credit adapter against the fixture, for
 /// the cases that need a pool the fixture did not pre-register.
 fn extra_private_credit_pool(f: &Fix) -> Address {
-    let id = f.e.register(PrivateCreditAdapter, ());
-    PrivateCreditAdapterClient::new(&f.e, &id).initialize(
-        &f.admin,
-        &f.engine.address,
-        &f.vault_id,
-        &f.usdc.address,
-    );
-    id
+    f.e.register(
+        PrivateCreditAdapter,
+        (
+            f.admin.clone(),
+            f.engine.address.clone(),
+            f.vault_id.clone(),
+            f.usdc.address.clone(),
+        ),
+    )
 }
 
 #[test]
@@ -327,15 +389,21 @@ fn an_unconfigured_engine_cannot_deploy_capital() {
         &String::from_str(&e, "USDC"),
     );
     let vault_id = e.register(MockVault, ());
-    MockVaultClient::new(&e, &vault_id).initialize(&usdc_id);
+    MockVaultClient::new(&e, &vault_id).initialize(&admin, &usdc_id);
     usdc.faucet(&vault_id, &FUNDING);
 
-    let engine_id = e.register(AllocationEngine, ());
+    let engine_id = e.register(AllocationEngine, (admin.clone(), vault_id.clone()));
     let engine = AllocationEngineClient::new(&e, &engine_id);
-    engine.initialize(&admin, &vault_id);
 
-    let pool = e.register(PrivateCreditAdapter, ());
-    PrivateCreditAdapterClient::new(&e, &pool).initialize(&admin, &engine_id, &vault_id, &usdc_id);
+    let pool = e.register(
+        PrivateCreditAdapter,
+        (
+            admin.clone(),
+            engine_id.clone(),
+            vault_id.clone(),
+            usdc_id.clone(),
+        ),
+    );
     engine.register_pool(
         &admin,
         &pool,
@@ -507,7 +575,7 @@ fn the_vault_pointer_moves_while_the_book_is_empty() {
     // superseded, and until it follows, every cap it enforces is measured on a
     // balance sheet nobody is depositing into any more.
     let replacement = f.e.register(MockVault, ());
-    MockVaultClient::new(&f.e, &replacement).initialize(&f.usdc.address);
+    MockVaultClient::new(&f.e, &replacement).initialize(&f.admin, &f.usdc.address);
     f.usdc.faucet(&replacement, &FUNDING);
 
     f.engine.set_vault(&f.admin, &replacement);
@@ -529,7 +597,7 @@ fn the_vault_pointer_is_frozen_while_capital_is_deployed() {
     // would leave the caps measured against one Vault's assets and the
     // exposure funded by another's, which is a ratio of two unrelated numbers.
     let replacement = f.e.register(MockVault, ());
-    MockVaultClient::new(&f.e, &replacement).initialize(&f.usdc.address);
+    MockVaultClient::new(&f.e, &replacement).initialize(&f.admin, &f.usdc.address);
     assert_eq!(
         f.engine.try_set_vault(&f.admin, &replacement),
         Err(Ok(EngineError::CapitalDeployed))
@@ -579,18 +647,6 @@ fn a_pool_cannot_be_registered_twice() {
 }
 
 #[test]
-fn cannot_be_reinitialized() {
-    let f = setup();
-    let attacker = Address::generate(&f.e);
-    assert_eq!(
-        f.engine.try_initialize(&attacker, &attacker),
-        Err(Ok(EngineError::AlreadyInitialized))
-    );
-    assert_eq!(f.engine.admin(), f.admin);
-    assert_eq!(f.engine.vault(), f.vault_id);
-}
-
-#[test]
 fn the_deployed_limits_leave_the_reserve_floor_able_to_bind() {
     // The configuration this Engine is deployed with, on the two pools it is
     // deployed with: private credit fronted by Qiro through a Luxembourg SPV,
@@ -610,17 +666,30 @@ fn the_deployed_limits_leave_the_reserve_floor_able_to_bind() {
         &String::from_str(&e, "USDC"),
     );
     let vault_id = e.register(MockVault, ());
-    MockVaultClient::new(&e, &vault_id).initialize(&usdc_id);
+    MockVaultClient::new(&e, &vault_id).initialize(&admin, &usdc_id);
     usdc.faucet(&vault_id, &FUNDING);
 
-    let engine_id = e.register(AllocationEngine, ());
+    let engine_id = e.register(AllocationEngine, (admin.clone(), vault_id.clone()));
     let engine = AllocationEngineClient::new(&e, &engine_id);
-    engine.initialize(&admin, &vault_id);
 
-    let pc = e.register(PrivateCreditAdapter, ());
-    PrivateCreditAdapterClient::new(&e, &pc).initialize(&admin, &engine_id, &vault_id, &usdc_id);
-    let ef = e.register(EtherfuseAdapter, ());
-    EtherfuseAdapterClient::new(&e, &ef).initialize(&admin, &engine_id, &vault_id, &usdc_id);
+    let pc = e.register(
+        PrivateCreditAdapter,
+        (
+            admin.clone(),
+            engine_id.clone(),
+            vault_id.clone(),
+            usdc_id.clone(),
+        ),
+    );
+    let ef = e.register(
+        EtherfuseAdapter,
+        (
+            admin.clone(),
+            engine_id.clone(),
+            vault_id.clone(),
+            usdc_id.clone(),
+        ),
+    );
 
     engine.register_pool(
         &admin,
@@ -706,14 +775,15 @@ fn a_pool_that_does_not_name_this_engine_and_this_vault_cannot_be_registered() {
     // Right Vault, wrong Engine: this adapter answers to somebody else, so
     // allocate and deallocate from here would simply be refused, and the
     // Engine's book would be a fiction from the first call.
-    let other_engine = f.e.register(AllocationEngine, ());
-    AllocationEngineClient::new(&f.e, &other_engine).initialize(&f.admin, &f.vault_id);
-    let foreign_engine_pool = f.e.register(PrivateCreditAdapter, ());
-    PrivateCreditAdapterClient::new(&f.e, &foreign_engine_pool).initialize(
-        &f.admin,
-        &other_engine,
-        &f.vault_id,
-        &f.usdc.address,
+    let other_engine = f.e.register(AllocationEngine, (f.admin.clone(), f.vault_id.clone()));
+    let foreign_engine_pool = f.e.register(
+        PrivateCreditAdapter,
+        (
+            f.admin.clone(),
+            other_engine.clone(),
+            f.vault_id.clone(),
+            f.usdc.address.clone(),
+        ),
     );
     assert_eq!(
         f.engine.try_register_pool(
@@ -728,15 +798,26 @@ fn a_pool_that_does_not_name_this_engine_and_this_vault_cannot_be_registered() {
 
     // Right Engine, wrong Vault: the dangerous one. Allocation works, the book
     // is correct, and the repayment goes somewhere else.
+    //
+    // The adapter's own constructor and `set_counterparties` both refuse to
+    // create that pairing, so the way it arises in practice is drift: an
+    // adapter wired correctly and then left behind when the Engine follows the
+    // Vault to a new generation. That is what is built here, with `set_vault`
+    // standing in for the generation change, and the pointers are put back
+    // afterwards so the rest of the fixture still describes itself.
     let other_vault = f.e.register(MockVault, ());
-    MockVaultClient::new(&f.e, &other_vault).initialize(&f.usdc.address);
-    let foreign_vault_pool = f.e.register(PrivateCreditAdapter, ());
-    PrivateCreditAdapterClient::new(&f.e, &foreign_vault_pool).initialize(
-        &f.admin,
-        &f.engine.address,
-        &other_vault,
-        &f.usdc.address,
+    MockVaultClient::new(&f.e, &other_vault).initialize(&f.admin, &f.usdc.address);
+    let foreign_vault_pool = f.e.register(
+        PrivateCreditAdapter,
+        (
+            f.admin.clone(),
+            f.engine.address.clone(),
+            f.vault_id.clone(),
+            f.usdc.address.clone(),
+        ),
     );
+    f.engine.set_vault(&f.admin, &other_vault);
+    assert_eq!(f.engine.vault(), other_vault);
     assert_eq!(
         f.engine.try_register_pool(
             &f.admin,
@@ -747,6 +828,7 @@ fn a_pool_that_does_not_name_this_engine_and_this_vault_cannot_be_registered() {
         ),
         Err(Ok(EngineError::AdapterMismatch))
     );
+    f.engine.set_vault(&f.admin, &f.vault_id);
 
     // An address that is not an adapter at all fails the same way rather than
     // being registered and failing later, in an allocation.
@@ -1033,8 +1115,26 @@ fn a_write_down_does_not_reopen_the_engines_reserve_floor() {
     // The base has not moved, so the floor has not moved either.
     assert_eq!(f.engine.floor_base(), 1_000 * USDC);
     assert_eq!(f.engine.get_reserve_ratio(), 2_000);
+
+    // Everything from here runs against a second pool of its own, with its own
+    // originator and its own jurisdiction, and the reason is the other half of
+    // the same fix. A write-off is now charged against the pool it happened at
+    // for as long as it stands, so the written-off pool is over its own cap and
+    // a refusal there would be the concentration limit rather than the floor.
+    // The floor is a limit on the whole book, so the honest way to ask whether
+    // a write-down reopened it is to ask somewhere the write-down is not
+    // already answering.
+    let clean = extra_private_credit_pool(&f);
+    f.engine.register_pool(
+        &f.admin,
+        &clean,
+        &symbol_short!("SOLO2"),
+        &symbol_short!("MX"),
+        &10_000,
+    );
+    assert_eq!(f.engine.charged_exposure(&clean), 0);
     assert_eq!(
-        f.engine.try_allocate(&f.admin, &pool, &1),
+        f.engine.try_allocate(&f.admin, &clean, &1),
         Err(Ok(EngineError::ReserveFloorBreached))
     );
 
@@ -1045,18 +1145,295 @@ fn a_write_down_does_not_reopen_the_engines_reserve_floor() {
             break;
         }
         let mut take = free;
-        while take > 0 && f.engine.try_allocate(&f.admin, &pool, &take).is_err() {
+        while take > 0 && f.engine.try_allocate(&f.admin, &clean, &take).is_err() {
             take = take * 9 / 10;
         }
         if take == 0 {
             break;
         }
         f.engine
-            .write_down(&f.admin, &pool, &take, &symbol_short!("DEFAULT"));
+            .write_down(&f.admin, &clean, &take, &symbol_short!("DEFAULT"));
     }
     assert_eq!(
         f.usdc.balance(&f.vault_id),
         200 * USDC,
         "the 20% floor has to survive write-downs, not only allocations"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The second review's Medium findings.
+// ---------------------------------------------------------------------------
+
+/// M1. Filling a pool to its cap and writing the position off used to hand the
+/// cap straight back, because a cap was measured on live exposure and a
+/// write-down sets live exposure to zero while the adapter goes on holding
+/// every dollar. Nothing about the concentration had changed; only the number
+/// the limit was read from had.
+#[test]
+fn a_write_down_does_not_reopen_the_pool_cap() {
+    let f = setup();
+    // 30% of a 1000 USDC book.
+    let cap = 300 * USDC;
+    f.engine.allocate(&f.admin, &f.pool_a, &cap);
+    assert_eq!(
+        f.engine.try_allocate(&f.admin, &f.pool_a, &1),
+        Err(Ok(EngineError::PoolCapExceeded)),
+        "the pool is full before the write-down, which is the state under test"
+    );
+
+    f.engine
+        .write_down(&f.admin, &f.pool_a, &cap, &symbol_short!("DEFAULT"));
+
+    // Everything the old code looked at says the pool is empty.
+    assert_eq!(f.engine.get_exposure(&f.pool_a), 0);
+    assert_eq!(f.engine.total_allocated(), 0);
+    // And the adapter is still holding every dollar of it, which is why the
+    // concentration is exactly what it was a moment ago.
+    assert_eq!(f.usdc.balance(&f.pool_a), cap);
+
+    assert_eq!(
+        f.engine.try_allocate(&f.admin, &f.pool_a, &1),
+        Err(Ok(EngineError::PoolCapExceeded)),
+        "a write-down must not buy back a cap any more than it buys back a floor"
+    );
+    assert_eq!(f.engine.charged_exposure(&f.pool_a), cap);
+    assert_eq!(f.engine.written_off_pool(&f.pool_a), cap);
+}
+
+/// M1, the aggregate half. The originator and jurisdiction caps are built from
+/// the same per-pool numbers, so a write-down at one pool used to release the
+/// counterparty's whole limit and the legal regime's with it. That is the part
+/// that matters most: the point of an originator cap is that several pools
+/// fronted by one counterparty count as one position.
+#[test]
+fn a_write_down_keeps_charging_the_originator_and_the_jurisdiction() {
+    let f = setup();
+    // pool_a and pool_b are both fronted by QIRO; pool_c is a different
+    // originator under the same jurisdiction as both.
+    f.engine.allocate(&f.admin, &f.pool_a, &(300 * USDC));
+    f.engine
+        .write_down(&f.admin, &f.pool_a, &(300 * USDC), &symbol_short!("DEFAULT"));
+
+    // QIRO is still 300 USDC deep through pool_a, so the 40% originator cap,
+    // now 40% of the 700 USDC that is left, has 280 of room and 300 against it.
+    assert_eq!(
+        f.engine.try_allocate(&f.admin, &f.pool_b, &(100 * USDC)),
+        Err(Ok(EngineError::OriginatorCapExceeded)),
+        "a second pool fronted by the defaulted originator must not be refunded"
+    );
+
+    // The US book is 300 deep too, against a 50% jurisdiction cap on 700.
+    assert_eq!(
+        f.engine.try_allocate(&f.admin, &f.pool_c, &(100 * USDC)),
+        Err(Ok(EngineError::JurisdictionCapExceeded)),
+        "and neither must the jurisdiction the loss happened in"
+    );
+    // 50 USDC is inside what is left of the jurisdiction cap, so the refusal
+    // above is the limit binding rather than the pool being closed outright.
+    f.engine.allocate(&f.admin, &f.pool_c, &(50 * USDC));
+}
+
+/// M2. Capital written down to zero used to have no way out of the adapter:
+/// `deallocate` is capped at booked exposure and there was none, and
+/// `set_counterparties` refuses an adapter holding USDC, so a single stroop of
+/// it closed the only repair path the contract had. Three generations of the
+/// private credit adapter were retired over exactly this.
+#[test]
+fn recover_brings_written_down_capital_home_and_releases_the_charge() {
+    let f = setup();
+    let lost = 300 * USDC;
+    f.engine.allocate(&f.admin, &f.pool_a, &lost);
+    f.engine
+        .write_down(&f.admin, &f.pool_a, &lost, &symbol_short!("DEFAULT"));
+
+    // The state the finding describes, asserted rather than assumed.
+    assert_eq!(f.engine.get_exposure(&f.pool_a), 0);
+    assert_eq!(f.usdc.balance(&f.pool_a), lost);
+    assert_eq!(
+        f.engine.try_deallocate(&f.pool_a, &lost),
+        Err(Ok(EngineError::ExposureUnderflow)),
+        "deallocate cannot reach it, which is the whole of the finding"
+    );
+    assert_eq!(
+        f.adapter_a
+            .try_set_counterparties(&f.admin, &f.engine.address, &f.vault_id),
+        Err(Ok(private_credit::AdapterError::NotEmpty)),
+        "and the cash blocks the repair path as well as being stuck itself"
+    );
+
+    let vault_before = f.usdc.balance(&f.vault_id);
+    let admin_before = f.usdc.balance(&f.admin);
+    assert_eq!(f.engine.recover(&f.admin, &f.pool_a), lost);
+
+    // It went to the Vault, and it went there because the destination is the
+    // adapter's stored Vault rather than anything a caller supplies.
+    assert_eq!(f.usdc.balance(&f.pool_a), 0);
+    assert_eq!(f.usdc.balance(&f.vault_id), vault_before + lost);
+    assert_eq!(
+        f.usdc.balance(&f.admin),
+        admin_before,
+        "there is no path from here to the caller's own balance"
+    );
+    assert_eq!(MockVaultClient::new(&f.e, &f.vault_id).recovered(), lost);
+
+    // The loss is released on both books, and with it the pool's cap charge.
+    assert_eq!(f.engine.written_off(), 0);
+    assert_eq!(f.engine.written_off_pool(&f.pool_a), 0);
+    assert_eq!(f.engine.charged_exposure(&f.pool_a), 0);
+
+    // A loss that did not happen stops consuming the limit, so the pool can be
+    // funded again. That is the release valve on the finding above, and it is
+    // the only one that does not require somebody to decide something.
+    f.engine.allocate(&f.admin, &f.pool_a, &(300 * USDC));
+
+    // And the repair path the stranded cash was blocking works again.
+    assert_eq!(
+        f.adapter_a
+            .try_set_counterparties(&f.admin, &f.engine.address, &f.vault_id),
+        Err(Ok(private_credit::AdapterError::NotEmpty)),
+        "still refused, but now because the adapter has a live position rather than a dead one"
+    );
+}
+
+/// M2, the surplus case. Interest paid above principal was stranded for the
+/// same reason as a recovery, without any write-down being involved at all:
+/// `deallocate` is capped at the exposure, so anything above it stayed.
+#[test]
+fn recover_moves_surplus_over_principal_even_with_no_loss_on_the_books() {
+    let f = setup();
+    f.engine.allocate(&f.admin, &f.pool_a, &(100 * USDC));
+    // The originator pays 10 USDC of interest into the adapter.
+    f.usdc.faucet(&f.pool_a, &(10 * USDC));
+
+    let vault_before = f.usdc.balance(&f.vault_id);
+    assert_eq!(f.engine.written_off(), 0);
+    assert_eq!(f.engine.recover(&f.admin, &f.pool_a), 10 * USDC);
+    assert_eq!(f.usdc.balance(&f.vault_id), vault_before + 10 * USDC);
+
+    // The position is untouched and still fully funded, which is why the amount
+    // is the surplus over the exposure rather than the balance.
+    assert_eq!(f.engine.get_exposure(&f.pool_a), 100 * USDC);
+    assert_eq!(f.usdc.balance(&f.pool_a), 100 * USDC);
+    f.engine.deallocate(&f.pool_a, &(100 * USDC));
+    assert_eq!(f.engine.get_exposure(&f.pool_a), 0);
+}
+
+/// M4. `write_down` needs one signature that satisfies this Engine's admin and
+/// the Vault's, and the two roles rotate independently. Rotating one and not
+/// the other leaves loss recognition impossible, which is the safe direction to
+/// fail in and was not a discoverable one: the call trapped on the Vault's own
+/// NotAdmin several frames down, and nothing reported the divergence in
+/// advance.
+#[test]
+fn a_half_finished_admin_rotation_refuses_by_name() {
+    let f = setup();
+    f.engine.allocate(&f.admin, &f.pool_a, &(100 * USDC));
+    assert!(f.engine.admin_aligned());
+    assert_eq!(f.engine.vault_admin(), f.admin);
+
+    // Rotate the Engine's admin and leave the Vault's where it is.
+    let successor = Address::generate(&f.e);
+    f.engine.propose_admin(&f.admin, &successor);
+    f.engine.accept_admin(&successor);
+    assert_eq!(f.engine.admin(), successor);
+
+    assert!(
+        !f.engine.admin_aligned(),
+        "the divergence has to be readable before an incident, not during one"
+    );
+    assert_eq!(
+        f.engine
+            .try_write_down(&successor, &f.pool_a, &(1 * USDC), &symbol_short!("DEFAULT")),
+        Err(Ok(EngineError::AdminMismatch)),
+        "a named refusal from the contract that knows why, not a trap from the one that does not"
+    );
+    assert_eq!(
+        f.engine.try_recover(&successor, &f.pool_a),
+        Err(Ok(EngineError::AdminMismatch)),
+        "recover needs the same pair of signatures and fails the same way"
+    );
+    // The old admin is not this Engine's admin any more either, so there is no
+    // key that works while the rotation is half finished.
+    assert_eq!(
+        f.engine
+            .try_write_down(&f.admin, &f.pool_a, &(1 * USDC), &symbol_short!("DEFAULT")),
+        Err(Ok(EngineError::NotAdmin))
+    );
+
+    // Finish the rotation the other way and loss recognition comes back.
+    f.engine.propose_admin(&successor, &f.admin);
+    f.engine.accept_admin(&f.admin);
+    assert!(f.engine.admin_aligned());
+    f.engine
+        .write_down(&f.admin, &f.pool_a, &(1 * USDC), &symbol_short!("DEFAULT"));
+}
+
+/// M5. `initialize` took the Vault on trust while `set_vault` interrogated it,
+/// so the one call that created the wiring was the one call that checked none
+/// of it. The constructor runs the check instead, and it runs it inside the
+/// deploy transaction, which is also what closes the window an `initialize`
+/// left open between deploying a contract and wiring it.
+#[test]
+#[should_panic(expected = "#419")]
+fn the_constructor_refuses_a_vault_that_is_not_one() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let admin = Address::generate(&e);
+    // An ordinary account cannot answer `admin()`, so it cannot be a Vault.
+    let not_a_vault = Address::generate(&e);
+    e.register(AllocationEngine, (admin, not_a_vault));
+}
+
+/// M5, the other half of the same asymmetry: an Engine whose Vault names a
+/// different admin can never recognise a loss, because `write_down` needs one
+/// signature that satisfies both. Refusing that wiring at deploy time is
+/// cheaper than discovering it during a default.
+#[test]
+#[should_panic(expected = "#419")]
+fn the_constructor_refuses_a_vault_with_a_different_admin() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let admin = Address::generate(&e);
+    let stranger = Address::generate(&e);
+
+    let usdc_id = e.register(MockUsdc, ());
+    MockUsdcClient::new(&e, &usdc_id).initialize(
+        &admin,
+        &7u32,
+        &String::from_str(&e, "USD Coin"),
+        &String::from_str(&e, "USDC"),
+    );
+    let vault_id = e.register(MockVault, ());
+    MockVaultClient::new(&e, &vault_id).initialize(&stranger, &usdc_id);
+
+    e.register(AllocationEngine, (admin, vault_id));
+}
+
+/// M5. The repair path has to refuse what the constructor refuses, or the
+/// constructor's check is one transaction away from being undone.
+#[test]
+fn set_vault_refuses_exactly_what_the_constructor_refuses() {
+    let f = setup();
+    assert_eq!(
+        f.engine.try_set_vault(&f.admin, &Address::generate(&f.e)),
+        Err(Ok(EngineError::VaultMismatch)),
+        "an ordinary account cannot answer admin(), so it cannot be a Vault"
+    );
+
+    let stranger = Address::generate(&f.e);
+    let other_vault = f.e.register(MockVault, ());
+    MockVaultClient::new(&f.e, &other_vault).initialize(&stranger, &f.usdc.address);
+    assert_eq!(
+        f.engine.try_set_vault(&f.admin, &other_vault),
+        Err(Ok(EngineError::VaultMismatch)),
+        "and a real Vault under a different admin is the state M4 describes"
+    );
+
+    // A Vault that answers correctly is accepted, so the check is a check and
+    // not a wall.
+    let good_vault = f.e.register(MockVault, ());
+    MockVaultClient::new(&f.e, &good_vault).initialize(&f.admin, &f.usdc.address);
+    f.engine.set_vault(&f.admin, &good_vault);
+    assert_eq!(f.engine.vault(), good_vault);
 }

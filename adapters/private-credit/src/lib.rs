@@ -48,6 +48,36 @@
 //! check is there as well: it is what stops an adapter being pointed at a Vault
 //! its Engine does not serve, and repaying capital to an address of the admin's
 //! choosing one allocation later.
+//!
+//! The constructor runs the same check. `initialize` was a separate call that
+//! took both addresses on trust, so the one call that created the wiring
+//! validated nothing while the call that repairs it validated everything, and
+//! the gap between the deploy and the wiring was a public window in which
+//! somebody else's `initialize` could land first. A constructor closes both:
+//! there is no window, and an adapter cannot come into existence pointed at a
+//! pair that does not match.
+//!
+//! # Getting stranded capital home
+//!
+//! `deallocate` is capped at booked exposure, which is right for a repayment
+//! and useless for everything else that can leave USDC sitting here. A position
+//! written down to zero leaves the cash with no exposure to return against.
+//! Interest paid above principal is surplus the book never expected. In both
+//! cases the money was stuck, and because `require_empty` refuses to repoint an
+//! adapter holding USDC, one stroop of it also closed the only repair path this
+//! contract has. That is not a hypothetical: three generations of this adapter
+//! were retired for exactly it, and the deployment record says so each time.
+//!
+//! `recover_surplus` is the way out, and it is shaped so that it cannot be a
+//! way to take anything. The destination is the Vault this adapter already
+//! stores, never an address the caller supplies, so there is no parameter for an
+//! admin to point somewhere else. The amount is not a parameter either: it is
+//! whatever the balance holds above booked exposure, so a live position cannot
+//! be swept out from under `deallocate`. Either the Engine or the admin may
+//! call it. The Engine is the ordinary path, because the Engine passes the
+//! recovery on to the Vault and the three books stay in step; the admin is the
+//! path that still works when the Engine an adapter is stuck to has itself been
+//! superseded, which is the state that caused the retirements.
 
 use soroban_sdk::{
     contract, contractclient, contracterror, contractevent, contractimpl, contracttype,
@@ -78,6 +108,10 @@ pub const MAX_SETTLEMENT_DAYS: u32 = 90;
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u32)]
 pub enum AdapterError {
+    /// Retired with `initialize`, which a `__constructor` replaced. The host
+    /// runs a constructor exactly once, inside the deploy, so there is no
+    /// second call for this to be the answer to. The number is kept rather than
+    /// reused so that an old error code never means something new.
     AlreadyInitialized = 600,
     NotInitialized = 601,
     InvalidAmount = 602,
@@ -95,6 +129,12 @@ pub enum AdapterError {
     NoPendingAdmin = 608,
     /// `accept_admin` was called by an address that was not the one proposed.
     NotPendingAdmin = 609,
+    /// `recover_surplus` was called by an address that is neither this
+    /// adapter's Engine nor its admin.
+    NotAuthorized = 610,
+    /// The adapter holds nothing above its booked exposure, so there is nothing
+    /// to send home.
+    NothingToRecover = 611,
 }
 
 #[derive(Clone)]
@@ -132,6 +172,18 @@ pub struct WrittenDown {
     pub exposure: i128,
 }
 
+/// Emitted when USDC held above the booked exposure is sent home. It is the
+/// only way capital leaves this adapter without the exposure moving, so it
+/// belongs in the stream, and it carries the destination so that an observer can
+/// see it was the stored Vault rather than take it on trust.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SurplusRecovered {
+    #[topic]
+    pub vault: Address,
+    pub amount: i128,
+}
+
 /// Emitted when an admin handover is proposed. The role has not moved yet: this
 /// is the first half of a two step transfer, and it is in the event stream so
 /// that a pending handover is visible to anyone watching rather than only to
@@ -156,17 +208,22 @@ pub struct PrivateCreditAdapter;
 
 #[contractimpl]
 impl PrivateCreditAdapter {
-    pub fn initialize(
+    /// Wire the adapter to the Engine that may move its capital and the Vault
+    /// it repays, in the transaction that deploys it.
+    ///
+    /// The pair is checked here exactly as `set_counterparties` checks it: the
+    /// Engine has to answer that it governs the Vault. `initialize` took both
+    /// on trust and could be front-run besides, which made the call that
+    /// created the wiring the only one that validated none of it.
+    pub fn __constructor(
         e: Env,
         admin: Address,
         engine: Address,
         vault: Address,
         usdc: Address,
     ) -> Result<(), AdapterError> {
-        if e.storage().instance().has(&Cfg::Engine) {
-            return Err(AdapterError::AlreadyInitialized);
-        }
         admin.require_auth();
+        Self::require_symmetry(&e, &engine, &vault)?;
         e.storage().instance().set(&Cfg::Admin, &admin);
         e.storage().instance().set(&Cfg::Engine, &engine);
         e.storage().instance().set(&Cfg::Vault, &vault);
@@ -200,18 +257,7 @@ impl PrivateCreditAdapter {
     ) -> Result<(), AdapterError> {
         Self::require_admin(&e, &admin)?;
         Self::require_empty(&e)?;
-        // What this rules out is an address that cannot answer the question,
-        // or answers it with a different Vault: a plain account, and a real
-        // Engine that governs somebody else. What it cannot rule out is a
-        // contract built to answer it, which returns whatever address it was
-        // written to return and passes without difficulty. The check is worth
-        // running because the realistic failure here is a mis-wiring rather
-        // than an attack, and this is admin gated either way; it is not worth
-        // reading as proof that the counterparty is what it says it is.
-        match EngineClient::new(&e, &engine).try_vault() {
-            Ok(Ok(governed)) if governed == vault => {}
-            _ => return Err(AdapterError::CounterpartyMismatch),
-        }
+        Self::require_symmetry(&e, &engine, &vault)?;
         e.storage().instance().set(&Cfg::Engine, &engine);
         e.storage().instance().set(&Cfg::Vault, &vault);
         Self::bump(&e);
@@ -294,6 +340,75 @@ impl PrivateCreditAdapter {
         }
         .publish(&e);
         Ok(())
+    }
+
+    /// Send everything the adapter holds above its booked exposure to the Vault
+    /// it names, and return how much that was.
+    ///
+    /// This is the way home for capital `deallocate` cannot move: a recovery on
+    /// a position that was written down to zero, and interest paid above
+    /// principal. Both used to stay here forever, and because
+    /// `set_counterparties` refuses an adapter with a non-zero balance, both
+    /// also bricked the adapter's only repair path. It cost three redeployments
+    /// of this contract before it was worth fixing.
+    ///
+    /// It cannot be used to take anything, and the reason is structural rather
+    /// than a permission check. There is no destination parameter: the USDC goes
+    /// to the Vault this adapter already stores, which `register_pool` and
+    /// `set_counterparties` have both checked is the Vault its Engine governs.
+    /// There is no amount parameter either: it is the balance less the booked
+    /// exposure, so capital backing a live position is never swept and
+    /// `deallocate` stays funded for exactly what it owes.
+    ///
+    /// Either the Engine or the admin may call it. The Engine is the ordinary
+    /// path, and the only one that keeps the books in step, because the Engine
+    /// passes the amount to the Vault, which verifies the arrival and releases
+    /// the loss against it. The admin path exists because the failure this fixes
+    /// is an adapter stuck to counterparties that have been superseded, and
+    /// requiring a working Engine to unstick it would be requiring the thing
+    /// that is broken. Taken that way the cash still reaches the Vault; what it
+    /// does not do is update anybody's book, which is the conservative
+    /// direction and is why it is the fallback rather than the path.
+    pub fn recover_surplus(e: Env, caller: Address) -> Result<i128, AdapterError> {
+        let engine: Address = e
+            .storage()
+            .instance()
+            .get(&Cfg::Engine)
+            .ok_or(AdapterError::NotInitialized)?;
+        let admin: Address = e
+            .storage()
+            .instance()
+            .get(&Cfg::Admin)
+            .ok_or(AdapterError::NotInitialized)?;
+        if caller != engine && caller != admin {
+            return Err(AdapterError::NotAuthorized);
+        }
+        caller.require_auth();
+
+        let usdc: Address = e
+            .storage()
+            .instance()
+            .get(&Cfg::Usdc)
+            .ok_or(AdapterError::NotInitialized)?;
+        let vault: Address = e
+            .storage()
+            .instance()
+            .get(&Cfg::Vault)
+            .ok_or(AdapterError::NotInitialized)?;
+        let token = TokenClient::new(&e, &usdc);
+        let surplus =
+            token.balance(&e.current_contract_address()) - Self::get_exposure(e.clone());
+        if surplus <= 0 {
+            return Err(AdapterError::NothingToRecover);
+        }
+        token.transfer(&e.current_contract_address(), &vault, &surplus);
+        Self::bump(&e);
+        SurplusRecovered {
+            vault,
+            amount: surplus,
+        }
+        .publish(&e);
+        Ok(surplus)
     }
 
     /// Capital currently deployed into this pool, in USDC.
@@ -428,6 +543,23 @@ impl PrivateCreditAdapter {
             return Err(AdapterError::NotEmpty);
         }
         Ok(())
+    }
+
+    /// The Engine offered has to answer that it governs the Vault offered.
+    ///
+    /// What this rules out is an address that cannot answer the question, or
+    /// answers it with a different Vault: a plain account, and a real Engine
+    /// that governs somebody else. What it cannot rule out is a contract built
+    /// to answer it, which returns whatever address it was written to return and
+    /// passes without difficulty. The check is worth running because the
+    /// realistic failure here is a mis-wiring rather than an attack, and both
+    /// callers are admin gated either way; it is not worth reading as proof that
+    /// the counterparty is what it says it is.
+    fn require_symmetry(e: &Env, engine: &Address, vault: &Address) -> Result<(), AdapterError> {
+        match EngineClient::new(e, engine).try_vault() {
+            Ok(Ok(governed)) if governed == *vault => Ok(()),
+            _ => Err(AdapterError::CounterpartyMismatch),
+        }
     }
 
     fn require_engine(e: &Env) -> Result<(), AdapterError> {

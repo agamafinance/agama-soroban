@@ -26,9 +26,8 @@ fn setup() -> Fix {
     let admin = Address::generate(&e);
     let reporter = Address::generate(&e);
 
-    let id = e.register(OracleAdapter, ());
+    let id = e.register(OracleAdapter, (admin.clone(),));
     let oracle = OracleAdapterClient::new(&e, &id);
-    oracle.initialize(&admin);
     oracle.add_reporter(&admin, &reporter);
 
     oracle.register_feed(
@@ -427,19 +426,6 @@ fn non_admin_cannot_manage_reporters_or_feeds() {
         Err(Ok(OracleError::NotAdmin))
     );
 }
-
-#[test]
-fn cannot_be_reinitialized() {
-    let f = setup();
-    let attacker = Address::generate(&f.e);
-    assert_eq!(
-        f.oracle.try_initialize(&attacker),
-        Err(Ok(OracleError::AlreadyInitialized))
-    );
-    assert_eq!(f.oracle.admin(), f.admin);
-}
-
-
 
 /// The first value for a feed had nothing to be compared against, so it was
 /// accepted unconditionally: `push_nav(i128::MAX)` landed, and every deviation

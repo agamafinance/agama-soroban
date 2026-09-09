@@ -109,6 +109,10 @@ const ONE: i128 = 10_000_000; // 1.0 at 7 decimals, the share-price scale
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u32)]
 pub enum StakingError {
+    /// Retired with `initialize`, which a `__constructor` replaced. The host
+    /// runs a constructor exactly once, inside the deploy, so there is no
+    /// second call for this to be the answer to. The number is kept rather than
+    /// reused so that an old error code never means something new.
     AlreadyInitialized = 800,
     NotInitialized = 801,
     NotAdmin = 802,
@@ -140,7 +144,8 @@ enum Cfg {
     Nav,
     Cooldown,
     Allocations,
-    Stakes,    /// Half finished admin handover: proposed, not yet accepted.
+    Stakes,
+    /// Half finished admin handover: proposed, not yet accepted.
     PendingAdmin,
 }
 
@@ -195,7 +200,16 @@ impl Staking {
     /// a second time, name themselves admin and repoint the staked asset, which
     /// between them are enough to strand every share against a token the
     /// contract does not hold.
-    pub fn initialize(
+    /// Record the admin, the agUSD this contract accepts, the unstake cooldown and the sagUSD SEP-41 metadata, in the transaction that deploys it.
+    ///
+    /// This was `initialize`, a separate call, and being separate was the
+    /// problem. A contract sitting deployed and uninitialized is a contract
+    /// whose admin is whoever sends the next transaction, and the deployer's
+    /// own call is public before it is mined, so it can be front-run by an
+    /// identical one naming somebody else. On this contract that is the authority over the yield the share price is moved by. A constructor runs inside
+    /// the deploy, so there is no window to race, and the host runs it exactly
+    /// once, which is what used to need a re-initialization guard.
+    pub fn __constructor(
         e: Env,
         admin: Address,
         agusd: Address,
@@ -204,9 +218,6 @@ impl Staking {
         name: String,
         symbol: String,
     ) -> Result<(), StakingError> {
-        if e.storage().instance().has(&Cfg::Admin) {
-            return Err(StakingError::AlreadyInitialized);
-        }
         admin.require_auth();
         e.storage().instance().set(&Cfg::Admin, &admin);
         e.storage().instance().set(&Cfg::AgUsd, &agusd);

@@ -61,10 +61,30 @@
 //! balance, because the gross balance counts money that has already been
 //! promised to somebody.
 //!
+//! # A claim outlives its own TTL, and something has to say so
+//!
+//! Claim records are persistent and bumped for 90 days when they are written,
+//! and they are only ever written when something happens to them. The queue is
+//! allowed to stall by design, the private credit book settles at D+15 to D+90,
+//! and a claim that is waiting on liquidity is a claim nothing is writing to, so
+//! a head claim outliving its TTL is an ordinary event and not an exotic one.
+//! An archived persistent entry cannot be read at all until somebody pays to
+//! restore it, so `read_claim` fails, and `settle_withdrawal` and
+//! `claim_withdrawal` both fail with it: the queue stops at the head until an
+//! out-of-band `RestoreFootprint` puts it back.
+//!
+//! The architecture document said there was no claim expiry and that a backend
+//! keeper handled the bumps. The first half was true only in the sense that
+//! nothing expires a claim on purpose, and the second half described a keeper
+//! that had nothing to call. `bump_claim` is what it should have been calling:
+//! unauthenticated, because paying rent on somebody else's claim record is not
+//! an attack, and it cannot shorten a TTL or change a claim, only postpone the
+//! archival of one.
+//!
 //! # The two pointers that decide whether the Vault works at all
 //!
-//! `initialize` writes the agUSD address and the Allocation Engine address,
-//! and the Vault is not upgradeable, so both of them used to be one way doors.
+//! `initialize` wrote the agUSD address and the Allocation Engine address, and
+//! the Vault is not upgradeable, so both of them used to be one way doors.
 //! Both of them have now been through one: the first Vault pointed at a token
 //! with no `mint` and could never issue agUSD, and the second pointed at an
 //! Engine that governs a different Vault and could never release a dollar of
@@ -72,10 +92,21 @@
 //! Vault as its only minter, the second one cost two contracts rather than
 //! one.
 //!
-//! `set_agusd` and `set_engine` are that lesson. Both are admin gated, for the
-//! same reason re-initialization is blocked: between them they are the
-//! authority to mint against the Vault's reserves and the authority to release
-//! them. Both stop working once the contract holds state that the move would
+//! `set_agusd` and `set_engine` are that lesson, and the constructor is the
+//! other half of it. `initialize` took the Engine address on trust while
+//! `set_engine` interrogated it, so the one call that created the wiring ran
+//! none of the checks the call that repairs it runs, on a protocol whose
+//! deployment record is a list of mis-wirings. It was also front-runnable:
+//! between the transaction that deployed the Vault and the transaction that
+//! initialized it, anyone could send the same call naming themselves admin.
+//! Both are gone. The constructor runs inside the deploy, so there is no window,
+//! and it does not take an Engine at all: the Engine arrives through
+//! `set_engine`, which means every Engine this Vault has ever pointed at got
+//! there through the validated door.
+//!
+//! Both setters are admin gated, for the same reason re-initialization was
+//! blocked: between them they are the authority to mint against the Vault's
+//! reserves and the authority to release them. Both stop working once the contract holds state that the move would
 //! invalidate, which is the only version of a setter worth having on a
 //! custodian. For agUSD that line is the first deposit, because repointing a
 //! Vault that has already issued agUSD would strand the holders against a
@@ -105,7 +136,8 @@
 //!    only by a repayment it can see in its own balance or by an admin
 //!    authorized write-down
 //!  - `outstanding_liabilities`, the queued withdrawals it already owes
-//!  - `recognised_losses`, everything it has written off, which never falls
+//!  - `recognised_losses`, everything it has written off and not recovered,
+//!    which no write-down and no allocation can lower
 //!  - `reserve_floor_bps`, its own copy of the floor, admin set and fail closed
 //!    at 100% until it is configured
 //!
@@ -185,6 +217,11 @@ pub trait ShareToken {
     fn mint(e: Env, to: Address, amount: i128);
     fn burn(e: Env, from: Address, amount: i128);
     fn balance(e: Env, id: Address) -> i128;
+    /// The only address the token will create supply for. `set_agusd` reads it,
+    /// because a Vault that points at a token which does not name it back is a
+    /// Vault whose `deposit` cannot mint, and that is not a hypothetical: it is
+    /// how the first Vault was lost.
+    fn minter(e: Env) -> Address;
 }
 
 /// The Allocation Engine, as seen from the Vault.
@@ -208,6 +245,10 @@ pub trait OracleInterface {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u32)]
 pub enum VaultError {
+    /// Retired with `initialize`, which a `__constructor` replaced. The host
+    /// runs a constructor exactly once, inside the deploy, so there is no
+    /// second call for this to be the answer to. The number is kept rather than
+    /// reused so that an old error code never means something new.
     AlreadyInitialized = 300,
     NotInitialized = 301,
     NotAdmin = 302,
@@ -251,6 +292,13 @@ pub enum VaultError {
     /// The Vault holds the cash and tried to send it, and the token refused to
     /// deliver it to the claim's owner.
     PaymentRejected = 322,
+    /// A recovery was reported that the Vault cannot see in its own balance.
+    RecoveryNotReceived = 323,
+    /// The proposed agUSD does not name this Vault as its minter, so this Vault
+    /// could not mint against a deposit into it.
+    AgUsdMismatch = 324,
+    /// The address given as USDC does not answer the token interface.
+    InvalidUsdc = 325,
 }
 
 /// A queued withdrawal. The agUSD is burned at request time, so this record is
@@ -351,26 +399,50 @@ pub struct Vault;
 
 #[contractimpl]
 impl Vault {
-    /// Wire the Vault to its token contracts and to the Allocation Engine.
+    /// Wire the Vault to its token contracts, in the transaction that deploys
+    /// it, and deliberately not to an Allocation Engine.
     ///
-    /// Re-initialization is rejected. Without that guard, anyone able to call
-    /// `initialize` a second time could repoint `agusd_token` at a contract
-    /// they control and mint against the Vault's reserves.
-    pub fn initialize(
-        e: Env,
-        admin: Address,
-        usdc_token: Address,
-        agusd_token: Address,
-        allocation_engine: Address,
-    ) -> Result<(), VaultError> {
-        if e.storage().instance().has(&Cfg::Admin) {
-            return Err(VaultError::AlreadyInitialized);
-        }
+    /// This was `initialize`. Being a separate call made it front-runnable: a
+    /// deployed and uninitialized Vault is a Vault whose admin is whoever sends
+    /// the next transaction, and the deployer's own call is public before it is
+    /// mined. A constructor runs inside the deploy, so the window does not
+    /// exist. Re-initialization is not blocked here because the host runs a
+    /// constructor exactly once.
+    ///
+    /// The Engine and agUSD are absent on purpose rather than by omission.
+    /// `initialize` wrote both addresses without asking either of them
+    /// anything, while `set_engine` and `set_agusd` interrogate them, so the
+    /// call that created the wiring was the one call that validated none of it.
+    /// Neither can be validated here, and for the same reason in both cases:
+    /// each is constructed against this Vault's address and so cannot exist
+    /// before it does. The Engine names the Vault it governs and agUSD names
+    /// the Vault it mints for, and a Vault cannot be told about a contract that
+    /// is waiting to be told about the Vault.
+    ///
+    /// So the Vault ships wired to neither, refuses to mint and refuses to
+    /// release until it has both, and takes each through the door that checks.
+    /// `set_engine` requires the incoming Engine to answer that it governs this
+    /// Vault and to arrive with an empty book; `set_agusd` requires the incoming
+    /// token to name this Vault as its minter. Every counterparty this Vault
+    /// has ever pointed at came through a check, which is exactly what
+    /// `initialize` could not say and what the first two Vaults were lost for.
+    ///
+    /// USDC is the one pointer that arrives here, because it is the one that is
+    /// not circular: it exists before any of this and it is nobody's
+    /// counterparty. It is also the one pointer with no setter at all, which
+    /// makes getting it right the first time the only chance there is, so it is
+    /// checked to the extent an address can be: it has to answer the token
+    /// interface, which an ordinary account cannot.
+    pub fn __constructor(e: Env, admin: Address, usdc_token: Address) -> Result<(), VaultError> {
         admin.require_auth();
+        if TokenClient::new(&e, &usdc_token)
+            .try_balance(&e.current_contract_address())
+            .is_err()
+        {
+            return Err(VaultError::InvalidUsdc);
+        }
         e.storage().instance().set(&Cfg::Admin, &admin);
         e.storage().instance().set(&Cfg::Usdc, &usdc_token);
-        e.storage().instance().set(&Cfg::AgUsd, &agusd_token);
-        e.storage().instance().set(&Cfg::Engine, &allocation_engine);
         e.storage().instance().set(&Cfg::Paused, &false);
         // Claim ids start at 1 so that 0 can never be a valid claim.
         e.storage().instance().set(&Cfg::QueueHead, &1u64);
@@ -438,10 +510,22 @@ impl Vault {
     /// Vault repointed while agUSD is outstanding would leave holders backed
     /// by a token it no longer mints or burns, and they would find out at the
     /// withdrawal queue. Before the first deposit there is nothing to strand.
+    ///
+    /// It is also the only door the agUSD pointer has, because the constructor
+    /// no longer takes one, and it therefore runs the check the constructor
+    /// cannot: the token has to name this Vault as its minter. The first Vault
+    /// ever deployed here pointed at a token that exposed no `mint` and could
+    /// never issue a unit of agUSD, and it cost a redeployment to find out. A
+    /// token that does not name this Vault back is that failure again, and this
+    /// is one call that can rule it out.
     pub fn set_agusd(e: Env, admin: Address, agusd_token: Address) -> Result<(), VaultError> {
         Self::require_admin(&e, &admin)?;
         if Self::deposits(e.clone()) > 0 {
             return Err(VaultError::DepositsExist);
+        }
+        match AgUsdClient::new(&e, &agusd_token).try_minter() {
+            Ok(Ok(minter)) if minter == e.current_contract_address() => {}
+            _ => return Err(VaultError::AgUsdMismatch),
         }
         e.storage().instance().set(&Cfg::AgUsd, &agusd_token);
         Self::bump_instance(&e);
@@ -509,9 +593,11 @@ impl Vault {
         allocation_engine: Address,
     ) -> Result<(), VaultError> {
         Self::require_admin(&e, &admin)?;
-        if !e.storage().instance().has(&Cfg::Engine) {
-            return Err(VaultError::NotInitialized);
-        }
+        // No check that an Engine is already stored: the constructor
+        // deliberately does not write one, so the first call to this function is
+        // the wiring rather than a repair. `require_admin` is what rules out an
+        // unconstructed contract.
+        //
         // This Vault's own record of what it has released and not seen back.
         // Nothing else is consulted: the outgoing Engine has no say in whether
         // it is replaced.
@@ -757,6 +843,10 @@ impl Vault {
         let delivered = Self::deliver(&e, claim_id, claim)?;
         e.storage().instance().set(&Cfg::QueueHead, &(claim_id + 1));
         if !delivered {
+            // Nothing was written about the payment, which means nothing bumped
+            // the claim's TTL either, and this is the claim most likely to sit
+            // unwritten for a long time. Postpone its archival explicitly.
+            Self::bump_claim(e.clone(), claim_id)?;
             Self::set_deferred(&e, claim_id);
             WithdrawalDeferred {
                 user: owner,
@@ -907,8 +997,9 @@ impl Vault {
     /// ratio is overstated by exactly the size of the loss.
     ///
     /// What the loss must not do is buy the caller anything. The amount is
-    /// added to `recognised_losses`, which never falls, and which stays in the
-    /// denominator of the reserve floor for the life of the contract. Without
+    /// added to `recognised_losses`, which no write-down and no allocation can
+    /// lower, and which stays in the denominator of the reserve floor until the
+    /// capital behind it actually comes back through `record_recovery`. Without
     /// that, this call lowered the base the floor is a percentage of, so
     /// alternating `allocate` and `write_down` walked the whole of the reserves
     /// out of the Vault a slice at a time with every individual call inside the
@@ -941,6 +1032,99 @@ impl Vault {
             recognised_losses: losses,
         }
         .publish(&e);
+        Ok(())
+    }
+
+    /// Book capital that had already been written off and has come back.
+    ///
+    /// A write-down is a forecast and this is the receipt that contradicts it.
+    /// It is not `record_repayment` and must not be: that call is bounded by
+    /// `deployed_capital`, and a position written down to zero is not on the
+    /// deployed book any more, which is precisely why the cash had nowhere to
+    /// go and sat in the adapter until the adapter had to be retired.
+    ///
+    /// Two authorizations, the same pair `record_writedown` needs and for the
+    /// same reason: this call moves `recognised_losses`, and that number is the
+    /// term the reserve floor's base is built on.
+    ///
+    /// The arithmetic is what makes it safe rather than the signatures. The
+    /// Vault refuses any amount it cannot see arriving in its own balance, so a
+    /// recovery cannot be asserted; and the loss it releases is matched, stroop
+    /// for stroop, by cash that has just landed in free reserves. `floor_base`
+    /// is free reserves plus deployed capital plus recognised losses, so it is
+    /// unchanged when the recovery is applied against a loss and rises when it
+    /// exceeds one. It never falls. That is the whole of the first Critical
+    /// finding's invariant, preserved by a call that undoes a write-down: what
+    /// a write-down cannot buy, a recovery cannot buy back.
+    ///
+    /// Surplus above the losses on the book is not an error. Interest is a
+    /// recovery that was never written off; it books as reserves and lifts the
+    /// base, and the floor asks for its share of it like any other asset.
+    pub fn record_recovery(e: Env, admin: Address, amount: i128) -> Result<(), VaultError> {
+        let engine: Address = e
+            .storage()
+            .instance()
+            .get(&Cfg::Engine)
+            .ok_or(VaultError::NotInitialized)?;
+        engine.require_auth();
+        Self::require_admin(&e, &admin)?;
+        if amount <= 0 {
+            return Err(VaultError::InvalidAmount);
+        }
+        // The same test `record_repayment` applies, and it is the reason
+        // neither call can be talked into anything: the balance the Vault can
+        // account for from its own flows, subtracted from the balance it
+        // actually holds, is what arrived without being announced.
+        let unaccounted = Self::idle_reserves(e.clone()) - Self::booked_reserves(e.clone());
+        if amount > unaccounted {
+            return Err(VaultError::RecoveryNotReceived);
+        }
+
+        let losses = Self::recognised_losses(e.clone());
+        let applied = if amount < losses { amount } else { losses };
+        e.storage()
+            .instance()
+            .set(&Cfg::WrittenOff, &(losses - applied));
+        Self::add_booked(&e, amount);
+        Self::bump_instance(&e);
+        RecoveryRecorded {
+            amount,
+            applied_to_losses: applied,
+            recognised_losses: losses - applied,
+        }
+        .publish(&e);
+        Ok(())
+    }
+
+    /// Postpone the archival of a claim record. Callable by anyone.
+    ///
+    /// Claims are persistent and bumped only when they are written, and a claim
+    /// waiting on liquidity behind a queue that is allowed to stall is a claim
+    /// nothing writes to. The book behind it settles at D+15 to D+90 and the
+    /// TTL is 90 days, so outliving it is an ordinary event. An archived
+    /// persistent entry cannot be read, so `read_claim` fails and takes
+    /// `settle_withdrawal` and `claim_withdrawal` with it: the whole queue stops
+    /// at the head until somebody pays for a `RestoreFootprint`. The
+    /// architecture document promised a keeper doing periodic bumps and no
+    /// contract exposed anything for it to call. This is that entry point.
+    ///
+    /// Unauthenticated for the same reason `settle_withdrawal` is: the caller
+    /// chooses nothing. There is no amount, no recipient and no claim state to
+    /// touch, the only effect is to postpone an archival, and the caller pays
+    /// the rent for it. Extending a stranger's TTL is a donation, not an attack,
+    /// and it cannot be used to shorten one.
+    ///
+    /// Preventive, not curative. It has to be called before the entry archives,
+    /// because reading an archived entry is exactly what cannot be done; once it
+    /// has gone, a `RestoreFootprint` is still the only way back. What it fixes
+    /// is that keeping the queue readable is now a transaction anybody can send
+    /// rather than an operation nothing in the protocol performs.
+    pub fn bump_claim(e: Env, claim_id: u64) -> Result<(), VaultError> {
+        let claim = Self::read_claim(&e, claim_id)?;
+        Self::write_claim(&e, claim_id, &claim);
+        if Self::is_deferred(e.clone(), claim_id) {
+            Self::set_deferred(&e, claim_id);
+        }
         Ok(())
     }
 
@@ -1082,8 +1266,7 @@ impl Vault {
         Ok(Self::free_reserves(e.clone()) + Self::deployed_capital(e))
     }
 
-    /// Deployed capital written off since deployment, cumulative. It only ever
-    /// rises, and there is no entry point that lowers it.
+    /// Deployed capital written off and not recovered.
     ///
     /// It is not an asset and `get_net_assets` correctly excludes it. It exists
     /// because the reserve floor needs a base that a write-down cannot move: a
@@ -1091,6 +1274,14 @@ impl Vault {
     /// falls every time the admin recognises a loss, real or otherwise, and
     /// that is enough to walk the whole of the reserves out of the contract in
     /// slices that are each individually within the floor.
+    ///
+    /// It rises on a write-down and falls in exactly one way, `record_recovery`,
+    /// which requires the cash to have arrived in this Vault's own balance. That
+    /// is not a loosening of the rule above, it is the rule: a write-down cannot
+    /// lower this number, and a recovery lowers it only by putting the same
+    /// number into free reserves in the same transaction, so `floor_base` never
+    /// falls either way. What a write-down cannot buy, a recovery cannot buy
+    /// back.
     pub fn recognised_losses(e: Env) -> i128 {
         e.storage().instance().get(&Cfg::WrittenOff).unwrap_or(0)
     }
@@ -1422,6 +1613,21 @@ pub struct WriteDownRecorded {
     /// and it stays in the denominator of the reserve floor, so the event
     /// carries the number that says how much of the floor's base is a memory of
     /// capital rather than capital.
+    pub recognised_losses: i128,
+}
+
+/// Emitted when capital that had been written off comes back and the Vault has
+/// verified it arrived. It is the only way `recognised_losses` falls, so it
+/// belongs in the stream next to the write-down it reverses.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecoveryRecorded {
+    /// USDC that arrived.
+    pub amount: i128,
+    /// How much of it was applied against recognised losses. Anything above
+    /// that is surplus over principal and was never a loss.
+    pub applied_to_losses: i128,
+    /// Losses still on the books after this recovery.
     pub recognised_losses: i128,
 }
 

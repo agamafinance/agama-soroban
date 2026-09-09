@@ -84,6 +84,10 @@ use token as tok;
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u32)]
 pub enum AgUsdCoreError {
+    /// Retired with `initialize`, which a `__constructor` replaced. The host
+    /// runs a constructor exactly once, inside the deploy, so there is no
+    /// second call for this to be the answer to. The number is kept rather than
+    /// reused so that an old error code never means something new.
     AlreadyInitialized = 200,
     NotInitialized = 201,
     /// Someone other than the Vault tried to mint.
@@ -106,7 +110,8 @@ pub enum AgUsdCoreError {
 enum Cfg {
     Admin,
     Minter,
-    Mints,    /// Half finished admin handover: proposed, not yet accepted.
+    Mints,
+    /// Half finished admin handover: proposed, not yet accepted.
     PendingAdmin,
 }
 
@@ -146,14 +151,16 @@ pub struct AgUsdCore;
 
 #[contractimpl]
 impl AgUsdCore {
-    /// Record the admin and the minting authority, and set the SEP-41
-    /// metadata.
+    /// Record the admin and the minting authority, and set the SEP-41 metadata, in the transaction that deploys it.
     ///
-    /// Re-initialization is rejected. Without that guard anyone could call
-    /// `initialize` a second time, name themselves minter, and print against a
-    /// book they do not hold, which is the whole security property of this
-    /// contract gone in one transaction.
-    pub fn initialize(
+    /// This was `initialize`, a separate call, and being separate was the
+    /// problem. A contract sitting deployed and uninitialized is a contract
+    /// whose admin, and whose minter, is whoever sends the next transaction, and the deployer's
+    /// own call is public before it is mined, so it can be front-run by an
+    /// identical one naming somebody else. On this contract that is the authority to create supply, so the window was worth closing on its own terms and not only for consistency. A constructor runs inside
+    /// the deploy, so there is no window to race, and the host runs it exactly
+    /// once, which is what used to need a re-initialization guard.
+    pub fn __constructor(
         e: Env,
         admin: Address,
         minter: Address,
@@ -161,9 +168,6 @@ impl AgUsdCore {
         name: String,
         symbol: String,
     ) -> Result<(), AgUsdCoreError> {
-        if e.storage().instance().has(&Cfg::Minter) {
-            return Err(AgUsdCoreError::AlreadyInitialized);
-        }
         admin.require_auth();
         e.storage().instance().set(&Cfg::Admin, &admin);
         e.storage().instance().set(&Cfg::Minter, &minter);

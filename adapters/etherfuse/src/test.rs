@@ -33,15 +33,15 @@ struct Fix {
     admin: Address,
 }
 
-/// The Engine and the Vault are plain addresses here: this crate is testing the
-/// adapter's own guards, and the Engine to adapter wiring is covered end to end
-/// in the allocation-engine tests.
+/// The Vault is a plain address here: this crate is testing the adapter's own
+/// guards, and the Engine to adapter wiring is covered end to end in the
+/// allocation-engine tests. The Engine is the smallest contract that can answer
+/// the one question the adapter asks of it.
 fn setup() -> Fix {
     let e = Env::default();
     e.mock_all_auths();
 
     let admin = Address::generate(&e);
-    let engine = Address::generate(&e);
     let vault = Address::generate(&e);
 
     let usdc_id = e.register(MockUsdc, ());
@@ -53,9 +53,21 @@ fn setup() -> Fix {
         &String::from_str(&e, "USDC"),
     );
 
-    let adapter_id = e.register(EtherfuseAdapter, ());
+    // The constructor interrogates the Engine, so the Engine has to be a
+    // contract that answers `vault()` with the Vault this adapter is given.
+    let engine = e.register(MockEngine, ());
+    MockEngineClient::new(&e, &engine).initialize(&vault);
+
+    let adapter_id = e.register(
+        EtherfuseAdapter,
+        (
+            admin.clone(),
+            engine.clone(),
+            vault.clone(),
+            usdc_id.clone(),
+        ),
+    );
     let adapter = EtherfuseAdapterClient::new(&e, &adapter_id);
-    adapter.initialize(&admin, &engine, &vault, &usdc_id);
 
     Fix {
         e,
@@ -138,17 +150,6 @@ fn only_the_engine_can_move_capital() {
     assert!(f.adapter.try_allocate(&(100 * USDC)).is_err());
     assert!(f.adapter.try_deallocate(&(100 * USDC)).is_err());
     assert_eq!(f.adapter.get_exposure(), 500 * USDC);
-}
-
-#[test]
-fn cannot_be_reinitialized() {
-    let f = setup();
-    let attacker = Address::generate(&f.e);
-    assert!(f
-        .adapter
-        .try_initialize(&attacker, &attacker, &attacker, &attacker)
-        .is_err());
-    assert_eq!(f.adapter.admin(), f.admin);
 }
 
 #[test]
@@ -318,5 +319,193 @@ fn the_admin_role_moves_only_to_an_address_that_signs_for_it() {
     assert_eq!(
         f.adapter.try_accept_admin(&successor),
         Err(Ok(AdapterError::NoPendingAdmin))
+    );
+}
+
+/// The sweep is the surplus and only the surplus, which is what makes it a way
+/// home for stranded capital rather than a way to empty a live position. There
+/// is no amount parameter to get wrong: what leaves is the balance less the
+/// booked exposure, so `deallocate` stays funded for exactly what it owes.
+#[test]
+fn recover_surplus_sends_the_surplus_home_and_leaves_the_position_funded() {
+    let f = setup();
+    // The Vault has released 500 USDC and the Engine has booked it.
+    f.usdc.faucet(&f.adapter_id, &(500 * USDC));
+    f.adapter.allocate(&(500 * USDC));
+
+    // Interest above principal arrives from the originator: cash the book never
+    // expected, with no exposure for `deallocate` to return it against.
+    f.usdc.faucet(&f.adapter_id, &(40 * USDC));
+    assert_eq!(f.usdc.balance(&f.adapter_id), 540 * USDC);
+
+    let engine = f.adapter.engine();
+    assert_eq!(f.adapter.recover_surplus(&engine), 40 * USDC);
+
+    // Exactly the surplus moved, it went to the Vault this adapter stores, and
+    // the book did not shift by a stroop: a recovery is not a repayment.
+    assert_eq!(f.usdc.balance(&f.vault), 40 * USDC);
+    assert_eq!(f.usdc.balance(&f.adapter_id), 500 * USDC);
+    assert_eq!(f.adapter.get_exposure(), 500 * USDC);
+
+    // Which is the whole reason the amount is the surplus rather than the
+    // balance. The position is still fully funded, so it can still be repaid in
+    // full through the ordinary path.
+    f.adapter.deallocate(&(500 * USDC));
+    assert_eq!(f.adapter.get_exposure(), 0);
+    assert_eq!(f.usdc.balance(&f.vault), 540 * USDC);
+    assert_eq!(f.usdc.balance(&f.adapter_id), 0);
+}
+
+/// There is no destination parameter, so the admin path cannot be a path to
+/// anywhere except the Vault the adapter already names. That is structural
+/// rather than a permission check, and it is what makes it safe to let the
+/// admin call this at all.
+#[test]
+fn the_recovery_has_no_destination_for_the_admin_to_choose() {
+    let f = setup();
+    // A position written down to zero, whose cash then came back. There is no
+    // exposure left for `deallocate` to return it against, and a single stroop
+    // of it also closes `set_counterparties`. This is the state that retired
+    // three generations of this adapter.
+    f.adapter.allocate(&(200 * USDC));
+    f.adapter.write_down(&(200 * USDC));
+    f.usdc.faucet(&f.adapter_id, &(200 * USDC));
+    assert_eq!(f.adapter.get_exposure(), 0);
+    assert_eq!(f.usdc.balance(&f.admin), 0);
+
+    assert_eq!(f.adapter.recover_surplus(&f.admin), 200 * USDC);
+
+    // The money is at the stored Vault, and the admin who called for it is no
+    // richer than before.
+    assert_eq!(f.adapter.vault(), f.vault);
+    assert_eq!(f.usdc.balance(&f.adapter.vault()), 200 * USDC);
+    assert_eq!(
+        f.usdc.balance(&f.admin),
+        0,
+        "the caller is not a destination this call has"
+    );
+    assert_eq!(f.usdc.balance(&f.adapter_id), 0);
+
+    // And with the balance clear the adapter can be repointed again, which is
+    // the repair path the stranded cash used to close.
+    let new_vault = Address::generate(&f.e);
+    let new_engine = f.e.register(MockEngine, ());
+    MockEngineClient::new(&f.e, &new_engine).initialize(&new_vault);
+    f.adapter
+        .set_counterparties(&f.admin, &new_engine, &new_vault);
+    assert_eq!(f.adapter.vault(), new_vault);
+}
+
+/// An address that is neither this adapter's Engine nor its admin is refused,
+/// and refused on identity rather than on a missing signature. The
+/// authorization is mocked for this one call and this one caller, so the
+/// stranger genuinely signs for it and the contract turns it down anyway.
+#[test]
+fn a_stranger_cannot_sweep_the_adapter_even_holding_a_valid_signature() {
+    let f = setup();
+    f.usdc.faucet(&f.adapter_id, &(100 * USDC));
+    let mallory = Address::generate(&f.e);
+
+    f.e.mock_auths(&[MockAuth {
+        address: &mallory,
+        invoke: &MockAuthInvoke {
+            contract: &f.adapter.address,
+            fn_name: "recover_surplus",
+            args: (mallory.clone(),).into_val(&f.e),
+            sub_invokes: &[],
+        },
+    }]);
+    assert_eq!(
+        f.adapter.try_recover_surplus(&mallory),
+        Err(Ok(AdapterError::NotAuthorized))
+    );
+    assert_eq!(f.usdc.balance(&f.adapter_id), 100 * USDC);
+    assert_eq!(f.usdc.balance(&f.vault), 0);
+    assert_eq!(f.usdc.balance(&mallory), 0);
+}
+
+/// Both of the two addresses that may call it can, and the admin is not there
+/// as a convenience. The failure this entry point exists to fix is an adapter
+/// stuck to counterparties that have been superseded, so requiring a working
+/// Engine to unstick it would be requiring the thing that is broken. The Engine
+/// is still the ordinary path, because only the Engine passes the recovery on
+/// to the Vault and keeps the three books in step.
+#[test]
+fn both_the_engine_and_the_admin_can_bring_stranded_capital_home() {
+    let f = setup();
+    let engine = f.adapter.engine();
+
+    f.usdc.faucet(&f.adapter_id, &(30 * USDC));
+    assert_eq!(f.adapter.recover_surplus(&engine), 30 * USDC);
+
+    f.usdc.faucet(&f.adapter_id, &(20 * USDC));
+    assert_eq!(f.adapter.recover_surplus(&f.admin), 20 * USDC);
+
+    // Both routes end at the same address, because neither of them chooses it.
+    assert_eq!(f.usdc.balance(&f.vault), 50 * USDC);
+    assert_eq!(f.usdc.balance(&f.adapter_id), 0);
+}
+
+/// Holding nothing above the book is an error rather than a silent zero. The
+/// Engine hands whatever this returns straight to the Vault's `record_recovery`,
+/// so a sweep of nothing that reported success would be a recovery of nothing
+/// recorded as a recovery.
+#[test]
+fn an_adapter_with_no_surplus_refuses_rather_than_sweeping_nothing() {
+    let f = setup();
+
+    // Empty on both counts.
+    assert_eq!(
+        f.adapter.try_recover_surplus(&f.admin),
+        Err(Ok(AdapterError::NothingToRecover))
+    );
+
+    // Fully funded and fully booked: every dollar here is backing a live
+    // position and belongs to `deallocate`.
+    f.usdc.faucet(&f.adapter_id, &(500 * USDC));
+    f.adapter.allocate(&(500 * USDC));
+    assert_eq!(
+        f.adapter.try_recover_surplus(&f.admin),
+        Err(Ok(AdapterError::NothingToRecover))
+    );
+    assert_eq!(f.usdc.balance(&f.adapter_id), 500 * USDC);
+    assert_eq!(f.adapter.get_exposure(), 500 * USDC);
+
+    // And a position the originator has drawn down sits below its book rather
+    // than above it, so the subtraction is negative and there is still nothing
+    // to send home.
+    f.usdc.burn(&f.adapter_id, &(200 * USDC));
+    assert_eq!(
+        f.adapter.try_recover_surplus(&f.admin),
+        Err(Ok(AdapterError::NothingToRecover))
+    );
+    assert_eq!(f.usdc.balance(&f.vault), 0);
+}
+
+/// The constructor runs the symmetry check `set_counterparties` runs, so an
+/// adapter cannot come into existence pointed at a pair that does not match.
+/// `initialize` was a separate call that took both addresses on trust, which
+/// made the one call that created the wiring the only one that validated none
+/// of it, and left a public window in which somebody else's `initialize` could
+/// land first. A constructor closes both.
+#[test]
+#[should_panic(expected = "#706")]
+fn an_adapter_cannot_be_deployed_pointing_at_a_vault_its_engine_does_not_govern() {
+    let f = setup();
+    // A real Engine, correctly formed, that answers that it governs somebody
+    // else's Vault. Without this check the adapter would deploy and repay every
+    // future allocation to an address its Engine does not serve.
+    let elsewhere = Address::generate(&f.e);
+    let engine = f.e.register(MockEngine, ());
+    MockEngineClient::new(&f.e, &engine).initialize(&elsewhere);
+
+    f.e.register(
+        EtherfuseAdapter,
+        (
+            f.admin.clone(),
+            engine,
+            f.vault.clone(),
+            f.usdc.address.clone(),
+        ),
     );
 }
