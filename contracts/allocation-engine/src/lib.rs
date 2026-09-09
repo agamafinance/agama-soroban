@@ -519,6 +519,20 @@ impl AllocationEngine {
     /// interrogates it: it has to answer `admin()`, and it has to answer with
     /// this Engine's admin, so a repair cannot leave the pair in the state the
     /// constructor refuses to create.
+    ///
+    /// What this call cannot do is repair the pools that are already
+    /// registered, and that is the reason the adapter check is not only run at
+    /// registration. `register_pool` requires an adapter to name this Engine
+    /// **and this Engine's Vault**, and moving the pointer here invalidates the
+    /// second half of it for every entry already in the map: the whitelist goes
+    /// on holding adapters that repay the Vault this Engine has just stopped
+    /// governing. Re-validating the map here is not the answer, because it
+    /// would fail the repair on exactly the adapters the operator is on their
+    /// way to repointing, and there is no `unregister_pool` to clear it with.
+    /// So the check is a condition of use rather than of registration:
+    /// `allocate`, `deallocate` and `recover` each re-run it on the pool they
+    /// touch, and an adapter left behind by this call can be neither funded nor
+    /// settled against until `set_counterparties` brings it across.
     pub fn set_vault(e: Env, admin: Address, vault: Address) -> Result<(), EngineError> {
         Self::require_admin(&e, &admin)?;
         if Self::total_allocated(e.clone()) > 0 {
@@ -544,6 +558,15 @@ impl AllocationEngine {
     /// the money had come home. Nothing reverts and the exposure reads as
     /// settled. It is a wiring mistake rather than an attack, which is exactly
     /// the kind of thing registration should be catching.
+    ///
+    /// Registration is not the only place it is caught, and it could never have
+    /// been. The condition is a statement about two contracts, and one of the
+    /// two addresses in it belongs to this Engine and can move afterwards:
+    /// `set_vault` repoints the Vault and every entry already in the registry
+    /// goes on naming the one before it. So `allocate`, `deallocate` and
+    /// `recover` re-run exactly this check on the pool they are about to touch,
+    /// through the same helper, and this call is the first time it runs rather
+    /// than the only time.
     pub fn register_pool(
         e: Env,
         admin: Address,
@@ -560,13 +583,7 @@ impl AllocationEngine {
         if pools.contains_key(pool_id.clone()) {
             return Err(EngineError::PoolAlreadyRegistered);
         }
-        let vault_address = Self::vault(e.clone())?;
-        let adapter = PoolAdapterClient::new(&e, &pool_id);
-        match (adapter.try_engine(), adapter.try_vault()) {
-            (Ok(Ok(engine)), Ok(Ok(vault)))
-                if engine == e.current_contract_address() && vault == vault_address => {}
-            _ => return Err(EngineError::AdapterMismatch),
-        }
+        Self::require_adapter_matches(&e, &pool_id)?;
         pools.set(
             pool_id.clone(),
             Pool {
@@ -672,6 +689,11 @@ impl AllocationEngine {
         let pool = pools
             .get(pool_id.clone())
             .ok_or(EngineError::PoolNotRegistered)?;
+        // Registration proved the adapter named this Engine and this Engine's
+        // Vault on the day it was registered. `set_vault` can have moved the
+        // second half of that since, so it is proved again here, before a
+        // stroop of the Vault's money is committed to it.
+        Self::require_adapter_matches(&e, &pool_id)?;
 
         let vault_address = Self::vault(e.clone())?;
         let vault = VaultClient::new(&e, &vault_address);
@@ -785,6 +807,13 @@ impl AllocationEngine {
         if !Self::pool_map(&e).contains_key(pool_id.clone()) {
             return Err(EngineError::PoolNotRegistered);
         }
+        // The adapter sends the cash to the Vault it stores, and the Vault this
+        // Engine points at is asked to confirm it arrived. If those two have
+        // parted company since registration, the confirmation would fail four
+        // frames down with the Vault's own error, or, where the Vault happens
+        // to be holding unannounced cash of the same size, not fail at all and
+        // settle this book against somebody else's money. Say so here instead.
+        Self::require_adapter_matches(&e, &pool_id)?;
         let exposure = Self::get_exposure(e.clone(), pool_id.clone());
         if amount > exposure {
             return Err(EngineError::ExposureUnderflow);
@@ -932,8 +961,10 @@ impl AllocationEngine {
     /// pool to sweep:
     ///
     ///  - the destination is not a parameter. The adapter sends to the Vault
-    ///    address it already stores, which is the Vault this Engine governs,
-    ///    checked when the adapter was registered.
+    ///    address it already stores, and this call checks that it is still the
+    ///    Vault this Engine governs rather than resting on the check
+    ///    `register_pool` ran, because `set_vault` can have moved the Engine's
+    ///    end of that pairing since.
     ///  - the amount is not a parameter either. It is whatever the adapter holds
     ///    above its booked exposure, so a live position cannot be swept out from
     ///    under itself and `deallocate` stays funded.
@@ -960,6 +991,12 @@ impl AllocationEngine {
         if vault.admin() != admin {
             return Err(EngineError::AdminMismatch);
         }
+        // "The destination is not a parameter" is only a safety property while
+        // the Vault the adapter stores is the Vault this Engine governs. After
+        // a `set_vault` that an adapter has not followed, the sweep would go to
+        // the previous Vault while this one is asked to book the recovery
+        // against it.
+        Self::require_adapter_matches(&e, &pool_id)?;
 
         // The adapter moves the cash to the Vault it names and tells us how
         // much. It refuses if there is nothing above its booked exposure.
@@ -1252,6 +1289,46 @@ impl AllocationEngine {
         match VaultClient::new(e, vault).try_admin() {
             Ok(Ok(vault_admin)) if vault_admin == *admin => Ok(()),
             _ => Err(EngineError::VaultMismatch),
+        }
+    }
+
+    /// The adapter has to name this Engine and this Engine's Vault, right now.
+    ///
+    /// This is `register_pool`'s check, factored out because registration is
+    /// not the only moment it has to hold. Half of the condition is a fact
+    /// about this Engine, and `set_vault` can change that fact: the registry is
+    /// a map with no way to clear it, so the moment the Vault pointer moves,
+    /// every pool already in it names the Vault this Engine no longer governs.
+    ///
+    /// Left unchecked, the next `allocate` releases the **new** Vault's USDC to
+    /// an adapter that repays the **old** one. The adapter accepts it, because
+    /// its Engine pointer is the one thing that did not change; and the capital
+    /// is then unrecoverable to the Vault that funded it, because `deallocate`
+    /// sends the cash to the old Vault and then asks the new one to confirm it
+    /// arrived, which it cannot, so the call reverts and the position can never
+    /// be unwound. In this protocol the old Vault is a superseded one, where
+    /// nothing can move USDC at all. Every other edge of the wiring is checked
+    /// on both sides; this was the one checked once.
+    ///
+    /// It costs two cross-contract reads on every call that moves capital, and
+    /// it is worth them: the entire deployment record of this repository is a
+    /// list of contracts pointed at counterparties that had moved on.
+    ///
+    /// The refusals differ and it is worth knowing which is which. An adapter
+    /// naming a different Engine or a different Vault returns `AdapterMismatch`
+    /// from here. An address that is not a contract at all is refused by the
+    /// host, which will not invoke one, so the call fails with `InvalidInput`
+    /// before `try_` has a contract error to catch.
+    fn require_adapter_matches(e: &Env, pool_id: &Address) -> Result<(), EngineError> {
+        let vault_address = Self::vault(e.clone())?;
+        let adapter = PoolAdapterClient::new(e, pool_id);
+        match (adapter.try_engine(), adapter.try_vault()) {
+            (Ok(Ok(engine)), Ok(Ok(vault)))
+                if engine == e.current_contract_address() && vault == vault_address =>
+            {
+                Ok(())
+            }
+            _ => Err(EngineError::AdapterMismatch),
         }
     }
 
