@@ -86,6 +86,12 @@ pub enum AdapterError {
     NotEmpty = 705,
     /// The proposed Engine does not answer that it governs the proposed Vault.
     CounterpartyMismatch = 706,
+    /// Writing down more than the adapter has booked as deployed.
+    WriteDownExceedsExposure = 707,
+    /// `accept_admin` was called with no handover in flight.
+    NoPendingAdmin = 708,
+    /// `accept_admin` was called by an address that was not the one proposed.
+    NotPendingAdmin = 709,
 }
 
 #[derive(Clone)]
@@ -96,6 +102,8 @@ enum Cfg {
     Vault,
     Usdc,
     Exposure,
+    /// Half finished admin handover: proposed, not yet accepted.
+    PendingAdmin,
 }
 
 /// Emitted when the adapter is repointed. Which Engine may move this pool's
@@ -108,6 +116,36 @@ pub struct CounterpartiesSet {
     pub engine: Address,
     #[topic]
     pub vault: Address,
+}
+
+/// Emitted when exposure is written off. It is the only way this adapter's book
+/// falls with no capital moving, so an observer should never have to infer it
+/// from the absence of a transfer.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WrittenDown {
+    pub amount: i128,
+    /// Exposure still booked after the write-down.
+    pub exposure: i128,
+}
+
+/// Emitted when an admin handover is proposed. The role has not moved yet: this
+/// is the first half of a two step transfer, and it is in the event stream so
+/// that a pending handover is visible to anyone watching rather than only to
+/// whoever thinks to read the state.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposed {
+    #[topic]
+    pub new_admin: Address,
+}
+
+/// Emitted when a proposed admin accepts and the role actually moves.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminChanged {
+    #[topic]
+    pub admin: Address,
 }
 
 #[contract]
@@ -159,8 +197,14 @@ impl EtherfuseAdapter {
     ) -> Result<(), AdapterError> {
         Self::require_admin(&e, &admin)?;
         Self::require_empty(&e)?;
-        // An address that cannot answer is refused with one that answers
-        // wrongly: neither is an Allocation Engine that governs this Vault.
+        // What this rules out is an address that cannot answer the question,
+        // or answers it with a different Vault: a plain account, and a real
+        // Engine that governs somebody else. What it cannot rule out is a
+        // contract built to answer it, which returns whatever address it was
+        // written to return and passes without difficulty. The check is worth
+        // running because the realistic failure here is a mis-wiring rather
+        // than an attack, and this is admin gated either way; it is not worth
+        // reading as proof that the counterparty is what it says it is.
         match EngineClient::new(&e, &engine).try_vault() {
             Ok(Ok(governed)) if governed == vault => {}
             _ => return Err(AdapterError::CounterpartyMismatch),
@@ -215,9 +259,101 @@ impl EtherfuseAdapter {
         Ok(())
     }
 
+    /// Write off booked exposure that is not coming back, without moving any
+    /// capital.
+    ///
+    /// `deallocate` transfers the USDC before it decrements the book, which is
+    /// the right order when there is USDC to transfer and no help at all when
+    /// there is not: a defaulted originator leaves this adapter holding
+    /// nothing, the transfer panics, and the exposure goes on reporting full
+    /// face value forever. This is the entry point that lets the loss be
+    /// recognised instead.
+    ///
+    /// Called by the Engine, in the same transaction as the Engine's own
+    /// write-down and the Vault's, so the three books cannot disagree about how
+    /// much of this position still exists. The Engine requires its admin for
+    /// it, and so does the Vault; there is no path from here to reducing an
+    /// exposure on the adapter alone.
+    pub fn write_down(e: Env, amount: i128) -> Result<(), AdapterError> {
+        Self::require_engine(&e)?;
+        if amount <= 0 {
+            return Err(AdapterError::InvalidAmount);
+        }
+        let exposure = Self::get_exposure(e.clone());
+        if amount > exposure {
+            return Err(AdapterError::WriteDownExceedsExposure);
+        }
+        e.storage()
+            .instance()
+            .set(&Cfg::Exposure, &(exposure - amount));
+        Self::bump(&e);
+        WrittenDown {
+            amount,
+            exposure: exposure - amount,
+        }
+        .publish(&e);
+        Ok(())
+    }
+
     /// Capital currently deployed into this pool, in USDC.
     pub fn get_exposure(e: Env) -> i128 {
         e.storage().instance().get(&Cfg::Exposure).unwrap_or(0)
+    }
+
+    /// Hand the admin role to another address, in two steps.
+    ///
+    /// This contract had no rotation at all, which made the admin key a single
+    /// point of failure with no way back from either of the two ways it fails.
+    /// A key that is lost takes every admin gated call in this contract with
+    /// it, permanently. A key that is compromised cannot be replaced, so the
+    /// only remedy left is redeploying the contract and migrating whatever it
+    /// holds, which for a custodian is not a remedy.
+    ///
+    /// Two steps rather than one, because a one step setter aimed at an
+    /// address nobody controls produces exactly the unrecoverable state the
+    /// rotation exists to fix, and it does it in a single transaction with no
+    /// second chance. The proposed address has to authorize a transaction of
+    /// its own before anything changes, and that signature is the proof the
+    /// key is real and reachable.
+    ///
+    /// A proposal replaces any earlier one. An admin that changes its mind
+    /// proposes a different address; an admin that wants to withdraw a
+    /// proposal proposes itself, which is a no-op if it is ever accepted.
+    pub fn propose_admin(e: Env, admin: Address, new_admin: Address) -> Result<(), AdapterError> {
+        Self::require_admin(&e, &admin)?;
+        e.storage().instance().set(&Cfg::PendingAdmin, &new_admin);
+        Self::bump(&e);
+        AdminProposed { new_admin }.publish(&e);
+        Ok(())
+    }
+
+    /// Complete a handover. Only the proposed address can call it, and it has
+    /// to authorize the call itself: that authorization is the entire point of
+    /// the second step.
+    pub fn accept_admin(e: Env, new_admin: Address) -> Result<(), AdapterError> {
+        let pending: Address = e
+            .storage()
+            .instance()
+            .get(&Cfg::PendingAdmin)
+            .ok_or(AdapterError::NoPendingAdmin)?;
+        if pending != new_admin {
+            return Err(AdapterError::NotPendingAdmin);
+        }
+        new_admin.require_auth();
+        e.storage().instance().set(&Cfg::Admin, &new_admin);
+        e.storage().instance().remove(&Cfg::PendingAdmin);
+        Self::bump(&e);
+        AdminChanged {
+            admin: new_admin,
+        }
+        .publish(&e);
+        Ok(())
+    }
+
+    /// The address that has been proposed as admin and has not accepted yet.
+    /// `None` means no handover is in flight.
+    pub fn pending_admin(e: Env) -> Option<Address> {
+        e.storage().instance().get(&Cfg::PendingAdmin)
     }
 
     // ---- metadata, read by the Engine and the UI ----
