@@ -24,7 +24,7 @@ Network: **Stellar Testnet** · RPC: `https://soroban-testnet.stellar.org`
 |---|---|
 | USDC (Circle) | [`CBIELTK6...XQDAMA`](https://stellar.expert/explorer/testnet/contract/CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA) |
 | agUSD | [`CCW763RT...U4ALZL`](https://stellar.expert/explorer/testnet/contract/CCW763RTVRDQTEEQ42XCAARSJ42AKWRB2DDM62QV4XVUJFCDAWU4ALZL) |
-| sagUSD | [`CBMEW3QA...WFTHZF`](https://stellar.expert/explorer/testnet/contract/CBMEW3QALCS6FFJMK5FR7LVKUWX3MPIP26LQQQAFYMQFYVG6VUWFTHZF) |
+| sagUSD | [`CCBEDKRQ...L6HFO2`](https://stellar.expert/explorer/testnet/contract/CCBEDKRQHKAP2W3NC4UIYC4WZSMJVYRXN6EQERHFII45M3PD4JL6HFO2) |
 | Vault Contract | [`CCGPF36P...F5KVRR`](https://stellar.expert/explorer/testnet/contract/CCGPF36PDG2WBBK6ZROLMNMHD67UV4MNG6PHQCN2PXWLLRBXCYF5KVRR) |
 | Allocation Engine | [`CAFJKWLU...SZ5HUX`](https://stellar.expert/explorer/testnet/contract/CAFJKWLUGUSYEC7L5ZBNFIFEPSO5MLI7SKDMVVJCGC6Z2TGVP5SZ5HUX) |
 | Oracle Adapter | [`CDV5BC4X...XCSV7G`](https://stellar.expert/explorer/testnet/contract/CDV5BC4XCNT5ASOZNFXBQXRGKVXGKHLRVK5EDX6XP5J6EBIZWSXCSV7G) |
@@ -62,6 +62,7 @@ replaced. None of them is deleted, and none of them is quietly reused.
 | Private credit adapter, second deployment | [`CDKLN4NB...2RSMEV`](https://stellar.expert/explorer/testnet/contract/CDKLN4NBLLHYUOQEDLSKWM6BI7HSN4NL3W5B2MB4DUAPJG4IKA2RSMEV) | Replaced within the day, after review. Its Engine and Vault pointers moved independently and the emptiness check was retrospective only, so a repointed Vault would have misdirected repayments one allocation later. |
 | Etherfuse adapter, second deployment | [`CCFYYCIH...2H6KGO`](https://stellar.expert/explorer/testnet/contract/CCFYYCIHEKQLFN5TZKGFBW3GAH6SBXA7YEWMETTR62TWPEC43X2H6KGO) | Replaced within the day, after review. Its Engine and Vault pointers moved independently and the emptiness check was retrospective only, so a repointed Vault would have misdirected repayments one allocation later. |
 | sagUSD staking, second deployment | [`CDY3ED6T...BTC345`](https://stellar.expert/explorer/testnet/contract/CDY3ED6T72VJDX5RCMQOZNCV5XKJBHQVAYPNOXTWB66RNBVOS5BTC345) | Replaced within the day, after review. Its `set_agusd` keyed off the stake counter alone, and `accrue_yield` takes custody without touching it. |
+| sagUSD staking, third deployment | [`CBMEW3QA...WFTHZF`](https://stellar.expert/explorer/testnet/contract/CBMEW3QALCS6FFJMK5FR7LVKUWX3MPIP26LQQQAFYMQFYVG6VUWFTHZF) | Exposes `accrue_yield` and `share_price`, the names this contract shipped with, rather than `distribute_yield` and `exchange_rate`, the names Agama committed to in its answer to the SCF panel. A wallet looking for the committed convention did not find it here. Superseded holding nothing: NAV and share supply were both zero at handover, so it strands no staker. |
 
 One missing setter cost six contracts. The Engine could not follow its Vault,
 the Vault could not follow its Engine, the token could not follow the Vault
@@ -167,6 +168,35 @@ transaction the CLI did prepare, for a smaller allocation that simulates
 cleanly, and rewrites the amount in the operation and in its matching
 authorization entry. The footprint stays valid because a refused allocation
 reads the same ledger entries and writes none of them.
+
+### The DeFindex Naming, On-Chain
+
+sagUSD was redeployed on 9 September 2026 so that the contract on the ledger
+carries the names Agama committed to. `scripts/deploy-sagusd.sh` deploys and
+wires it, checking the deployed WASM's own interface rather than the source
+tree, because a wallet reads the former. `scripts/smoke-sagusd.sh` then proves
+the yield path against it with 26 assertions, every state change submitted:
+
+| Step | What it proves | Transaction |
+|---|---|---|
+| Deploy | sagUSD deployed and initialized on the live agUSD, at an exchange rate of 1.0 | [`d88f8144`](https://stellar.expert/explorer/testnet/tx/d88f8144f738e4c62829668367c55cd7160dbc824ed7b523517bc4ebf996a2de) |
+| Stake | 1 agUSD staked, shares issued at the rate that was showing, custody moved | [`11844e00`](https://stellar.expert/explorer/testnet/tx/11844e006fd8cf70a971675f7c15cd060443b286d7e6d5b11c3c2f6c8ae9c7e3) |
+| `distribute_yield` | 0.1 agUSD delivered under the committed name; NAV and `exchange_rate()` rise from 1.0 to 1.1, no share minted, no balance changed | [`3cf2744d`](https://stellar.expert/explorer/testnet/tx/3cf2744d641a3c0aa2277ac6a77d565833c6b411a0845bb7bde7a1df88796008) |
+| Unstake request | Shares burned at request time and the appreciated 1.1 agUSD locked behind the 60s cooldown | [`955c4dd3`](https://stellar.expert/explorer/testnet/tx/955c4dd37454c2f69ae5e14de5e065b49d2399be134605cafa7b0a237ae4d66a) |
+| Unstake claim | 1.1 agUSD returned for 1.0 staked, after the cooldown; the contract back to holding nothing | [`b6985d62`](https://stellar.expert/explorer/testnet/tx/b6985d626cf0b9337b8f63583c8bed8abf7b06f97698eadac2f3387eca9efde1) |
+
+The smoke script also reads the deployed interface back off the network and
+asserts that `distribute_yield` and `exchange_rate` are on it, that
+`accrue_yield` is not, and that `share_price()` returns the same number as
+`exchange_rate()` at every point where the two could differ. The claim being
+checked is about what the contract publishes, so it is checked against what the
+contract publishes.
+
+Nothing else was redeployed. sagUSD is a leaf: no other contract in the stack
+stores its address, so replacing it strands no pointer, which is why this was a
+one contract deployment where the rewire below was a six contract one. The
+`Stake`, `Yield` and `Unstake` rows in the journey table above were run against
+the superseded sagUSD and remain on the ledger as a record of it.
 
 ### The Rewire Itself
 
@@ -280,13 +310,17 @@ It is left exactly as it is rather than rewritten underneath the people holding 
 
 ### sagUSD (`contracts/staking`) (deployed on testnet)
 
-Yield-bearing staked agUSD. Share-based vault accounting compatible with the DeFindex standard: yield accrues by increasing the sagUSD/agUSD exchange rate through `accrue_yield()`, which moves real agUSD into the contract, so there is nothing to claim and no rebasing. Two-step unstake with a configurable cooldown.
+Yield-bearing staked agUSD. Share-based vault accounting: yield accrues by increasing the sagUSD/agUSD exchange rate through `distribute_yield()`, which moves real agUSD into the contract, so there is nothing to claim and no rebasing. Two-step unstake, `request_unstake()` then `claim()`, with a configurable cooldown; the shares are burned and priced at request time, so the cooldown is not a free option on the rate.
 
-**DeFindex compatibility:** sagUSD adopts the DeFindex assets-per-share model, making sagUSD positions natively readable by any DeFindex-integrated wallet or protocol without additional integration work.
+**The committed naming convention.** Agama's answer to the SCF panel says sagUSD adopts the `distribute_yield` / assets-per-share convention, and that this is an interface compatibility rather than a protocol-level integration. The contract now honours that: `distribute_yield()` is the entry point that raises assets-per-share, and `exchange_rate()` is the view that reports it. It previously exposed `accrue_yield()` and `share_price()` and so did not, which is why the deployed sagUSD was replaced rather than the sentence edited.
 
-`set_agusd` repoints the token this contract accepts and closes the moment it has taken custody of anything: a stake counter rather than the share supply, because a position that has been fully unstaked is not the same as one that never existed and the pending unstake queue can outlive the shares that created it, plus the NAV and the balance, because `accrue_yield` takes custody without going near the counter.
+`share_price()` is kept as an alias of `exchange_rate()`, returning the same number from the same computation. It has a live on-chain caller: the generation 1 agUSD prices its positions in the six credit vaults through `share_price`, and those vaults are instances of this contract. Dropping the name would break a caller for no gain, since nothing looking for `exchange_rate` cares that a second name also answers. The yield entry point was a hard rename instead, because it has no on-chain caller anywhere in this workspace and two ways to move real money into a contract is one more than an auditor should have to check.
 
-`initialize` now refuses a second call, which the deployed generation did not: a second call could name a new admin, repoint the staked asset and reset the NAV, which is the denominator every share is redeemed against. That guard stops a stranger. It does not stop the admin, who keeps `report_nav` and can still overwrite that denominator, and it is not offered as doing so; `report_nav` is there for demo and reconciliation, and `accrue_yield`, which moves real agUSD and cannot overstate the book, is the path that should be used.
+One correction, recorded because the claim is checkable and this repository is going to audit. DeFindex's own vault publishes neither of these names. Its interface is multi-asset (`fetch_total_managed_funds`, `get_asset_amounts_per_shares`, `distribute_fees`, and strategy-level `harvest`), it exposes no scalar price-per-share getter at all, and it has no vault-level yield distribution entry point. So this is a naming convention Agama has adopted on its own side, matching DeFindex's economics — shares are never rebased, nothing is pushed to holders, a position appreciates because the assets behind each share grow — and not call compatibility with a DeFindex vault. It should not be described as the latter.
+
+`set_agusd` repoints the token this contract accepts and closes the moment it has taken custody of anything: a stake counter rather than the share supply, because a position that has been fully unstaked is not the same as one that never existed and the pending unstake queue can outlive the shares that created it, plus the NAV and the balance, because `distribute_yield` takes custody without going near the counter.
+
+`initialize` now refuses a second call, which the deployed generation did not: a second call could name a new admin, repoint the staked asset and reset the NAV, which is the denominator every share is redeemed against. That guard stops a stranger. It does not stop the admin, who keeps `report_nav` and can still overwrite that denominator, and it is not offered as doing so; `report_nav` is there for demo and reconciliation, and `distribute_yield`, which moves real agUSD and cannot overstate the book, is the path that should be used.
 
 ### Vault Contract (`contracts/vault`) (deployed on testnet)
 
@@ -374,6 +408,16 @@ bash scripts/deploy-rewire.sh
 # plus the four refusals, submitted rather than simulated
 bash scripts/smoke-journey.sh
 
+# Redeploy sagUSD alone, so the deployed contract carries the distribute_yield
+# and exchange_rate names Agama committed to. Refuses to run if the contract it
+# is retiring still owes a staker anything, and checks the names against the
+# deployed WASM's interface rather than against the source tree.
+bash scripts/deploy-sagusd.sh
+
+# Prove the sagUSD yield path against that deployment: stake, distribute_yield
+# raising the exchange rate, and the two step unstake through the cooldown
+bash scripts/smoke-sagusd.sh
+
 # Deploy the agUSD + sagUSD + credit vault set (already live on testnet)
 cp .env.example .env
 bash scripts/deploy.sh
@@ -400,7 +444,7 @@ From the [SCF Integration List](https://communityfund.stellar.org/integration-li
 
 | Protocol | Role |
 |---|---|
-| [DeFindex](https://defindex.io) | sagUSD share-price accounting convention |
+| [DeFindex](https://defindex.io) | sagUSD assets-per-share accounting convention |
 | [Soroswap](https://soroswap.finance) | agUSD/USDC and sagUSD/agUSD AMM pools |
 | [Etherfuse](https://etherfuse.com) | Stellar-native government bond RWA collateral |
 | [Reflector](https://reflector.network) | Decentralized XLM/USD and USDC/USD price feeds |
