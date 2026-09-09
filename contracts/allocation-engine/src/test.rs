@@ -581,11 +581,79 @@ fn the_vault_pointer_moves_while_the_book_is_empty() {
     f.engine.set_vault(&f.admin, &replacement);
     assert_eq!(f.engine.vault(), replacement);
 
+    // The adapters have to follow, and until they do the Engine will not fund
+    // them: they still repay the Vault it has just stopped governing. This
+    // assertion used to be an allocation succeeding, which is the whole of the
+    // third review's High finding.
+    f.adapter_a
+        .set_counterparties(&f.admin, &f.engine.address, &replacement);
+
     // Allocations now draw on the new Vault and leave the old one alone.
     f.engine.allocate(&f.admin, &f.pool_a, &(200 * USDC));
     assert_eq!(f.usdc.balance(&replacement), 800 * USDC);
     assert_eq!(f.usdc.balance(&f.vault_id), FUNDING);
     assert_eq!(f.engine.get_reserve_ratio(), 8_000);
+}
+
+/// The third review's High finding. `register_pool` proves an adapter names
+/// this Engine and this Engine's Vault, and `set_vault` moves the second half
+/// of that out from under every entry already in the registry.
+///
+/// Before the fix this test's first allocation succeeded: the replacement
+/// Vault's USDC went to an adapter that repays the superseded one, and the
+/// capital could never come home, because `deallocate` sends the cash to the
+/// old Vault and asks the new one to confirm it arrived.
+#[test]
+fn an_adapter_left_behind_by_a_vault_repoint_cannot_be_funded_or_settled() {
+    let f = setup();
+    f.engine.allocate(&f.admin, &f.pool_a, &(200 * USDC));
+    f.engine.deallocate(&f.pool_a, &(200 * USDC));
+
+    let replacement = f.e.register(MockVault, ());
+    MockVaultClient::new(&f.e, &replacement).initialize(&f.admin, &f.usdc.address);
+    f.usdc.faucet(&replacement, &FUNDING);
+    f.engine.set_vault(&f.admin, &replacement);
+
+    // pool_a is still registered and still names the old Vault. Every other
+    // gate lets it through: it is whitelisted, the amount is inside all three
+    // caps and inside the reserve floor, and the adapter would accept the call
+    // because its Engine pointer is the one thing that did not move.
+    assert_eq!(f.adapter_a.vault(), f.vault_id);
+    assert_eq!(f.adapter_a.engine(), f.engine.address);
+    assert_eq!(
+        f.engine.try_allocate(&f.admin, &f.pool_a, &(200 * USDC)),
+        Err(Ok(EngineError::AdapterMismatch)),
+        "the new Vault's money must not go to an adapter that repays the old one"
+    );
+    // Refused, and nothing moved: no exposure, no cash, on either Vault.
+    assert_eq!(f.engine.get_exposure(&f.pool_a), 0);
+    assert_eq!(f.engine.total_allocated(), 0);
+    assert_eq!(f.usdc.balance(&replacement), FUNDING);
+    assert_eq!(f.usdc.balance(&f.pool_a), 0);
+    assert_eq!(f.adapter_a.get_exposure(), 0);
+
+    // The other two directions are closed the same way, so a stale adapter
+    // cannot settle a book against the wrong Vault's balance either.
+    assert_eq!(
+        f.engine.try_deallocate(&f.pool_a, &(1 * USDC)),
+        Err(Ok(EngineError::AdapterMismatch))
+    );
+    f.usdc.faucet(&f.pool_a, &(5 * USDC));
+    assert_eq!(
+        f.engine.try_recover(&f.admin, &f.pool_a),
+        Err(Ok(EngineError::AdapterMismatch)),
+        "and a sweep must not send the surplus to a Vault this Engine does not govern"
+    );
+    assert_eq!(f.usdc.balance(&f.pool_a), 5 * USDC, "the sweep moved nothing");
+
+    // Bringing the adapter across is what opens it again, which is the repair
+    // path `set_counterparties` exists for and the one an operator should be
+    // pushed towards by the refusal above.
+    f.adapter_c
+        .set_counterparties(&f.admin, &f.engine.address, &replacement);
+    f.engine.allocate(&f.admin, &f.pool_c, &(200 * USDC));
+    assert_eq!(f.engine.get_exposure(&f.pool_c), 200 * USDC);
+    assert_eq!(f.usdc.balance(&replacement), 800 * USDC);
 }
 
 #[test]
