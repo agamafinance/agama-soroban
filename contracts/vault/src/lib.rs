@@ -26,10 +26,17 @@
 //! and there is no admin path around it: a protocol that can reorder its own
 //! withdrawal queue under stress has not really got one.
 //!
-//! The cost of that choice is a liveness one, and it is deliberate: if the
-//! owner of the head claim never comes back to claim it, the queue does not
-//! advance. Skipping them would be precisely the priority jumping the queue
-//! exists to prevent, so V1 accepts the stall.
+//! FIFO does not depend on the head claimant showing up, either.
+//! `settle_withdrawal` pays whichever claim sits at `queue_head` to the
+//! owner recorded on it, and any address may call it. That is not a
+//! privileged path around the ordering, because the caller never chooses the
+//! claim or the recipient: both are read from the queue, not supplied by the
+//! caller, so the only thing calling `settle_withdrawal` can do is exactly
+//! what the owner's own `claim_withdrawal` would have done. A claimant who
+//! never returns therefore no longer blocks everyone behind them; a bot, a
+//! relayer, or another claimant impatient for their own turn can advance the
+//! queue on the absent owner's behalf, and the money still lands only where
+//! it was always going to land.
 //!
 //! # The two pointers that decide whether the Vault works at all
 //!
@@ -156,6 +163,8 @@ pub enum VaultError {
     /// The proposed Allocation Engine does not answer that it governs this
     /// Vault, so it cannot be given the authority to release its reserves.
     EngineMismatch = 314,
+    /// `settle_withdrawal` was called with nothing queued to pay.
+    QueueEmpty = 315,
 }
 
 /// A queued withdrawal. The agUSD is burned at request time, so this record is
@@ -471,10 +480,10 @@ impl Vault {
     /// having: one that cannot be reordered by whoever is running the protocol
     /// on the day it is under stress.
     ///
-    /// The head advances only when a claim is paid, so a queue does stall if
-    /// the owner of the head claim never returns. That is the deliberate cost
-    /// of the guarantee: paying around them would be exactly the queue jumping
-    /// the ordering exists to prevent.
+    /// The head advances only when a claim is paid. If its owner never
+    /// returns to call this, `settle_withdrawal` is the way the queue moves
+    /// on without them: same recipient, same amount, same position, just a
+    /// different caller.
     pub fn claim_withdrawal(e: Env, from: Address, claim_id: u64) -> Result<(), VaultError> {
         Self::require_not_paused(&e)?;
         from.require_auth();
@@ -512,6 +521,55 @@ impl Vault {
         }
         .publish(&e);
         Ok(())
+    }
+
+    /// Pay the claim at the head of the queue to its recorded owner, and
+    /// advance the queue. Callable by anyone, on behalf of no one.
+    ///
+    /// This is `claim_withdrawal` with the caller and the claim both taken
+    /// away from the caller's control: there is no `claim_id` argument, so
+    /// there is nothing to point at a claim other than the one already at
+    /// `queue_head`, and the payment always goes to `claim.owner`, never to
+    /// whoever sent the transaction. A caller who wanted to redirect funds or
+    /// jump the queue would need this function to accept a target it does
+    /// not accept, so the only thing it can be used for is doing, for a
+    /// stalled claimant, exactly what they could have done for themselves.
+    ///
+    /// That is what makes it safe to leave unauthenticated. It settles the
+    /// same guards `claim_withdrawal` does: paused blocks it, and reserves
+    /// short of the claim's amount fail it with the same error rather than
+    /// paying a partial amount.
+    pub fn settle_withdrawal(e: Env) -> Result<u64, VaultError> {
+        Self::require_not_paused(&e)?;
+
+        let claim_id = Self::queue_head(e.clone());
+        if claim_id == Self::queue_tail(e.clone()) {
+            return Err(VaultError::QueueEmpty);
+        }
+        let mut claim = Self::read_claim(&e, claim_id)?;
+        if Self::idle_reserves(e.clone()) < claim.amount {
+            return Err(VaultError::InsufficientLiquidity);
+        }
+
+        let usdc = Self::usdc(e.clone())?;
+        TokenClient::new(&e, &usdc).transfer(
+            &e.current_contract_address(),
+            &claim.owner,
+            &claim.amount,
+        );
+
+        claim.claimed = true;
+        Self::write_claim(&e, claim_id, &claim);
+        e.storage().instance().set(&Cfg::QueueHead, &(claim_id + 1));
+        Self::bump_instance(&e);
+
+        WithdrawalClaimed {
+            user: claim.owner,
+            claim_id,
+            amount: claim.amount,
+        }
+        .publish(&e);
+        Ok(claim_id)
     }
 
     /// Release idle USDC to a pool. Callable only by the Allocation Engine,
