@@ -10,7 +10,7 @@ All contracts are written in Rust for the Soroban smart contract platform.
 
 ![Agama on Stellar](docs/architecture.png)
 
-Entry ramps, the dApp, the Soroban contract set, allocation targets and the off-chain indexer, with the parameters each component enforces. Source: [`docs/architecture.svg`](docs/architecture.svg).
+Entry ramps, the dApp, the Soroban contract set, allocation targets, the oracle feeds and the off-chain indexer. Source: [`docs/architecture.svg`](docs/architecture.svg). The same diagram is a Mermaid flowchart in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), alongside the full technical architecture.
 
 ## Live on Testnet
 
@@ -431,4 +431,4 @@ All Soroban contracts are open-sourced from day one. Contracts deployed on Stell
 
 - App: [app.agama.finance/stellar](https://app.agama.finance/stellar)
 - X: [@agamafinance](https://x.com/agamafinance)
-- Technical Architecture: [PDF](https://drive.google.com/file/d/1l1FOhHtyuvJPQ-92_lvItzCFAFBeBA--/view?usp=sharing)
+- Technical Architecture: [Markdown](docs/ARCHITECTURE.md) · [PDF](docs/Agama_Technical_Architecture.pdf)
