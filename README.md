@@ -8,9 +8,64 @@ All contracts are written in Rust for the Soroban smart contract platform.
 
 ## Architecture
 
-![Agama on Stellar](docs/architecture.png)
+Entry ramps, the dApp, the Soroban contract set, allocation targets, the oracle feeds and the off-chain indexer.
 
-Entry ramps, the dApp, the Soroban contract set, allocation targets, the oracle feeds and the off-chain indexer. Source: [`docs/architecture.svg`](docs/architecture.svg). The same diagram is a Mermaid flowchart in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), alongside the full technical architecture.
+```mermaid
+flowchart TB
+    LP["LP / User"]
+
+    subgraph ramps["Entry ramps"]
+        MONEYGRAM["MoneyGram (SEP-24)<br/>Retail cash · 180+ countries"]
+        BRIDGE["Bridge<br/>Institutional · bank wires"]
+        CCTP["CCTP (Circle)<br/>Cross-chain USDC bridge"]
+    end
+
+    DAPP["Agama dApp (Next.js)<br/>Stellar Wallets Kit · Soroswap Router · CCTP SDK"]
+
+    subgraph soroban["SOROBAN SMART CONTRACTS (Rust)"]
+        VAULT["Vault Contract<br/>USDC deposit · agUSD mint<br/>Withdrawal queue (FIFO)"]
+        AGUSD["agUSD<br/>SEP-41<br/>mint→Vault · burn→holder"]
+        SAGUSD["sagUSD Staking<br/>DeFindex-compatible<br/>share-price yield"]
+        ENGINE["Allocation Engine<br/>Pool routing · caps<br/>Reserve floor · multi-adapter"]
+        ORACLE["Oracle Adapter<br/>Multi-source NAV<br/>Staleness · Deviation"]
+        ADAPTERS["Pool Adapters:"]
+    end
+
+    SOROSWAP["Soroswap AMM<br/>agUSD/USDC · sagUSD/agUSD pools"]
+    STABLEBONDS["Etherfuse Stablebonds<br/>Stellar-native govt bond RWA · Deterministic NAV"]
+    CREDIT["Private Credit Pools<br/>Off-chain settlement · D+15 to D+90"]
+    FEEDS["Oracle Feeds<br/>Reflector (asset prices)<br/>Reporter (credit NAV) · Etherfuse (bonds)"]
+    BACKEND["Backend API & Indexer<br/>Event ingestion · Analytics · Settlement Manager<br/>Transparency API · Oracle reporting pipeline"]
+
+    LP --> MONEYGRAM
+    LP --> BRIDGE
+    LP --> CCTP
+    MONEYGRAM -->|"USDC on Stellar"| DAPP
+    BRIDGE -->|"USDC on Stellar"| DAPP
+    CCTP -->|"USDC on Stellar"| DAPP
+    DAPP -->|"Soroban RPC"| soroban
+    ENGINE --> SOROSWAP
+    ENGINE --> STABLEBONDS
+    ENGINE --> CREDIT
+    CREDIT --> FEEDS
+    soroban -.->|"Events"| BACKEND
+
+    classDef integration fill:#f0fdf4,stroke:#22c55e,color:#15803d
+    classDef core fill:#ffffff,stroke:#374151,color:#111827
+    classDef offchain fill:#fff7ed,stroke:#f97316,color:#c2410c
+    classDef feed fill:#faf5ff,stroke:#a855f7,color:#7e22ce
+    classDef actor fill:#eff6ff,stroke:#2563eb,color:#1e40af
+
+    class LP,DAPP actor
+    class MONEYGRAM,BRIDGE,CCTP,SOROSWAP,STABLEBONDS integration
+    class VAULT,AGUSD,SAGUSD,ENGINE,ORACLE,ADAPTERS,BACKEND core
+    class CREDIT offchain
+    class FEEDS feed
+```
+
+Legend, as coloured in the diagram: green = Integration List protocol · orange = Off-chain component · purple = Oracle / data feed · dark outline = Core Agama contract.
+
+The same flowchart, and the reasoning behind every box in it, is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and in [`docs/Agama_Technical_Architecture.pdf`](docs/Agama_Technical_Architecture.pdf). The two copies of the diagram are byte identical, so they cannot drift.
 
 ## Live on Testnet
 

@@ -207,8 +207,6 @@ flowchart TB
 
 Legend, as coloured in the diagram: green = Integration List protocol · orange = Off-chain component · purple = Oracle / data feed · dark outline = Core Agama contract.
 
-![Agama on Stellar: entry ramps, Agama dApp, Soroban contracts, allocation targets, oracle feeds and withdrawal liquidity order.](architecture.png)
-
 ## 3. Ecosystem Integrations
 
 Agama builds on proven Stellar ecosystem protocols drawn from the **SCF Integration List**. Each integration serves a specific architectural role and replaces or augments a component that would otherwise be built from scratch.
