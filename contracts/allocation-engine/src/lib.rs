@@ -13,8 +13,8 @@
 //!  - the per-originator cap, so several pools fronted by the same originator
 //!    cannot add up to concentrated counterparty risk
 //!  - the per-jurisdiction cap, so the book is not one legal regime deep
-//!  - the reserve floor, a minimum share of total assets that has to stay as
-//!    idle USDC in the Vault
+//!  - the reserve floor, a minimum share of net assets that has to stay as
+//!    free USDC in the Vault
 //!
 //! The V2 off-chain optimizer changes who proposes an allocation. It does not
 //! change who enforces these limits, which is why they live here and not in a
@@ -33,6 +33,21 @@
 //! buffer parked in a lending protocol is only as instant as that protocol's
 //! utilization on the day you need it; USDC that never left the Vault has no
 //! such dependency.
+//!
+//! The floor is measured against free reserves and net assets, never against
+//! the Vault's gross balance. A withdrawal request burns its agUSD immediately
+//! and leaves the USDC in the Vault until the claim is paid, so between those
+//! two moments the money sits on the balance and belongs to somebody already.
+//! Measuring against the gross balance counted it twice: 1000 deposited, all
+//! 1000 queued for withdrawal, and the Engine would still deploy 400 while the
+//! reserve ratio reported a healthy 6000 bps, leaving a claim that could not be
+//! paid. `Vault::free_reserves` and `Vault::get_net_assets` are the same book
+//! with that liability subtracted, and they are what every limit here reads.
+//!
+//! The Vault enforces the floor a second time, on its own numbers, when it
+//! releases the cash. That is not redundancy to be tidied away: this Engine is
+//! an address the Vault authorizes, so a check that lives only here is a check
+//! that any contract holding that authorization can skip.
 //!
 //! A floor is only a constraint if the caps can reach it, and that is a
 //! property of the configuration rather than of the code. Two pools capped at
@@ -55,9 +70,18 @@
 //!
 //! Exposure records are persistent, not instance state: they have to survive
 //! settlement cycles that run for weeks (D+15 to D+90 for private credit) and
-//! outlive any single configuration change. Total assets are read as idle
+//! outlive any single configuration change. Net assets are read as free
 //! reserves plus booked exposure, so allocating moves value between the two
 //! without changing the denominator the caps are measured against.
+//!
+//! Exposure comes down in two ways, and both of them are explicit. `deallocate`
+//! is capital coming back, and it now proves it: the Vault checks the cash
+//! reached it before the book is allowed to fall. `write_down` is capital that
+//! is not coming back, admin gated and evented, and it exists because without
+//! it a default could not be recognised at all. `deallocate` transfers before
+//! it decrements, so a defaulted originator holding no USDC panics the transfer
+//! and the exposure reports face value indefinitely, which leaves every reserve
+//! ratio derived from it overstated by the size of the loss.
 
 use soroban_sdk::{
     contract, contractclient, contracterror, contractevent, contractimpl, contracttype, Address,
@@ -78,11 +102,21 @@ const EXPOSURE_LIFETIME: u32 = EXPOSURE_BUMP - DAY_LEDGERS;
 /// as a crate dependency so the two contracts stay independently deployable.
 #[contractclient(name = "VaultClient")]
 pub trait VaultInterface {
-    /// USDC sitting in the Vault, the quantity the reserve floor protects.
-    fn idle_reserves(e: Env) -> i128;
+    /// USDC sitting in the Vault that the withdrawal queue has no claim on.
+    /// This is the quantity the reserve floor protects: the gross balance
+    /// includes claims whose agUSD has already been burned, and lending those
+    /// out is how a queued claim becomes unpayable.
+    fn free_reserves(e: Env) -> i128;
     /// Move `amount` of that USDC to `pool`. The Vault is the only custodian;
-    /// the Engine can instruct a release but never holds the funds itself.
+    /// the Engine can instruct a release but never holds the funds itself. The
+    /// Vault applies its own floor to this and can refuse.
     fn settle_allocation(e: Env, pool: Address, amount: i128);
+    /// Tell the Vault that `amount` has come back from a pool. The Vault
+    /// verifies it against its own balance before believing it.
+    fn record_repayment(e: Env, amount: i128);
+    /// Tell the Vault that `amount` of deployed capital is not coming back.
+    /// Needs the Vault admin's signature as well as this Engine's call.
+    fn record_writedown(e: Env, admin: Address, amount: i128);
 }
 
 /// The uniform pool interface. Every adapter implements exactly this, which is
@@ -92,7 +126,16 @@ pub trait VaultInterface {
 pub trait PoolAdapter {
     fn allocate(e: Env, amount: i128);
     fn deallocate(e: Env, amount: i128);
+    /// Reduce the booked exposure without returning capital, for a loss that
+    /// has been recognised.
+    fn write_down(e: Env, amount: i128);
     fn get_exposure(e: Env) -> i128;
+    /// The Engine this adapter takes instructions from.
+    fn engine(e: Env) -> Address;
+    /// The Vault this adapter repays. `register_pool` checks both, because an
+    /// adapter that repays somewhere else settles the Engine's book against
+    /// cash that went to a third party.
+    fn vault(e: Env) -> Address;
 }
 
 #[contracterror]
@@ -121,6 +164,10 @@ pub enum EngineError {
     ExposureUnderflow = 412,
     /// The Vault pointer cannot move while the exposure book is non-empty.
     CapitalDeployed = 413,
+    /// The adapter offered does not name this Engine and this Vault back.
+    AdapterMismatch = 414,
+    /// Writing down more than the pool has booked as deployed.
+    WriteDownExceedsExposure = 415,
 }
 
 /// Whitelist entry for a pool. `originator` and `jurisdiction` are the keys the
@@ -222,6 +269,21 @@ pub struct Deallocated {
     pub pool_exposure: i128,
 }
 
+/// Emitted when exposure is written off. A write-down is the only way the book
+/// falls without capital coming back, so it carries a reason and goes in the
+/// event stream: an exposure that drops with no matching cash movement should
+/// never be something an observer has to infer.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WrittenDown {
+    #[topic]
+    pub pool: Address,
+    pub amount: i128,
+    pub pool_exposure: i128,
+    /// Short code for why, recorded on-chain next to the number.
+    pub reason: Symbol,
+}
+
 #[contract]
 pub struct AllocationEngine;
 
@@ -289,6 +351,16 @@ impl AllocationEngine {
     /// Whitelist a pool adapter along with the metadata the caps aggregate
     /// over. A pool that is not registered cannot receive capital at all, so
     /// this is the first of the four gates.
+    ///
+    /// The adapter has to name this Engine and this Engine's Vault back. An
+    /// adapter takes `allocate` and `deallocate` from the Engine it stores and
+    /// sends repayments to the Vault it stores, and neither of those has to be
+    /// the pair registering it. Registered without the check, an adapter
+    /// pointed at somebody else's Vault takes capital from this one and repays
+    /// it to a third party, while `deallocate` here decrements the book as if
+    /// the money had come home. Nothing reverts and the exposure reads as
+    /// settled. It is a wiring mistake rather than an attack, which is exactly
+    /// the kind of thing registration should be catching.
     pub fn register_pool(
         e: Env,
         admin: Address,
@@ -304,6 +376,13 @@ impl AllocationEngine {
         let mut pools = Self::pool_map(&e);
         if pools.contains_key(pool_id.clone()) {
             return Err(EngineError::PoolAlreadyRegistered);
+        }
+        let vault_address = Self::vault(e.clone())?;
+        let adapter = PoolAdapterClient::new(&e, &pool_id);
+        match (adapter.try_engine(), adapter.try_vault()) {
+            (Ok(Ok(engine)), Ok(Ok(vault)))
+                if engine == e.current_contract_address() && vault == vault_address => {}
+            _ => return Err(EngineError::AdapterMismatch),
         }
         pools.set(
             pool_id.clone(),
@@ -413,7 +492,13 @@ impl AllocationEngine {
 
         let vault_address = Self::vault(e.clone())?;
         let vault = VaultClient::new(&e, &vault_address);
-        let idle = vault.idle_reserves();
+        // Free reserves, not the gross balance. USDC owed to a queued
+        // withdrawal is on the Vault's balance and is not the protocol's to
+        // deploy: counting it made the floor measure cash the Vault was already
+        // committed to paying out, so a book with every dollar queued for
+        // withdrawal still reported a healthy reserve ratio and still let the
+        // Engine deploy against it.
+        let idle = vault.free_reserves();
         let deployed = Self::total_allocated(e.clone());
         let total_assets = idle + deployed;
         if amount > idle {
@@ -492,6 +577,13 @@ impl AllocationEngine {
         }
 
         PoolAdapterClient::new(&e, &pool_id).deallocate(&amount);
+        // The adapter has just moved the USDC to the Vault. Telling the Vault
+        // is not bookkeeping politeness: the Vault checks the money actually
+        // landed before it takes the amount off its own deployed book, so a
+        // repayment that went anywhere else fails here and takes the whole
+        // deallocation with it rather than settling the Engine's book against
+        // cash the protocol never received.
+        VaultClient::new(&e, &Self::vault(e.clone())?).record_repayment(&amount);
 
         let pool_exposure = exposure - amount;
         Self::write_exposure(&e, &pool_id, pool_exposure);
@@ -507,13 +599,80 @@ impl AllocationEngine {
         Ok(())
     }
 
+    /// Recognise that `amount` of a pool's exposure is not coming back.
+    ///
+    /// Until this existed there was no way to say it. `total_allocated` moved
+    /// only through `allocate` and `deallocate`, and `deallocate` transfers
+    /// real USDC before it decrements the book, so a defaulted originator left
+    /// the adapter holding no cash, the transfer panicking, and the exposure
+    /// reporting full face value for as long as the contract lived. Every
+    /// reserve ratio computed afterwards was overstated by the size of the
+    /// loss, and the number that was wrong was the one the caps and the floor
+    /// are measured against.
+    ///
+    /// It writes down three books in one call so they cannot disagree: this
+    /// Engine's exposure record, the adapter's own, and the Vault's deployed
+    /// capital. The Vault leg needs the admin's signature as well as this
+    /// Engine's call, because reducing the Vault's deployed book without cash
+    /// arriving is the one move that would otherwise let an Engine reset the
+    /// limit its releases are measured against.
+    ///
+    /// It does not decide who bears the loss. Nothing here touches agUSD
+    /// supply, the withdrawal queue or the sagUSD share price, because agUSD is
+    /// a synthetic dollar redeemed one for one and the queue is paid in order:
+    /// as the code stands, a shortfall lands on whoever is at the back of the
+    /// queue when the cash runs out. Recording the loss makes that visible
+    /// instead of hidden. Choosing to distribute it differently is a product
+    /// decision that has not been made, and inventing one here would be putting
+    /// an answer on-chain that nobody has agreed to.
+    pub fn write_down(
+        e: Env,
+        admin: Address,
+        pool_id: Address,
+        amount: i128,
+        reason: Symbol,
+    ) -> Result<(), EngineError> {
+        Self::require_admin(&e, &admin)?;
+        if amount <= 0 {
+            return Err(EngineError::InvalidAmount);
+        }
+        if !Self::pool_map(&e).contains_key(pool_id.clone()) {
+            return Err(EngineError::PoolNotRegistered);
+        }
+        let exposure = Self::get_exposure(e.clone(), pool_id.clone());
+        if amount > exposure {
+            return Err(EngineError::WriteDownExceedsExposure);
+        }
+
+        PoolAdapterClient::new(&e, &pool_id).write_down(&amount);
+        VaultClient::new(&e, &Self::vault(e.clone())?).record_writedown(&admin, &amount);
+
+        let pool_exposure = exposure - amount;
+        Self::write_exposure(&e, &pool_id, pool_exposure);
+        Self::write_total_allocated(&e, Self::total_allocated(e.clone()) - amount);
+        Self::bump_instance(&e);
+
+        WrittenDown {
+            pool: pool_id,
+            amount,
+            pool_exposure,
+            reason,
+        }
+        .publish(&e);
+        Ok(())
+    }
+
     // ---- views ----
 
-    /// Idle Vault reserves as a share of total assets, in bps. This is the
-    /// number `set_reserve_floor` sets a lower bound on.
+    /// Free Vault reserves as a share of net assets, in bps. This is the number
+    /// `set_reserve_floor` sets a lower bound on.
+    ///
+    /// Free, not gross: USDC owed to a queued withdrawal is not reserve, it is
+    /// a payment that has not happened yet. Counting it was what let a Vault
+    /// with every dollar queued for withdrawal report a healthy ratio.
     pub fn get_reserve_ratio(e: Env) -> Result<u32, EngineError> {
         let vault_address = Self::vault(e.clone())?;
-        let idle = VaultClient::new(&e, &vault_address).idle_reserves();
+        let idle = VaultClient::new(&e, &vault_address).free_reserves();
         let total_assets = idle + Self::total_allocated(e.clone());
         if total_assets <= 0 {
             // No assets means nothing is at risk, so the reserve is complete.

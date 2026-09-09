@@ -26,10 +26,26 @@
 //! and there is no admin path around it: a protocol that can reorder its own
 //! withdrawal queue under stress has not really got one.
 //!
-//! The cost of that choice is a liveness one, and it is deliberate: if the
-//! owner of the head claim never comes back to claim it, the queue does not
-//! advance. Skipping them would be precisely the priority jumping the queue
-//! exists to prevent, so V1 accepts the stall.
+//! FIFO does not depend on the head claimant showing up, though.
+//! `settle_withdrawal` pays whichever claim sits at `queue_head` to the owner
+//! recorded on it, and any address may call it. That is not a privileged path
+//! around the ordering, because the caller chooses neither the claim nor the
+//! recipient: both are read from the queue rather than supplied, so the only
+//! thing calling `settle_withdrawal` can do is what the owner's own
+//! `claim_withdrawal` would have done. Without it, one 1 agUSD claim whose
+//! owner simply never returns freezes every withdrawal behind it forever, and
+//! the attacker keeps their agUSD.
+//!
+//! # A queued claim is a liability, and the Vault counts it
+//!
+//! `request_withdrawal` burns the agUSD immediately and leaves the USDC here,
+//! so between the request and the payment the money is still on the Vault's
+//! balance but is no longer anybody's to lend out. `outstanding_liabilities`
+//! is the running total of it, and `free_reserves` is what is left after
+//! subtracting it. Every limit that asks how much capital may be deployed is
+//! measured against free reserves and net assets, never against the gross
+//! balance, because the gross balance counts money that has already been
+//! promised to somebody.
 //!
 //! # The two pointers that decide whether the Vault works at all
 //!
@@ -49,40 +65,75 @@
 //! invalidate, which is the only version of a setter worth having on a
 //! custodian. For agUSD that line is the first deposit, because repointing a
 //! Vault that has already issued agUSD would strand the holders against a
-//! token it no longer mints. For the Engine it is an exposure book funded by
-//! this Vault, because the USDC behind it is out in the pool adapters and only
-//! the Engine that put it there can call it back. `set_engine` additionally
-//! refuses any address that does not name this Vault back, so the pointer that
-//! releases the reserves cannot be aimed at an ordinary account.
+//! token it no longer mints. For the Engine it is capital this Vault has
+//! released and not seen back, because the USDC behind it is out in the pool
+//! adapters and only the Engine that put it there can call it back.
 //!
-//! # What the admin can do, stated plainly
+//! # The Vault does not trust the Engine for its own solvency
+//!
+//! `set_engine` asks the incoming address whether it governs this Vault, and
+//! that check is worth having, but it is worth exactly what it can prove, which
+//! is less than it looks. Any contract can answer the question correctly: forty
+//! lines that store one address, return it from `vault()`, return zero from
+//! `total_allocated()` and expose a `steal()` that calls `settle_allocation`
+//! pass it without difficulty. A guard that interrogates a counterparty can
+//! rule out an address that cannot answer, and nothing more.
+//!
+//! So the Vault stopped relying on it. `settle_allocation` used to release USDC
+//! on the Engine's say-so and check nothing itself, on the reasoning that
+//! duplicating the Engine's limits would mean two implementations that can
+//! disagree. That reasoning was wrong in one specific way: it is the Vault that
+//! holds the money, so it is the Vault that has to be the last word on how much
+//! of it may leave. The Vault now keeps three numbers of its own, none of them
+//! read from the Engine:
+//!
+//!  - `deployed_capital`, incremented by every release it performs and reduced
+//!    only by a repayment it can see in its own balance or by an admin
+//!    authorized write-down
+//!  - `outstanding_liabilities`, the queued withdrawals it already owes
+//!  - `reserve_floor_bps`, its own copy of the floor, admin set and fail closed
+//!    at 100% until it is configured
+//!
+//! and `settle_allocation` refuses any release that would take free reserves
+//! below that floor, or below the queued claims, whoever is asking. An honest
+//! Engine never meets this check, because it applies the same arithmetic to the
+//! same book one call earlier. A hostile one meets it on the first call and
+//! cannot get past it on any subsequent one, because the Vault's own record of
+//! what it has released is not something the Engine can rewrite.
+//!
+//! # What the admin can still do, stated plainly
 //!
 //! None of that makes the admin harmless, and this contract does not pretend
-//! otherwise. V1 allocation is admin directed: the admin sets the Engine's
-//! caps and reserve floor, chooses which pools are registered, and decides how
-//! much goes to each. An admin willing to register a pool it controls can
-//! therefore move the Vault's capital to itself, and no check inside the Vault
-//! prevents that, because the Vault deliberately does not duplicate the
-//! Engine's limits. What protects depositors from the admin is the
+//! otherwise. V1 allocation is admin directed: the admin sets the caps and the
+//! reserve floor, chooses which pools are registered, and decides how much goes
+//! to each. An admin willing to register a pool it controls can move up to what
+//! the floor releases to itself, and the floor is a limit on the size of that,
+//! not a prohibition. What protects depositors from the admin is the
 //! multi-signature admin in V1 and governance with a timelock in V2, not a
 //! guard in this file. What the guards here protect is everything else: the
-//! withdrawal queue cannot be reordered, agUSD cannot be minted by anyone but
-//! this Vault, and no counterparty pointer can be moved into a state that
-//! silently misreports the book.
+//! withdrawal queue cannot be reordered or stalled, agUSD cannot be minted by
+//! anyone but this Vault, the reserve floor holds against any Engine, and no
+//! counterparty pointer can be moved into a state that silently misreports the
+//! book.
 //!
 //! # Circuit breaker
 //!
-//! `set_paused` blocks deposits, withdrawal requests, claims and new
-//! allocations. It does not touch the staking contract or the Oracle Adapter:
-//! during an incident, NAV reporting is exactly what should keep running.
-//! Pausing allocations goes slightly beyond blocking user flows, and is
-//! deliberate: deploying more capital into pools during an emergency stop is
-//! the opposite of what the stop is for.
+//! `set_paused` blocks deposits, withdrawal requests and new allocations. It
+//! does not block payouts, and that asymmetry is deliberate: by the time a
+//! claim is in the queue the agUSD backing it has already been burned, so a
+//! pause that stopped payments would leave a user holding neither the token nor
+//! the cash for as long as the admin chose. Stopping the flows that create new
+//! obligations is what a circuit breaker is for; refusing to honour the
+//! obligations already recorded is something else. It does not touch the
+//! staking contract or the Oracle Adapter either: during an incident, NAV
+//! reporting is exactly what should keep running.
 
 use soroban_sdk::{
     contract, contractclient, contracterror, contractevent, contractimpl, contracttype,
     token::TokenClient, Address, Env, Symbol,
 };
+
+const BPS: i128 = 10_000;
 
 const DAY_LEDGERS: u32 = 17_280;
 const INSTANCE_BUMP: u32 = 30 * DAY_LEDGERS;
@@ -156,6 +207,16 @@ pub enum VaultError {
     /// The proposed Allocation Engine does not answer that it governs this
     /// Vault, so it cannot be given the authority to release its reserves.
     EngineMismatch = 314,
+    /// `settle_withdrawal` was called with nothing queued to pay.
+    QueueEmpty = 315,
+    /// The release would take free reserves below the Vault's own floor.
+    ReserveFloorBreached = 316,
+    /// A repayment was reported that the Vault cannot see in its own balance.
+    RepaymentNotReceived = 317,
+    /// More was written down or repaid than the Vault has recorded as deployed.
+    DeployedUnderflow = 318,
+    /// A floor outside 0 to 10000 bps.
+    InvalidFloor = 319,
 }
 
 /// A queued withdrawal. The agUSD is burned at request time, so this record is
@@ -194,6 +255,23 @@ enum Cfg {
     QueueHead,
     QueueTail,
     Deposits,
+    /// The Vault's own copy of the reserve floor, in bps of net assets. Fail
+    /// closed at 10000 until an admin sets it.
+    FloorBps,
+    /// USDC this Vault has released to pools and not seen come back. Kept here
+    /// rather than read from the Engine because it is the denominator of the
+    /// Vault's own floor check, and a number the Engine can rewrite is not a
+    /// constraint on the Engine.
+    Deployed,
+    /// USDC owed to queued withdrawal claims that have burned their agUSD and
+    /// not been paid.
+    Queued,
+    /// The idle balance the Vault can account for from its own flows: deposits
+    /// in, claims and releases out, repayments recorded. Anything the real
+    /// balance holds above this arrived without the Vault being told, which is
+    /// exactly what a pool repayment looks like from in here, and is what
+    /// `record_repayment` is checked against.
+    Booked,
 }
 
 /// Persistent storage: the claim records, keyed by claim id.
@@ -232,7 +310,32 @@ impl Vault {
         // Claim ids start at 1 so that 0 can never be a valid claim.
         e.storage().instance().set(&Cfg::QueueHead, &1u64);
         e.storage().instance().set(&Cfg::QueueTail, &1u64);
+        // Fail closed, the same way the Engine does: a Vault that has been
+        // deployed but not yet given a floor releases nothing at all, so a
+        // forgotten configuration step cannot be mistaken for an intended one.
+        e.storage().instance().set(&Cfg::FloorBps, &(BPS as u32));
         Self::bump_instance(&e);
+        Ok(())
+    }
+
+    /// Set the share of net assets the Vault will not release, in bps.
+    ///
+    /// This is the Vault's own copy of the number the Engine also enforces, and
+    /// the duplication is the point rather than an oversight. The Engine checks
+    /// it because it is the contract that decides whether an allocation is a
+    /// good idea; the Vault checks it because it is the contract that holds the
+    /// money, and an invariant enforced only by the party asking for the funds
+    /// is not an invariant. The two are set to the same number at deployment;
+    /// if they ever differ, the tighter of them is what actually binds, which is
+    /// the safe direction for them to differ in.
+    pub fn set_reserve_floor(e: Env, admin: Address, floor_bps: u32) -> Result<(), VaultError> {
+        Self::require_admin(&e, &admin)?;
+        if floor_bps as i128 > BPS {
+            return Err(VaultError::InvalidFloor);
+        }
+        e.storage().instance().set(&Cfg::FloorBps, &floor_bps);
+        Self::bump_instance(&e);
+        ReserveFloorSet { floor_bps }.publish(&e);
         Ok(())
     }
 
@@ -298,65 +401,68 @@ impl Vault {
     /// Vault mints names the Vault as its only minter, the redeployment is two
     /// contracts, not one.
     ///
-    /// The guard is the same shape as `set_agusd`: the pointer moves only
-    /// while nothing depends on it. Here that means the Engine currently
-    /// pointed at must not be holding an exposure book funded by this Vault.
-    /// If it is, the USDC is already out in the pool adapters and only that
-    /// Engine can call them back, so repointing would leave `get_total_assets`
-    /// understating the book by exactly the amount still deployed.
+    /// The guard is the same shape as `set_agusd`: the pointer moves only while
+    /// nothing depends on it. Here that means this Vault must have no capital
+    /// out at a pool. If it has, the USDC is in the adapters and only the Engine
+    /// that put it there can call it back, so repointing would leave the Vault's
+    /// own book carrying capital nobody it points at can unwind.
     ///
-    /// An Engine that governs some other Vault is not that: its exposure is
-    /// somebody else's capital, and this Vault is free to leave. That is the
-    /// case this deployment was actually stuck in, and refusing it would have
-    /// made the setter useless in the one situation it exists for.
+    /// That question is answered from the Vault's own `deployed_capital`, not
+    /// by asking the outgoing Engine. Asking it was the previous version of this
+    /// guard and it got the important case right for the wrong reason: an Engine
+    /// that governs some other Vault has a real, non-empty book, none of which
+    /// is this Vault's money, and this Vault is free to leave. Reading the local
+    /// counter says that directly, and it also cannot be lied to by an Engine
+    /// that would rather not be replaced.
     ///
     /// The replacement has to answer that it governs this Vault.
     /// `settle_allocation` hands the Vault's USDC to whatever this pointer
     /// names, so without that check the setter would be a one call instruction
     /// to release the reserves to an ordinary account: an account has no
-    /// `vault()` to answer with, so it cannot be named here, and neither can an
-    /// Engine that governs somebody else. It also means the setter that exists
-    /// to undo a mis-wiring cannot be used to create one, which is worth having
-    /// on the only pointer both contracts have already been wrong about.
+    /// `vault()` to answer with, so it cannot be named here.
+    ///
+    /// What that check does not do is tell an Engine from a contract pretending
+    /// to be one. A hostile contract answers `vault()` with whatever address it
+    /// was built to answer, and `total_allocated()` with whatever number suits
+    /// it, so it passes every interrogation this function could run. Asking for
+    /// both, and requiring the book to be empty, raises the cost of writing the
+    /// impostor from forty lines to fifty. It is worth doing because it catches
+    /// the realistic case, which is a mis-wiring rather than an attack, and it
+    /// is not worth believing in: what actually bounds a hostile Engine is that
+    /// `settle_allocation` enforces the reserve floor itself, against the
+    /// Vault's own numbers, whoever is calling.
     ///
     /// It does not make the admin harmless and it is not sold as doing so. An
     /// admin can register a pool of its own choosing with the Engine and
-    /// allocate to it; V1 allocation is admin directed by construction, and
-    /// what protects depositors from the admin is the multi-signature admin and
-    /// the timelock on the roadmap, not a check in this function. What this
-    /// check buys is that the short path is no shorter than the long one.
+    /// allocate to it, up to the floor; V1 allocation is admin directed by
+    /// construction, and what protects depositors from the admin is the
+    /// multi-signature admin and the timelock on the roadmap, not a check in
+    /// this function.
     pub fn set_engine(
         e: Env,
         admin: Address,
         allocation_engine: Address,
     ) -> Result<(), VaultError> {
         Self::require_admin(&e, &admin)?;
-        let current: Address = e
-            .storage()
-            .instance()
-            .get(&Cfg::Engine)
-            .ok_or(VaultError::NotInitialized)?;
-
-        // Leaving an Engine that cannot answer is always safe: whatever it has
-        // done with this Vault's USDC, it can do no more once it is no longer
-        // named here, and there is no book to reconcile because there is no
-        // book to read. Refusing in that case would freeze the pointer exactly
-        // when moving it is the remedy.
-        let outgoing = EngineClient::new(&e, &current);
-        if let (Ok(Ok(governed)), Ok(Ok(deployed))) =
-            (outgoing.try_vault(), outgoing.try_total_allocated())
-        {
-            if governed == e.current_contract_address() && deployed > 0 {
-                return Err(VaultError::CapitalDeployed);
-            }
+        if !e.storage().instance().has(&Cfg::Engine) {
+            return Err(VaultError::NotInitialized);
+        }
+        // This Vault's own record of what it has released and not seen back.
+        // Nothing else is consulted: the outgoing Engine has no say in whether
+        // it is replaced.
+        if Self::deployed_capital(e.clone()) > 0 {
+            return Err(VaultError::CapitalDeployed);
         }
 
-        // An address that cannot answer the question is refused along with one
-        // that answers wrongly, so a plain account and a hostile contract fail
-        // here identically rather than one of them failing later, in a release.
+        // The replacement must answer both halves of the Engine interface, and
+        // must arrive with an empty book: an Engine already carrying exposure
+        // is one whose caps were measured against somebody else's balance
+        // sheet. Neither condition proves the address is honest, and neither is
+        // relied on for that.
         let incoming = EngineClient::new(&e, &allocation_engine);
-        match incoming.try_vault() {
-            Ok(Ok(governed)) if governed == e.current_contract_address() => {}
+        match (incoming.try_vault(), incoming.try_total_allocated()) {
+            (Ok(Ok(governed)), Ok(Ok(booked)))
+                if governed == e.current_contract_address() && booked == 0 => {}
             _ => return Err(VaultError::EngineMismatch),
         }
 
@@ -369,8 +475,15 @@ impl Vault {
         Ok(())
     }
 
-    /// Circuit breaker. Blocks deposits, withdrawal requests, claims and new
-    /// allocations; leaves staking and NAV reporting untouched.
+    /// Circuit breaker. Blocks deposits, withdrawal requests and new
+    /// allocations; leaves payouts, staking and NAV reporting untouched.
+    ///
+    /// Payouts are deliberately outside it. `request_withdrawal` burns the
+    /// agUSD as it queues the claim, so a paused payout path leaves the holder
+    /// with no token and no cash, for as long as the admin leaves the switch on.
+    /// A breaker that stops new obligations being created is a breaker; one
+    /// that also refuses to honour the obligations already on the books is a
+    /// freeze, and it is not what this switch is for.
     pub fn set_paused(e: Env, admin: Address, paused: bool) -> Result<(), VaultError> {
         Self::require_admin(&e, &admin)?;
         e.storage().instance().set(&Cfg::Paused, &paused);
@@ -404,6 +517,7 @@ impl Vault {
         e.storage()
             .instance()
             .set(&Cfg::Deposits, &(Self::deposits(e.clone()) + 1));
+        Self::add_booked(&e, amount);
         Self::bump_instance(&e);
 
         Deposit {
@@ -449,6 +563,11 @@ impl Vault {
         };
         Self::write_claim(&e, claim_id, &claim);
         e.storage().instance().set(&Cfg::QueueTail, &(claim_id + 1));
+        // The USDC behind this claim is still on the balance sheet but is no
+        // longer free: the agUSD that entitled anyone else to it has just been
+        // burned. Recording it here is what keeps the reserve floor measuring
+        // liquidity the protocol can actually deploy.
+        Self::set_queued(&e, Self::outstanding_liabilities(e.clone()) + amount);
         Self::bump_instance(&e);
 
         WithdrawalRequested {
@@ -471,15 +590,13 @@ impl Vault {
     /// having: one that cannot be reordered by whoever is running the protocol
     /// on the day it is under stress.
     ///
-    /// The head advances only when a claim is paid, so a queue does stall if
-    /// the owner of the head claim never returns. That is the deliberate cost
-    /// of the guarantee: paying around them would be exactly the queue jumping
-    /// the ordering exists to prevent.
+    /// The head advances only when a claim is paid. If its owner never returns
+    /// to call this, `settle_withdrawal` is how the queue moves on without
+    /// them: same recipient, same amount, same position, different caller.
     pub fn claim_withdrawal(e: Env, from: Address, claim_id: u64) -> Result<(), VaultError> {
-        Self::require_not_paused(&e)?;
         from.require_auth();
 
-        let mut claim = Self::read_claim(&e, claim_id)?;
+        let claim = Self::read_claim(&e, claim_id)?;
         if claim.owner != from {
             return Err(VaultError::NotClaimOwner);
         }
@@ -489,35 +606,68 @@ impl Vault {
         if claim_id != Self::queue_head(e.clone()) {
             return Err(VaultError::NotAtQueueHead);
         }
-        if Self::idle_reserves(e.clone()) < claim.amount {
-            return Err(VaultError::InsufficientLiquidity);
-        }
-
-        let usdc = Self::usdc(e.clone())?;
-        TokenClient::new(&e, &usdc).transfer(
-            &e.current_contract_address(),
-            &claim.owner,
-            &claim.amount,
-        );
-
-        claim.claimed = true;
-        Self::write_claim(&e, claim_id, &claim);
-        e.storage().instance().set(&Cfg::QueueHead, &(claim_id + 1));
-        Self::bump_instance(&e);
-
-        WithdrawalClaimed {
-            user: from,
-            claim_id,
-            amount: claim.amount,
-        }
-        .publish(&e);
-        Ok(())
+        Self::pay_head(&e, claim_id, claim)
     }
 
-    /// Release idle USDC to a pool. Callable only by the Allocation Engine,
-    /// which has already checked the concentration caps and the reserve floor.
-    /// The Vault does not re-derive those limits: duplicating them here would
-    /// mean two implementations that can disagree.
+    /// Pay the claim at the head of the queue to its recorded owner, and
+    /// advance the queue. Callable by anyone, on behalf of no one.
+    ///
+    /// This is `claim_withdrawal` with both levers taken away from the caller.
+    /// There is no `claim_id` argument, so nothing can be pointed at a claim
+    /// other than the one already at `queue_head`, and the payment always goes
+    /// to `claim.owner`, never to whoever sent the transaction. Redirecting
+    /// funds or jumping the queue would need this function to accept a target
+    /// it does not accept, so the only thing it can be used for is doing, for a
+    /// stalled claimant, exactly what they could have done for themselves.
+    ///
+    /// That is what makes it safe to leave unauthenticated, and leaving it
+    /// unauthenticated is what fixes the queue. Before it existed, the head
+    /// holder had a veto over everyone behind them and exercised it by doing
+    /// nothing: one claim at the anti-dust minimum, never claimed, froze every
+    /// withdrawal in the protocol for as long as its owner cared to wait, and
+    /// the owner kept the agUSD's worth of USDC at the end of it.
+    pub fn settle_withdrawal(e: Env) -> Result<u64, VaultError> {
+        let claim_id = Self::queue_head(e.clone());
+        if claim_id >= Self::queue_tail(e.clone()) {
+            return Err(VaultError::QueueEmpty);
+        }
+        let claim = Self::read_claim(&e, claim_id)?;
+        if claim.claimed {
+            // Unreachable while the head pointer and the claimed flag are
+            // written together, and checked anyway: the invariant that makes it
+            // unreachable is the one an audit should not have to take on trust.
+            return Err(VaultError::AlreadyClaimed);
+        }
+        Self::pay_head(&e, claim_id, claim)?;
+        Ok(claim_id)
+    }
+
+    /// Release idle USDC to a pool, on the Allocation Engine's instruction and
+    /// within the Vault's own limits.
+    ///
+    /// The Engine has already checked the concentration caps and the reserve
+    /// floor by the time this is called, and this function checks the floor
+    /// again anyway. That is not a duplicated implementation for its own sake,
+    /// it is where the invariant belongs. The Engine is the address this
+    /// function authorizes, so "the Engine checked it" is only ever as good as
+    /// the Engine, and `set_engine` cannot prove that an address that answers
+    /// `vault()` correctly is the contract it claims to be. The Vault holds the
+    /// USDC, so the Vault is the last word on how much of it may leave.
+    ///
+    /// Two limits, both measured against the Vault's own numbers:
+    ///
+    ///  - free reserves after the release cannot go negative. Queued claims
+    ///    have already burned their agUSD and are owed this cash; lending it
+    ///    out is how a claim becomes unpayable.
+    ///  - free reserves after the release cannot fall below `reserve_floor_bps`
+    ///    of net assets, where net assets are free reserves plus the capital
+    ///    this Vault has released and not seen back.
+    ///
+    /// Net assets are invariant under an allocation, which is what makes the
+    /// second limit hold across repeated calls rather than only within one. A
+    /// hostile Engine gets the first release an honest one would have been
+    /// allowed, and then gets nothing, because `deployed_capital` went up by
+    /// exactly what it took and is not a number the Engine can write.
     pub fn settle_allocation(e: Env, pool: Address, amount: i128) -> Result<(), VaultError> {
         let engine: Address = e
             .storage()
@@ -529,16 +679,115 @@ impl Vault {
         if amount <= 0 {
             return Err(VaultError::InvalidAmount);
         }
+
+        let free_after = Self::free_reserves(e.clone()) - amount;
+        if free_after < 0 {
+            return Err(VaultError::InsufficientLiquidity);
+        }
+        let deployed_after = Self::deployed_capital(e.clone()) + amount;
+        let net_assets = free_after + deployed_after;
+        if free_after * BPS < Self::reserve_floor_bps(e.clone()) as i128 * net_assets {
+            return Err(VaultError::ReserveFloorBreached);
+        }
+
         let usdc = Self::usdc(e.clone())?;
-        TokenClient::new(&e, &usdc).transfer(&e.current_contract_address(), &pool, &amount);
+        e.storage().instance().set(&Cfg::Deployed, &deployed_after);
+        Self::add_booked(&e, -amount);
         Self::bump_instance(&e);
+        TokenClient::new(&e, &usdc).transfer(&e.current_contract_address(), &pool, &amount);
+        Ok(())
+    }
+
+    /// Record capital coming back from a pool, and take it off the Vault's
+    /// deployed book.
+    ///
+    /// Called by the Engine, in the same transaction as the adapter's
+    /// repayment, and not believed. The Vault compares its own idle balance
+    /// against the balance it can account for from its own flows, and refuses
+    /// any repayment larger than the difference. So the counter that bounds
+    /// every future release can only be reduced by USDC that has genuinely
+    /// arrived here, which is what stops an Engine from resetting its own
+    /// limit and calling `settle_allocation` again.
+    ///
+    /// It also means the Engine's book cannot decrement against a repayment
+    /// that went somewhere else: an adapter pointed at the wrong Vault fails
+    /// this check, and the whole deallocation reverts rather than quietly
+    /// writing off capital that is still outstanding.
+    pub fn record_repayment(e: Env, amount: i128) -> Result<(), VaultError> {
+        let engine: Address = e
+            .storage()
+            .instance()
+            .get(&Cfg::Engine)
+            .ok_or(VaultError::NotInitialized)?;
+        engine.require_auth();
+        if amount <= 0 {
+            return Err(VaultError::InvalidAmount);
+        }
+        if amount > Self::deployed_capital(e.clone()) {
+            return Err(VaultError::DeployedUnderflow);
+        }
+        let unaccounted = Self::idle_reserves(e.clone()) - Self::booked_reserves(e.clone());
+        if amount > unaccounted {
+            return Err(VaultError::RepaymentNotReceived);
+        }
+
+        e.storage()
+            .instance()
+            .set(&Cfg::Deployed, &(Self::deployed_capital(e.clone()) - amount));
+        Self::add_booked(&e, amount);
+        Self::bump_instance(&e);
+        RepaymentRecorded {
+            amount,
+            deployed: Self::deployed_capital(e.clone()),
+        }
+        .publish(&e);
+        Ok(())
+    }
+
+    /// Recognise that deployed capital is not coming back, and reduce the
+    /// Vault's book by it without requiring the cash.
+    ///
+    /// This is the one path that lowers `deployed_capital` with nothing
+    /// arriving, so it is the one path a hostile Engine would use to reset the
+    /// limit that bounds `settle_allocation`. It therefore needs two
+    /// authorizations, not one: the caller must be the Engine this Vault points
+    /// at, and the Vault's own admin must have signed for it. An Engine cannot
+    /// produce the second, which is what keeps the reserve floor standing
+    /// against an Engine while still letting a real default be recognised.
+    ///
+    /// Recognising a loss is the honest action, not the suspicious one. Until
+    /// it happens the Vault reports capital it does not have, and the reserve
+    /// ratio is overstated by exactly the size of the loss.
+    pub fn record_writedown(e: Env, admin: Address, amount: i128) -> Result<(), VaultError> {
+        let engine: Address = e
+            .storage()
+            .instance()
+            .get(&Cfg::Engine)
+            .ok_or(VaultError::NotInitialized)?;
+        engine.require_auth();
+        Self::require_admin(&e, &admin)?;
+        if amount <= 0 {
+            return Err(VaultError::InvalidAmount);
+        }
+        let deployed = Self::deployed_capital(e.clone());
+        if amount > deployed {
+            return Err(VaultError::DeployedUnderflow);
+        }
+        e.storage().instance().set(&Cfg::Deployed, &(deployed - amount));
+        Self::bump_instance(&e);
+        WriteDownRecorded {
+            amount,
+            deployed: deployed - amount,
+        }
+        .publish(&e);
         Ok(())
     }
 
     // ---- views ----
 
-    /// USDC held by the Vault. This is what the Engine's reserve floor
-    /// protects and what claims are paid from.
+    /// USDC held by the Vault, gross. This is what claims are paid from, and
+    /// it counts money already owed to the withdrawal queue, so it is not the
+    /// quantity any deployment limit is measured against. `free_reserves` is.
     pub fn idle_reserves(e: Env) -> i128 {
         let Ok(usdc) = Self::usdc(e.clone()) else {
             return 0;
@@ -546,14 +795,73 @@ impl Vault {
         TokenClient::new(&e, &usdc).balance(&e.current_contract_address())
     }
 
-    /// Idle reserves plus everything the Engine has booked as deployed.
-    pub fn get_total_assets(e: Env) -> Result<i128, VaultError> {
-        let engine: Address = e
-            .storage()
+    /// USDC owed to withdrawal claims that have burned their agUSD and have
+    /// not been paid.
+    ///
+    /// This is a real liability that used to appear in no on-chain quantity at
+    /// all. `request_withdrawal` burns the agUSD immediately, so the supply
+    /// stops counting it; the USDC stays here, so the balance goes on counting
+    /// it as free. Deposit 1000, queue all 1000, and the reserve ratio still
+    /// read 10000 bps against a book that owed every stroop of it.
+    pub fn outstanding_liabilities(e: Env) -> i128 {
+        e.storage().instance().get(&Cfg::Queued).unwrap_or(0)
+    }
+
+    /// Idle reserves less what the withdrawal queue is owed: the cash the
+    /// protocol may actually deploy. Never negative.
+    pub fn free_reserves(e: Env) -> i128 {
+        let free = Self::idle_reserves(e.clone()) - Self::outstanding_liabilities(e.clone());
+        if free < 0 {
+            0
+        } else {
+            free
+        }
+    }
+
+    /// USDC this Vault has released to pools and not seen back, from its own
+    /// records rather than the Engine's.
+    ///
+    /// It rises on every `settle_allocation` and falls in exactly two ways: a
+    /// repayment the Vault can see in its own balance, or an admin authorized
+    /// write-down. Reading it here rather than calling the Engine is what makes
+    /// the reserve floor an actual constraint on the Engine.
+    pub fn deployed_capital(e: Env) -> i128 {
+        e.storage().instance().get(&Cfg::Deployed).unwrap_or(0)
+    }
+
+    /// The idle balance the Vault can account for from its own flows. Anything
+    /// the real balance holds above this arrived unannounced, which is what a
+    /// pool repayment looks like from in here.
+    pub fn booked_reserves(e: Env) -> i128 {
+        e.storage().instance().get(&Cfg::Booked).unwrap_or(0)
+    }
+
+    /// The share of net assets the Vault will not release, in bps.
+    pub fn reserve_floor_bps(e: Env) -> u32 {
+        e.storage()
             .instance()
-            .get(&Cfg::Engine)
-            .ok_or(VaultError::NotInitialized)?;
-        Ok(Self::idle_reserves(e.clone()) + EngineClient::new(&e, &engine).total_allocated())
+            .get(&Cfg::FloorBps)
+            .unwrap_or(BPS as u32)
+    }
+
+    /// Gross assets: idle reserves plus capital out at the pools. It counts the
+    /// USDC owed to the withdrawal queue, because that money is still an asset
+    /// of the Vault until it is paid. `get_net_assets` is the figure the floor
+    /// and the caps use.
+    pub fn get_total_assets(e: Env) -> Result<i128, VaultError> {
+        if !e.storage().instance().has(&Cfg::Engine) {
+            return Err(VaultError::NotInitialized);
+        }
+        Ok(Self::idle_reserves(e.clone()) + Self::deployed_capital(e))
+    }
+
+    /// Assets the queued withdrawals have no claim on: free reserves plus
+    /// deployed capital. This is the denominator of the reserve floor.
+    pub fn get_net_assets(e: Env) -> Result<i128, VaultError> {
+        if !e.storage().instance().has(&Cfg::Engine) {
+            return Err(VaultError::NotInitialized);
+        }
+        Ok(Self::free_reserves(e.clone()) + Self::deployed_capital(e))
     }
 
     /// NAV for the Vault's feed, straight from the Oracle Adapter. A stale feed
@@ -682,6 +990,51 @@ impl Vault {
             .ok_or(VaultError::ClaimNotFound)
     }
 
+    /// Pay `claim` and advance the head. Shared by `claim_withdrawal` and
+    /// `settle_withdrawal` so the two cannot drift: the caller differs, the
+    /// payment does not. The claim is marked and the head moved before the
+    /// transfer, so the record is written whatever the token does.
+    fn pay_head(e: &Env, claim_id: u64, mut claim: Claim) -> Result<(), VaultError> {
+        if Self::idle_reserves(e.clone()) < claim.amount {
+            return Err(VaultError::InsufficientLiquidity);
+        }
+        claim.claimed = true;
+        Self::write_claim(e, claim_id, &claim);
+        e.storage().instance().set(&Cfg::QueueHead, &(claim_id + 1));
+        Self::set_queued(
+            e,
+            Self::outstanding_liabilities(e.clone()) - claim.amount,
+        );
+        Self::add_booked(e, -claim.amount);
+        Self::bump_instance(e);
+
+        let usdc = Self::usdc(e.clone())?;
+        TokenClient::new(e, &usdc).transfer(
+            &e.current_contract_address(),
+            &claim.owner,
+            &claim.amount,
+        );
+
+        WithdrawalClaimed {
+            user: claim.owner,
+            claim_id,
+            amount: claim.amount,
+        }
+        .publish(e);
+        Ok(())
+    }
+
+    fn set_queued(e: &Env, value: i128) {
+        e.storage()
+            .instance()
+            .set(&Cfg::Queued, &if value < 0 { 0 } else { value });
+    }
+
+    fn add_booked(e: &Env, delta: i128) {
+        let booked = Self::booked_reserves(e.clone()) + delta;
+        e.storage().instance().set(&Cfg::Booked, &booked);
+    }
+
     fn write_claim(e: &Env, claim_id: u64, claim: &Claim) {
         let key = Store::Claim(claim_id);
         e.storage().persistent().set(&key, claim);
@@ -732,6 +1085,36 @@ pub struct WithdrawalClaimed {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PauseToggled {
     pub paused: bool,
+}
+
+/// Emitted when the Vault's own reserve floor moves. The floor is the limit
+/// `settle_allocation` enforces against every Engine, so a change to it is a
+/// change to how much of the reserves can leave.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReserveFloorSet {
+    pub floor_bps: u32,
+}
+
+/// Emitted when capital comes back from a pool and the Vault has verified it
+/// arrived.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RepaymentRecorded {
+    pub amount: i128,
+    /// Capital still out at the pools after this repayment.
+    pub deployed: i128,
+}
+
+/// Emitted when deployed capital is written off. This is the only way the
+/// Vault's deployed book falls without cash arriving, so it belongs in the
+/// event stream rather than only in state a monitor has to poll.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WriteDownRecorded {
+    pub amount: i128,
+    /// Capital still out at the pools after the write-down.
+    pub deployed: i128,
 }
 
 /// Emitted when the Vault is repointed at a different agUSD. Repointing the
