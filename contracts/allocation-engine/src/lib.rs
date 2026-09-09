@@ -855,6 +855,25 @@ impl AllocationEngine {
         reason: Symbol,
     ) -> Result<(), EngineError> {
         Self::require_admin(&e, &admin)?;
+
+        // The Vault leg needs the Vault's admin signature, and this Engine's
+        // admin is a separate role that rotates separately. If the two have
+        // diverged, say so here, with an error that names the cause, rather
+        // than letting the call trap on the Vault's own NotAdmin four frames
+        // down. The failure was never silent; it was illegible, which during an
+        // incident is close enough to the same thing.
+        //
+        // It is checked before the arguments and not after, because it is a
+        // condition on the wiring rather than on the call. An operator whose
+        // rotation is half finished should be told that, whatever amount they
+        // happened to pass; being told the amount is wrong instead sends them
+        // to look at the position.
+        let vault_address = Self::vault(e.clone())?;
+        let vault = VaultClient::new(&e, &vault_address);
+        if vault.admin() != admin {
+            return Err(EngineError::AdminMismatch);
+        }
+
         if amount <= 0 {
             return Err(EngineError::InvalidAmount);
         }
@@ -864,18 +883,6 @@ impl AllocationEngine {
         let exposure = Self::get_exposure(e.clone(), pool_id.clone());
         if amount > exposure {
             return Err(EngineError::WriteDownExceedsExposure);
-        }
-
-        // The Vault leg needs the Vault's admin signature, and this Engine's
-        // admin is a separate role that rotates separately. If the two have
-        // diverged, say so here, with an error that names the cause, rather
-        // than letting the call trap on the Vault's own NotAdmin four frames
-        // down. The failure was never silent; it was illegible, which during an
-        // incident is close enough to the same thing.
-        let vault_address = Self::vault(e.clone())?;
-        let vault = VaultClient::new(&e, &vault_address);
-        if vault.admin() != admin {
-            return Err(EngineError::AdminMismatch);
         }
 
         PoolAdapterClient::new(&e, &pool_id).write_down(&amount);
@@ -1230,6 +1237,14 @@ impl AllocationEngine {
     /// The Vault offered has to answer `admin()`, which an ordinary account
     /// cannot do, and it has to answer with `admin`. See `__constructor` for
     /// why the second half is a wiring condition rather than a preference.
+    ///
+    /// The two halves refuse differently, and it is worth knowing which is
+    /// which when reading a failure. A contract that answers with the wrong
+    /// address returns `VaultMismatch` from here. An ordinary account does not
+    /// return anything: the host refuses to invoke a non-contract address at
+    /// all, so the call fails with `InvalidInput` before `try_admin` has an
+    /// error to catch. Both are refusals and the guard holds either way; only
+    /// one of them is legible, and `try_` cannot make the other one so.
     fn require_vault_answers(e: &Env, vault: &Address, admin: &Address) -> Result<(), EngineError> {
         match VaultClient::new(e, vault).try_admin() {
             Ok(Ok(vault_admin)) if vault_admin == *admin => Ok(()),
