@@ -136,7 +136,8 @@
 //!    only by a repayment it can see in its own balance or by an admin
 //!    authorized write-down
 //!  - `outstanding_liabilities`, the queued withdrawals it already owes
-//!  - `recognised_losses`, everything it has written off, which never falls
+//!  - `recognised_losses`, everything it has written off and not recovered,
+//!    which no write-down and no allocation can lower
 //!  - `reserve_floor_bps`, its own copy of the floor, admin set and fail closed
 //!    at 100% until it is configured
 //!

@@ -91,9 +91,12 @@
 //! off. Allocating to the floor and writing the position off, over and over,
 //! moved 999.9999999 of 1000 USDC out of a Vault holding a 25% floor, with
 //! every call individually inside the limit. `written_off` is the answer: a
-//! cumulative total that never falls, in the denominator of the floor and of
-//! `get_reserve_ratio` for good, and deliberately not in the denominator of the
-//! concentration caps, where a larger base would loosen rather than tighten.
+//! total no write-down and no allocation can lower, in the denominator of the
+//! floor and of `get_reserve_ratio`, and deliberately not in the denominator of
+//! the concentration caps, where a larger base would loosen rather than tighten.
+//! It comes down in exactly one way, `recover`, which requires the cash to have
+//! reached the Vault, and which adds that cash to free reserves in the same
+//! transaction, so the base itself still does not fall.
 //!
 //! # The caps needed the same treatment, in the numerator
 //!
@@ -308,11 +311,11 @@ enum Cfg {
 enum Store {
     Exposure(Address),
     TotalAllocated,
-    /// Exposure written off since deployment, cumulative and never reduced. It
-    /// is not an asset and it is not counted as one; it stays on the books
-    /// because it is part of the denominator of the reserve floor, and a
-    /// denominator a write-down can shrink is a floor a write-down can walk
-    /// through.
+    /// Exposure written off and not recovered. It is not an asset and it is not
+    /// counted as one; it stays on the books because it is part of the
+    /// denominator of the reserve floor, and a denominator a write-down can
+    /// shrink is a floor a write-down can walk through. `recover` is the only
+    /// thing that lowers it, and it has to bring the cash with it.
     WrittenOff,
     /// Exposure written off against one pool, cumulative. It is charged against
     /// that pool's concentration cap, and against its originator's and its
