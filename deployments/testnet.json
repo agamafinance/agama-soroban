@@ -9,11 +9,11 @@
   "contracts": {
     "usdc": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
     "agusd": "CCXEP6QAAYEMFMV2JGBULD2NS6AQB6KQSBHLPPBJSDBCN6HOYIHNQ6H3",
-    "staking": "CDU7BYCE535Y4WU6FAQTMNPLR3RD7HTGWR2NETW7EEPAQTLY2XGVYE7X",
-    "vault": "CCW5EQCVHXA2PTXN4Y4QMO4O4YMG6BRMB7M2PYASILFI53BL3CKDSIWP",
-    "allocationEngine": "CAOGJDWH5SZAVPGLBB2NCKGPT4OUFT3YEKUCKEJP6BVN3CR2WUKJDONN",
+    "staking": "CALOJ3UHHZ7V4LU5J4WY3DIFIXCTL37K36SZTIKSNGVB4TANNMSRQWKX",
+    "vault": "CAK7NGMFYPAJKFY74TOQSCIJADCDCCMAOKEGFHI2O7BZBCQQTIAFCSSL",
+    "allocationEngine": "CBM2RACBNQU6YKRQAXWMGVFANCO3AJ4LOQONEY5O7IPMXPUBS6G56HRT",
     "oracleAdapter": "CCIABPQMPGS4HSDQYN46M67LV6B5LCYO6X2XLCI27JSOMKUMN3N4DWJG",
-    "agusdCore": "CANR4HJCDO7KDIUKTNGOJJUSZ45VB6EVR5IFHTOPQUCGAZ2XEDVJGIYG"
+    "agusdCore": "CDO7WPJHUFTM3Q6ZLT5FRQIK4OYX5ZG7ERDC2B5W3BWXBRPPMXV2L6PL"
   },
   "creditVaults": {
     "payment-financing": "CAUFXVGKB2OKEDDO6SDWH4ZSWXJ37T2WYKEVUTBOCWZAFEUTGCFYQEF4",
@@ -26,7 +26,7 @@
   "usdcIssuer": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
   "usdcReal": true,
   "poolAdapters": {
-    "private-credit": "CBWFVABYRGKAGDN54MIN4GIXQO3ALVPJ3POSVFDFKUQSLYL4M4JT5BBT",
+    "private-credit": "CCDB2I753FQJCRMVQVSYMUU2UT2R2H2UQJ7I2OLESJ7EKHCZUWCA4PSR",
     "etherfuse": "CADNIBDB5LZHGOOSVTL2LF47XCRPEL53IHBES2Y4RIORI4I3VCKF4ZFV"
   },
   "engineConfig": {
@@ -49,7 +49,8 @@
         "jurisdiction": "MX",
         "capBps": 4000
       }
-    }
+    },
+    "floorMeasuredAgainst": "floor_base, which is free reserves plus deployed capital plus everything ever written off, and not net assets. record_writedown lowers deployed capital with no cash moving, so a floor that is a share of net assets is a floor whose absolute size the admin lowers every time a loss is recognised: allocating to the floor and writing the position off, over and over, moved 999.9999999 of 1000 USDC out of a Vault holding a 25 percent floor with every individual call inside the limit. Recognised losses stay in the base for good, so a write-down buys nothing. It is also the more correct base, because agUSD redeems one for one and a default does not reduce what the Vault owes."
   },
   "oracleFeeds": {
     "USDC_USD": {
@@ -251,8 +252,125 @@
       "address": "CCBEDKRQHKAP2W3NC4UIYC4WZSMJVYRXN6EQERHFII45M3PD4JL6HFO2",
       "supersededBy": "staking",
       "reason": "Replaced by scripts/deploy-hardening.sh. This sagUSD staking predates the fixes from the adversarial security review: the Vault delegated the reserve floor entirely to whatever Allocation Engine it pointed at, so a contract that answered vault() correctly could empty it; queued withdrawals were counted as free liquidity by the floor and the caps, so capital could be deployed against money already owed; a stalled head claim froze the withdrawal queue for everyone behind it; a credit loss could not be recognised on-chain at all; sagUSD carried report_nav, a bare setter on the denominator of its own share price; and no contract had admin rotation."
+    },
+    {
+      "contract": "vault",
+      "generation": 5,
+      "label": "Vault Contract, fifth deployment",
+      "address": "CCW5EQCVHXA2PTXN4Y4QMO4O4YMG6BRMB7M2PYASILFI53BL3CKDSIWP",
+      "supersededBy": "vault",
+      "reason": "Replaced by scripts/deploy-review2.sh. This Vault predates the fixes from the second adversarial security review: the reserve floor was a share of net assets, which record_writedown lowers with no cash moving, so alternating allocate and write_down walked the whole of the reserves out of the Vault in slices that were each individually inside the floor; and a withdrawal claim the USDC contract refused to deliver, which for a Stellar Asset Contract means any claimant without a trustline, with a frozen one, or with a limit below the claim, trapped the payout path and froze the whole FIFO queue permanently."
+    },
+    {
+      "contract": "agusdCore",
+      "generation": 4,
+      "label": "agUSD, fourth deployment",
+      "address": "CANR4HJCDO7KDIUKTNGOJJUSZ45VB6EVR5IFHTOPQUCGAZ2XEDVJGIYG",
+      "supersededBy": "agusdCore",
+      "reason": "Replaced by scripts/deploy-review2.sh. It names the superseded Vault as its only minter and has minted, so the pointer is frozen and issuance could not follow the Vault to its replacement. Superseded with a zero supply: every unit it issued was redeemed for USDC through its own Vault before the handover, so it strands no holders."
+    },
+    {
+      "contract": "allocationEngine",
+      "generation": 4,
+      "label": "Allocation Engine, fourth deployment",
+      "address": "CAOGJDWH5SZAVPGLBB2NCKGPT4OUFT3YEKUCKEJP6BVN3CR2WUKJDONN",
+      "supersededBy": "allocationEngine",
+      "reason": "Replaced by scripts/deploy-review2.sh. This Allocation Engine predates the fixes from the second adversarial security review: the reserve floor was a share of net assets, which record_writedown lowers with no cash moving, so alternating allocate and write_down walked the whole of the reserves out of the Vault in slices that were each individually inside the floor; and a withdrawal claim the USDC contract refused to deliver, which for a Stellar Asset Contract means any claimant without a trustline, with a frozen one, or with a limit below the claim, trapped the payout path and froze the whole FIFO queue permanently."
+    },
+    {
+      "contract": "poolAdapters.private-credit",
+      "generation": 4,
+      "label": "Private credit adapter, fourth deployment",
+      "address": "CBWFVABYRGKAGDN54MIN4GIXQO3ALVPJ3POSVFDFKUQSLYL4M4JT5BBT",
+      "supersededBy": "poolAdapters.private-credit",
+      "reason": "Replaced by scripts/deploy-review2.sh, and not because its code changed: it is byte for byte the adapter that was already deployed. It could not follow the new Engine and Vault because set_counterparties refuses an adapter holding USDC, and it holds 0.2 USDC left over from the write-down the previous smoke run performed. The position was written off, so its exposure is zero, deallocate is capped at zero and there is no sweep entry point, which leaves the cash and the repair path both stuck. That is finding M2 of the second adversarial review, recorded and left for triage, and this retirement is what it cost. The Etherfuse adapter, empty, was repointed in place instead."
+    },
+    {
+      "contract": "staking",
+      "generation": 5,
+      "label": "sagUSD staking, fifth deployment",
+      "address": "CDU7BYCE535Y4WU6FAQTMNPLR3RD7HTGWR2NETW7EEPAQTLY2XGVYE7X",
+      "supersededBy": "staking",
+      "reason": "Replaced by scripts/deploy-review2.sh, and not because its code changed. It stores the agUSD it accepts and closes that pointer once it has taken custody, which it has; the Vault changed, so agUSD changed, so this contract had to follow. Its stake was unwound and redeemed before the handover, so it strands nobody."
+    },
+    {
+      "contract": "vault",
+      "generation": 6,
+      "label": "Vault Contract, sixth deployment",
+      "address": "CCVFI7YGBYL346U4NY2TSXGIH3766LKK74BJ5VDCKX5YZFJIUBDFIKXT",
+      "supersededBy": "vault",
+      "reason": "This Vault was replaced by a later run of scripts/deploy-review2.sh from the same source: byte for byte the contract that superseded it. It was retired because the smoke run left it carrying recognised losses that were experiments rather than credit events, and recognised_losses is deliberately permanent, so a book whose reserve floor is not tightened for good by a test is only reachable through a fresh deployment. The permanence is the fix behaving as designed, and this retirement is the price of it."
+    },
+    {
+      "contract": "agusdCore",
+      "generation": 5,
+      "label": "agUSD, fifth deployment",
+      "address": "CAT5VV5BTSFZEIAT37NRTHWSYS6LQCIZ7AIERGSFK2GRWY7VLNQR3FXA",
+      "supersededBy": "agusdCore",
+      "reason": "Replaced by scripts/deploy-review2.sh. It names the superseded Vault as its only minter and has minted, so the pointer is frozen and issuance could not follow the Vault to its replacement. Superseded with a zero supply: every unit it issued was redeemed for USDC through its own Vault before the handover, so it strands no holders."
+    },
+    {
+      "contract": "allocationEngine",
+      "generation": 5,
+      "label": "Allocation Engine, fifth deployment",
+      "address": "CA2KUSVWB6G5MTA32XXAGACXNHQQM3ETND3CWVJRVTNPLG2PXIJJ7YAZ",
+      "supersededBy": "allocationEngine",
+      "reason": "This Allocation Engine was replaced by a later run of scripts/deploy-review2.sh from the same source: byte for byte the contract that superseded it. It was retired because the smoke run left it carrying recognised losses that were experiments rather than credit events, and recognised_losses is deliberately permanent, so a book whose reserve floor is not tightened for good by a test is only reachable through a fresh deployment. The permanence is the fix behaving as designed, and this retirement is the price of it."
+    },
+    {
+      "contract": "poolAdapters.private-credit",
+      "generation": 5,
+      "label": "Private credit adapter, fifth deployment",
+      "address": "CDPFTGS62IZHPZEGK6ENVTBLUKMLOD4OEPD7UVMJG3FCNDWS65TWQFYQ",
+      "supersededBy": "poolAdapters.private-credit",
+      "reason": "Replaced by scripts/deploy-review2.sh, and not because its code changed: it is byte for byte the adapter that was already deployed. It could not follow the new Engine and Vault because set_counterparties refuses an adapter holding USDC, and it holds USDC left over from a written-down position. The position was written off, so its exposure is zero, deallocate is capped at zero and there is no sweep entry point, which leaves the cash and the repair path both stuck. That is finding M2 of the second adversarial review, recorded and left for triage, and this retirement is what it cost. The Etherfuse adapter, empty, was repointed in place instead."
+    },
+    {
+      "contract": "vault",
+      "generation": 7,
+      "label": "Vault Contract, seventh deployment",
+      "address": "CBIJCFWZXCHMWBEDXBCCKIPVTPUI4TDMZOMMI6S7URU5GLTA5627JDPK",
+      "supersededBy": "vault",
+      "reason": "This Vault was replaced by a later run of scripts/deploy-review2.sh from the same source: byte for byte the contract that superseded it. It was retired because the smoke run left it carrying recognised losses that were experiments rather than credit events, and recognised_losses is deliberately permanent, so a book whose reserve floor is not tightened for good by a test is only reachable through a fresh deployment. The permanence is the fix behaving as designed, and this retirement is the price of it."
+    },
+    {
+      "contract": "agusdCore",
+      "generation": 6,
+      "label": "agUSD, sixth deployment",
+      "address": "CCS3LZINQQRRQQSSVXGPNEOIAGNMB6AR7UAVJEK7MZ6RGVSPVZNA2YZD",
+      "supersededBy": "agusdCore",
+      "reason": "Replaced by scripts/deploy-review2.sh. It names the superseded Vault as its only minter and has minted, so the pointer is frozen and issuance could not follow the Vault to its replacement. Superseded with a zero supply: every unit it issued was redeemed for USDC through its own Vault before the handover, so it strands no holders."
+    },
+    {
+      "contract": "allocationEngine",
+      "generation": 6,
+      "label": "Allocation Engine, sixth deployment",
+      "address": "CB45BH7XYH6QWWSOI67Z4IEK6VYF7TO53OYQIFKLIMJ6ZZOBXJ2EEK4K",
+      "supersededBy": "allocationEngine",
+      "reason": "This Allocation Engine was replaced by a later run of scripts/deploy-review2.sh from the same source: byte for byte the contract that superseded it. It was retired because the smoke run left it carrying recognised losses that were experiments rather than credit events, and recognised_losses is deliberately permanent, so a book whose reserve floor is not tightened for good by a test is only reachable through a fresh deployment. The permanence is the fix behaving as designed, and this retirement is the price of it."
+    },
+    {
+      "contract": "poolAdapters.private-credit",
+      "generation": 6,
+      "label": "Private credit adapter, sixth deployment",
+      "address": "CANRYN2HGYU6SBQOYKCL52LSNSXKOK54ECK2UFAZTMHNPK47VUZQUIIQ",
+      "supersededBy": "poolAdapters.private-credit",
+      "reason": "Replaced by scripts/deploy-review2.sh, and not because its code changed: it is byte for byte the adapter that was already deployed. It could not follow the new Engine and Vault because set_counterparties refuses an adapter holding USDC, and it holds USDC left over from a written-down position. The position was written off, so its exposure is zero, deallocate is capped at zero and there is no sweep entry point, which leaves the cash and the repair path both stuck. That is finding M2 of the second adversarial review, recorded and left for triage, and this retirement is what it cost. The Etherfuse adapter, empty, was repointed in place instead."
     }
   ],
   "oracleFeedGuards": "The band bounds every report including the first, which a deviation bound cannot reach because a bound on a move needs something to move from. The minimum interval is measured in ledger time between accepted values, not in the timestamps the reporter supplies, because the reporter chooses those. The reference point is persistent, so it cannot expire out from under the checks that read it.",
-  "adminRotation": "Every contract carries propose_admin and accept_admin. The handover is two steps and the successor has to authorize the second one itself, so the role cannot be handed to an address nobody controls."
+  "adminRotation": "Every contract carries propose_admin and accept_admin. The handover is two steps and the successor has to authorize the second one itself, so the role cannot be handed to an address nobody controls.",
+  "withdrawalQueue": "Strictly FIFO, and it cannot be stalled by either kind of absent claimant. settle_withdrawal is permissionless and pays the head claim to its recorded owner, which covers the claimant who will not come back. A claimant who cannot be paid is stepped over: USDC is a Stellar Asset Contract, so a payout fails whenever the destination has no trustline, has a frozen one, has a limit below the claim, or no longer exists, and a failed payout used to trap the whole call and leave the head where it was. Delivery is now attempted, and a claim the token refuses is marked deferred, left unpaid, still counted in outstanding_liabilities, and collected later by its owner through claim_withdrawal out of head order.",
+  "reusedInPlace": {
+    "staking": "Repointed at the new agUSD with set_agusd rather than redeployed, because it had taken no custody. That setter, and the adapters' set_counterparties, are repair paths the first review added; this is the deployment that had a use for them.",
+    "oracleAdapter": "Unchanged by the second review and holding no state a rewiring would strand. The new Vault points at it with set_oracle.",
+    "poolAdapters.etherfuse": "Unchanged and empty, so it was repointed at the new Engine and Vault with set_counterparties rather than redeployed. First use of the repair path the previous review added.",
+    "usdc": "The real Circle USDC Stellar Asset Contract on testnet, never redeployed."
+  },
+  "secondReviewEvidence": {
+    "script": "scripts/smoke-review2.sh, in two independently runnable stages, 52 assertions and no failures: floor 29, queue 23.",
+    "exploitProvenOnChain": "The first finding is not only shown by a unit test that fails before the change. The superseded Vault and Engine are still live, so the exploit was run against them and submitted: allocate to the floor, be refused one stroop more, write the whole position off with no cash moving, and the identical call that was just refused goes through. The superseded Vault ends holding 875000 where its own 2500 bps floor promised 1250000. Transaction 6820cec478b6b518bf4bcd74f90378a4d5f9c095dfccd638c168013ee46802c7 on the superseded Engine CAOGJDWH5SZAVPGLBB2NCKGPT4OUFT3YEKUCKEJP6BVN3CR2WUKJDONN. The same sequence against the live contracts is refused with ReserveFloorBreached, and floor_base does not move.",
+    "queueProvenOnChain": "bob holds agUSD and no USDC trustline, so his claim cannot be delivered. alice, who owns nothing at the head and holds no role, called settle_withdrawal and signed it herself: transaction b785c0b7b36a19a6381d0043cb624f4bbaf7d5c1f37dce96b4f4853d69d6fc46. bob's claim was deferred, unpaid and still counted, alice's claim behind it was paid, and bob collected his out of head order after adding the trustline: transaction ca28d12b5c2bb23875e828770182737fe7578bbbc0cb9745bad82cdb8d560585. Authorization is proved by submitted transactions signed by the key under test, never by simulation.",
+    "residue": "The exploit demonstration re-mints a small amount of the superseded agUSD against the superseded Vault, and the exploit is exactly what leaves it unbacked. It is held by the operator key alone and it strands nobody else. USDC written off during the smoke runs stays in the pool adapters, which is finding M2: an adapter with zero exposure has no way to send it back."
+  }
 }
