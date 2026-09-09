@@ -25,7 +25,7 @@ flowchart TB
     subgraph soroban["SOROBAN SMART CONTRACTS (Rust)"]
         VAULT["Vault Contract<br/>USDC deposit · agUSD mint<br/>Withdrawal queue (FIFO)"]
         AGUSD["agUSD<br/>SEP-41<br/>mint→Vault · burn→holder"]
-        SAGUSD["sagUSD Staking<br/>DeFindex-compatible<br/>share-price yield"]
+        SAGUSD["sagUSD Staking<br/>share-price yield<br/>no rebase"]
         ENGINE["Allocation Engine<br/>Pool routing · caps<br/>Reserve floor · multi-adapter"]
         ORACLE["Oracle Adapter<br/>Multi-source NAV<br/>Staleness · Deviation"]
         ADAPTERS["Pool Adapters:"]
