@@ -89,6 +89,8 @@ pub enum AdapterError {
     NotEmpty = 605,
     /// The proposed Engine does not answer that it governs the proposed Vault.
     CounterpartyMismatch = 606,
+    /// Writing down more than the adapter has booked as deployed.
+    WriteDownExceedsExposure = 607,
 }
 
 #[derive(Clone)]
@@ -111,6 +113,17 @@ pub struct CounterpartiesSet {
     pub engine: Address,
     #[topic]
     pub vault: Address,
+}
+
+/// Emitted when exposure is written off. It is the only way this adapter's book
+/// falls with no capital moving, so an observer should never have to infer it
+/// from the absence of a transfer.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WrittenDown {
+    pub amount: i128,
+    /// Exposure still booked after the write-down.
+    pub exposure: i128,
 }
 
 #[contract]
@@ -162,8 +175,14 @@ impl PrivateCreditAdapter {
     ) -> Result<(), AdapterError> {
         Self::require_admin(&e, &admin)?;
         Self::require_empty(&e)?;
-        // An address that cannot answer is refused with one that answers
-        // wrongly: neither is an Allocation Engine that governs this Vault.
+        // What this rules out is an address that cannot answer the question,
+        // or answers it with a different Vault: a plain account, and a real
+        // Engine that governs somebody else. What it cannot rule out is a
+        // contract built to answer it, which returns whatever address it was
+        // written to return and passes without difficulty. The check is worth
+        // running because the realistic failure here is a mis-wiring rather
+        // than an attack, and this is admin gated either way; it is not worth
+        // reading as proof that the counterparty is what it says it is.
         match EngineClient::new(&e, &engine).try_vault() {
             Ok(Ok(governed)) if governed == vault => {}
             _ => return Err(AdapterError::CounterpartyMismatch),
@@ -213,6 +232,42 @@ impl PrivateCreditAdapter {
         TokenClient::new(&e, &usdc).transfer(&e.current_contract_address(), &vault, &amount);
         e.storage().instance().set(&Cfg::Exposure, &(exposure - amount));
         Self::bump(&e);
+        Ok(())
+    }
+
+    /// Write off booked exposure that is not coming back, without moving any
+    /// capital.
+    ///
+    /// `deallocate` transfers the USDC before it decrements the book, which is
+    /// the right order when there is USDC to transfer and no help at all when
+    /// there is not: a defaulted originator leaves this adapter holding
+    /// nothing, the transfer panics, and the exposure goes on reporting full
+    /// face value forever. This is the entry point that lets the loss be
+    /// recognised instead.
+    ///
+    /// Called by the Engine, in the same transaction as the Engine's own
+    /// write-down and the Vault's, so the three books cannot disagree about how
+    /// much of this position still exists. The Engine requires its admin for
+    /// it, and so does the Vault; there is no path from here to reducing an
+    /// exposure on the adapter alone.
+    pub fn write_down(e: Env, amount: i128) -> Result<(), AdapterError> {
+        Self::require_engine(&e)?;
+        if amount <= 0 {
+            return Err(AdapterError::InvalidAmount);
+        }
+        let exposure = Self::get_exposure(e.clone());
+        if amount > exposure {
+            return Err(AdapterError::WriteDownExceedsExposure);
+        }
+        e.storage()
+            .instance()
+            .set(&Cfg::Exposure, &(exposure - amount));
+        Self::bump(&e);
+        WrittenDown {
+            amount,
+            exposure: exposure - amount,
+        }
+        .publish(&e);
         Ok(())
     }
 

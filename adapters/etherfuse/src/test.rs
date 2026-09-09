@@ -234,3 +234,39 @@ fn the_counterparties_move_only_together_and_only_while_the_adapter_is_empty() {
     assert_eq!(f.adapter.engine(), other_engine);
     assert_eq!(f.adapter.vault(), other_vault);
 }
+
+/// A defaulted position cannot be deallocated: `deallocate` transfers the USDC
+/// before it decrements the book, and there is no USDC. Without a write-down
+/// the exposure reports face value for the life of the contract.
+#[test]
+fn a_defaulted_position_can_be_written_off_without_returning_capital() {
+    let f = setup();
+    f.usdc.faucet(&f.adapter_id, &(500 * USDC));
+    f.adapter.allocate(&(500 * USDC));
+
+    // The originator draws down and defaults: the cash is gone from here.
+    f.usdc.burn(&f.adapter_id, &(500 * USDC));
+    assert!(f.adapter.try_deallocate(&(500 * USDC)).is_err());
+    assert_eq!(f.adapter.get_exposure(), 500 * USDC);
+
+    // The write-down moves the book and nothing else.
+    f.adapter.write_down(&(200 * USDC));
+    assert_eq!(f.adapter.get_exposure(), 300 * USDC);
+    assert_eq!(f.usdc.balance(&f.vault), 0);
+
+    // It cannot write off more than is booked, and it is not a way to move
+    // capital: zero and negative are refused like everywhere else.
+    assert_eq!(
+        f.adapter.try_write_down(&(301 * USDC)),
+        Err(Ok(AdapterError::WriteDownExceedsExposure))
+    );
+    assert_eq!(
+        f.adapter.try_write_down(&0),
+        Err(Ok(AdapterError::InvalidAmount))
+    );
+
+    // And it is the Engine's call, not anybody's: same gate as allocate.
+    f.e.mock_auths(&[]);
+    assert!(f.adapter.try_write_down(&(100 * USDC)).is_err());
+    assert_eq!(f.adapter.get_exposure(), 300 * USDC);
+}
