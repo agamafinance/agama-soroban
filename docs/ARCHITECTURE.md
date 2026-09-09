@@ -16,7 +16,11 @@ June 2026, revised September 2026 · Confidential
 >
 > The Blend v2 integration described in earlier versions of this document has been removed, following the Comet BLND-USDC exploit and Blend's removal from the SCF Integration List, where Blend V2 is being wound down. It is not replaced by another protocol.
 >
-> The instant-withdrawal liquidity role Blend played is now an on-chain reserve floor enforced by the Allocation Engine: `allocate()` reverts if a call would push vault reserves below a minimum idle USDC reserve. Fast-exit liquidity is therefore a protocol parameter anyone can read on-chain, not a dependency on a third party's solvency.
+> The instant-withdrawal liquidity role Blend played is now an on-chain reserve floor enforced by the Allocation Engine. The floor is a **share of total assets, expressed in basis points**, not a fixed sum of USDC: `allocate()` reverts if the call would leave the Vault holding less idle USDC than `floor_bps` of everything the protocol holds, idle plus deployed. It is set to **2500 bps — 25%** — on testnet.
+>
+> The unit is the substance of the replacement, not a detail of it. A liquidity buffer parked in a lending protocol is only as instant as that protocol's utilization on the day it is needed; USDC that never left the Vault has no such dependency. But a buffer denominated as a fixed amount stops meaning anything as the book moves — it is most of a small vault and a rounding error in a large one — and it is the *ratio* of cash to obligations that decides whether a withdrawal can be paid. Expressing the floor as a share is what makes it scale with the book it is protecting, and it is why the guarantee survives growth instead of being re-tuned by hand after it.
+>
+> Fast-exit liquidity is therefore a protocol parameter anyone can read on-chain, in the same units the caps are written in, not a dependency on a third party's solvency.
 
 ## 1. Introduction
 
@@ -49,7 +53,7 @@ The protocol composes existing Stellar ecosystem primitives rather than reimplem
 | sagUSD | Staked agUSD. Yield accrues via increasing sagUSD/agUSD exchange rate. |
 | NAV | Net Asset Value — on-chain reported value of the portfolio backing agUSD. |
 | Allocation Engine | Soroban contract routing vault capital across pool adapters with cap enforcement. |
-| Reserve Floor | Minimum idle USDC the Vault must retain. Enforced by the Allocation Engine at allocation time. |
+| Reserve Floor | Minimum share of total assets the Vault must retain as idle USDC, in basis points. Enforced by the Allocation Engine at allocation time. 2500 bps (25%) on testnet. |
 | Originator | Vetted private credit counterparty receiving vault allocations. |
 | Reflector | Decentralized push-based oracle network on Stellar. |
 | DeFindex | Yield infrastructure for Stellar. sagUSD uses DeFindex-compatible vault accounting. |
@@ -113,8 +117,8 @@ The protocol composes existing Stellar ecosystem primitives rather than reimplem
 **Soroban Smart Contracts**
 
 - **Vault Contract** — USDC deposits, agUSD mint/burn, FIFO withdrawal queue.
-- **agUSD Token (SEP-41)** — mint/burn restricted to Vault.
-- **sagUSD Staking Contract** — DeFindex-compatible share-based vault. Yield via exchange rate appreciation.
+- **agUSD Token (SEP-41)** — `mint` restricted to the Vault. `burn` and `burn_from` are the standard SEP-41 holder-authorized paths.
+- **sagUSD Staking Contract** — DeFindex-compatible share-based vault. Yield via exchange rate appreciation. Two-step unstake behind a cooldown.
 - **Allocation Engine** — Pool routing with adapters (Etherfuse, private credit). Concentration caps.
 - **Oracle Adapter** — Multi-source NAV validation (Reflector, custom reporter, Etherfuse feed).
 
@@ -131,7 +135,7 @@ The protocol composes existing Stellar ecosystem primitives rather than reimplem
 7. Oracle Adapter receives NAV updates: Reflector for asset prices, Backend reporter for credit NAV, Etherfuse feed for bond pricing.
 8. `distribute_yield()` increases sagUSD/agUSD exchange rate → sagUSD holders earn yield passively.
 9. Backend Indexer captures all events → powers transparency dashboard + API.
-10. User exits: unstake sagUSD → agUSD, redeem agUSD → USDC via Vault queue, or swap on Soroswap. Off-ramp via MoneyGram or Bridge.
+10. User exits: `request_unstake()` then `claim()` after the cooldown returns sagUSD → agUSD; `request_withdrawal()` then `claim_withdrawal()` redeems agUSD → USDC through the Vault queue. Or swap on Soroswap without queueing. Off-ramp via MoneyGram or Bridge.
 
 ### 2.5 System Characteristics
 
@@ -162,7 +166,7 @@ flowchart TB
 
     subgraph soroban["SOROBAN SMART CONTRACTS (Rust)"]
         VAULT["Vault Contract<br/>USDC deposit · agUSD mint<br/>Withdrawal queue (FIFO)"]
-        AGUSD["agUSD<br/>SEP-41<br/>mint/burn→Vault"]
+        AGUSD["agUSD<br/>SEP-41<br/>mint→Vault · burn→holder"]
         SAGUSD["sagUSD Staking<br/>DeFindex-compatible<br/>share-price yield"]
         ENGINE["Allocation Engine<br/>Pool routing · caps<br/>Reserve floor · multi-adapter"]
         ORACLE["Oracle Adapter<br/>Multi-source NAV<br/>Staleness · Deviation"]
@@ -202,8 +206,6 @@ flowchart TB
 ```
 
 Legend, as coloured in the diagram: green = Integration List protocol · orange = Off-chain component · purple = Oracle / data feed · dark outline = Core Agama contract.
-
-![Agama on Stellar: entry ramps, Agama dApp, Soroban contracts, allocation targets, oracle feeds and withdrawal liquidity order.](architecture.png)
 
 ## 3. Ecosystem Integrations
 
@@ -263,13 +265,24 @@ The dApp includes a "Bridge" tab using Circle's Bridge Kit SDK.
 
 | Function | Description |
 |---|---|
-| `initialize(admin, usdc_token, agusd_token, allocation_engine)` | One-time setup storing core addresses and admin. |
+| `initialize(admin, usdc_token, agusd_token, allocation_engine)` | One-time setup storing core addresses and admin. Refuses a second call. |
 | `deposit(from, amount) → i128` | Transfers USDC, mints agUSD. Returns minted amount. |
 | `request_withdrawal(from, amount) → u64` | Burns agUSD, enqueues claim. Returns claim_id. |
 | `claim_withdrawal(from, claim_id)` | Pays USDC when Ready. FIFO order. |
-| `get_nav() → i128` | Latest validated NAV from Oracle Adapter. |
-| `get_total_assets() → i128` | Reserves + deployed allocations (Etherfuse + credit). |
+| `settle_allocation(pool, amount)` | Releases idle USDC to a pool. Callable only by the Allocation Engine, which has already checked the caps and the floor. |
+| `set_agusd(admin, agusd_token)` | Repoints the token the Vault mints. Closes at the first deposit. |
+| `set_engine(admin, allocation_engine)` | Repoints the Engine allowed to release reserves. Refuses any address that does not answer that it governs this Vault. |
+| `set_oracle(admin, oracle, feed_id)` | Points the Vault at an Oracle Adapter and the feed it reads NAV from. |
 | `set_paused(admin, paused)` | Circuit breaker. |
+| `idle_reserves() → i128` | USDC the Vault is holding. What the reserve floor protects and what claims are paid from. |
+| `get_total_assets() → i128` | Idle reserves + deployed allocations (Etherfuse + credit). |
+| `get_nav() → i128` | Latest validated NAV from Oracle Adapter. Propagates `OracleStale` rather than returning an old number. |
+| `get_claim(claim_id) → Claim` | The stored claim record. |
+| `claim_status(claim_id) → ClaimStatus` | Pending, Ready or Claimed. `Ready` is computed, not stored: a claim becomes payable when the queue reaches it and reserves cover it, without anyone touching it. |
+| `queue_head() → u64` | Next claim id that may be paid. |
+| `queue_tail() → u64` | Next claim id to be handed out. |
+| `queue_length() → u64` | Claims requested and not yet paid. |
+| `deposits() → u64` | Deposits taken since deployment. What `set_agusd` keys off. |
 
 **Storage**
 
@@ -279,7 +292,7 @@ TTL management with archival thresholds and periodic bump renewal.
 
 **Events**
 
-`deposit(from, usdc_amount, agusd_minted)` · `withdrawal_requested(from, claim_id, usdc_amount)` · `withdrawal_claimed(from, claim_id, usdc_amount)`
+`Deposit(user, amount, minted)` · `WithdrawalRequested(user, claim_id, amount, queue_position)` · `WithdrawalClaimed(user, claim_id, amount)` · `PauseToggled(paused)` · `AgUsdRepointed(agusd)` · `EngineRepointed(engine)`
 
 **Security**
 
@@ -287,9 +300,13 @@ Initialization guard · `require_auth()` on all state-changing calls · Zero/neg
 
 ### 4.2 agUSD Token Contract (SEP-41)
 
-**Purpose:** Composable synthetic dollar. `mint` / `burn` restricted to the Vault Contract address.
+**Purpose:** Composable synthetic dollar. `mint` is restricted to the recorded minter, which is the Vault Contract address: it is the only address that can bring agUSD into existence, and `set_minter` stops working at the first mint, so every unit in circulation was created by the minter named in the deployment record.
 
-Standard SEP-41 interface: `transfer`, `approve`, `transfer_from`, `balance`, `allowance`.
+`burn` and `burn_from` are **not** minter-gated. They are the standard SEP-41 holder-authorized paths: any holder can burn their own agUSD, and a spender can burn against an allowance. The Vault's `request_withdrawal` uses exactly that path, calling `burn` on the withdrawer in a transaction the withdrawer has already signed, rather than a privilege of its own. Supply can therefore only go up through the Vault, and can go down through anyone holding the token — which is the correct asymmetry for a redeemable synthetic dollar, since burning agUSD destroys a claim rather than creating one.
+
+Standard SEP-41 interface: `transfer`, `transfer_from`, `approve`, `allowance`, `balance`, `burn`, `burn_from`, `decimals`, `name`, `symbol`, `total_supply`.
+
+**Events:** `mint` · `burn` · `transfer` · `approve` (SEP-41) · `MinterSet(minter)`
 
 ### 4.3 sagUSD Staking Contract
 
@@ -299,29 +316,44 @@ Standard SEP-41 interface: `transfer`, `approve`, `transfer_from`, `balance`, `a
 
 | Function | Description |
 |---|---|
-| `stake(from, agusd_amount) → i128` | Locks agUSD, mints sagUSD shares at current rate. |
-| `unstake(from, shares) → i128` | Burns shares, returns agUSD at current rate. |
-| `distribute_yield(distributor, amount)` | Deposits yield, increases assets-per-share. Authorized distributor only. |
-| `exchange_rate() → i128` | Current agUSD per sagUSD share (scaled). |
+| `stake(from, agusd_amount) → i128` | Locks agUSD, mints sagUSD shares at the current rate. Returns shares minted. |
+| `request_unstake(from, shares) → i128` | Step 1 of 2. Burns the shares immediately, prices them at the current rate and locks the agUSD owed behind the cooldown. Returns the assets owed. |
+| `claim(from) → i128` | Step 2 of 2. Pays out a matured unstake request. Reverts while the cooldown is still running. |
+| `cooldown() → u64` | Seconds between a request and the moment it can be claimed. 60 on testnet. |
+| `pending(addr) → Pending` | The caller's queued unstake: assets owed and the timestamp it becomes claimable. |
+| `distribute_yield(amount)` | Deposits yield, increases assets-per-share. Authorized distributor only, which in V1 is the stored admin: the call takes no distributor argument and authorizes the recorded admin address, whose own agUSD is what moves. |
+| `exchange_rate() → i128` | Current agUSD per sagUSD share (scaled to 7 decimals). |
+| `share_price() → i128` | Alias of `exchange_rate()`, the name this contract shipped with. Same computation, retained because the generation 1 agUSD calls it on the credit vaults. |
+| `nav() → i128` | Total agUSD the contract is accountable for. |
+| `total_shares() → i128` | sagUSD in circulation. |
 
-**Events:** `stake` · `unstake` · `yield_distributed`
+**Unstaking is two steps, not one.** There is no single `unstake()` call. `request_unstake` burns the shares at request time and prices them there, so a queued position cannot keep earning, be sold, or be re-requested while it waits; `claim` pays it out once `cooldown()` has elapsed. Pricing at request rather than at claim is what stops the cooldown being used as a free option on the exchange rate.
+
+**Events:** `mint` · `burn` · `transfer` · `approve` (SEP-41, on the share token) · `AgUsdRepointed(agusd)`. Yield distribution is observable as the resulting change in `nav()` and `exchange_rate()` together with the underlying agUSD `transfer` into the contract; it does not currently emit a dedicated event of its own.
 
 ### 4.4 Allocation Engine Contract
 
-**Purpose:** Routes vault capital across pool adapters (Etherfuse, private credit) with on-chain concentration cap enforcement and a minimum idle USDC reserve floor.
+**Purpose:** Routes vault capital across pool adapters (Etherfuse, private credit) with on-chain concentration cap enforcement and a reserve floor. All four limits are measured in basis points of total assets, so the floor is read in the same units as the caps and the two cannot be compared wrongly.
 
 **Key Functions**
 
 | Function | Description |
 |---|---|
+| `initialize(admin, vault)` | One-time setup. Ships fail-closed: every cap at zero and the reserve floor at 10000 bps, so an unconfigured Engine can deploy nothing. |
 | `register_pool(admin, pool_id, originator, jurisdiction, cap_bps)` | Whitelists a pool with metadata and cap. |
-| `set_caps(admin, pool_cap_bps, originator_cap_bps, jurisdiction_cap_bps)` | Updates global concentration limits. |
-| `set_reserve_floor(admin, amount)` | Sets the minimum idle USDC reserve the Vault must retain. Admin-gated, emits an event on every change. |
-| `allocate(admin, pool_id, amount)` | Deploys capital. Reverts if any cap exceeded, or if the call would push vault reserves below the reserve floor. |
+| `set_caps(admin, pool_cap_bps, originator_cap_bps, jurisdiction_cap_bps)` | Updates global concentration limits, in bps of total assets. |
+| `set_reserve_floor(admin, floor_bps: u32)` | Sets the minimum **share of total assets**, in basis points, that must stay as idle USDC in the Vault. Rejects anything above 10000. Admin-gated; emits an event. |
+| `set_vault(admin, vault)` | Repoints the Engine at a different Vault. Refused while any capital is deployed, so the book and the balance sheet the caps measure it against stay one Vault's. |
+| `allocate(admin, pool_id, amount)` | Deploys capital. Reverts if any cap is exceeded, or if the call would leave idle reserves below `floor_bps` of total assets. |
 | `deallocate(pool_id, amount)` | Records repayments returning to vault. |
 | `get_exposure(pool_id) → i128` | Current allocation per pool. |
-| `get_exposures() → Map` | Full allocation state. |
-| `get_reserve_floor() → i128` | Current reserve floor. Readable by anyone. |
+| `get_exposures() → Map` | Full allocation state. Pools with no exposure appear as zero, so the map doubles as the whitelist. |
+| `total_allocated() → i128` | Total booked as deployed across every pool. The Vault reads it to compute total assets. |
+| `caps() → Caps` | The three concentration limits currently in force, in bps. |
+| `reserve_floor_bps() → u32` | Current reserve floor, in bps of total assets. Readable by anyone. |
+| `get_reserve_ratio() → u32` | Idle reserves as an actual share of total assets, in bps: the number the floor is a lower bound on, read in the same units. |
+| `get_pool(pool_id) → Pool` | A registered pool's originator, jurisdiction and cap. |
+| `pools() → Vec<Address>` | Every registered pool adapter. |
 
 **Adapter Interface**
 
@@ -431,7 +463,15 @@ Two-step FIFO withdrawal queue:
 
 ### 6.1 Reserve Floor
 
-The Allocation Engine enforces a minimum idle USDC reserve as a contract-level invariant. `allocate()` reverts if a call would push vault reserves below the floor, so fast-exit liquidity is a protocol parameter anyone can read on-chain rather than a position held inside a third-party protocol. The floor is set by the Curator through an admin-gated call, and every change emits an event.
+The Allocation Engine enforces the reserve floor as a contract-level invariant, and it enforces it **as a share of total assets rather than as an amount of USDC**. `set_reserve_floor(admin, floor_bps)` takes basis points; `reserve_floor_bps()` returns them; `get_reserve_ratio()` returns what idle reserves actually are as a share of total assets, in the same units, so the limit and the reality are read off the same scale. Testnet runs at **2500 bps, 25%**.
+
+Total assets are idle reserves plus everything the Engine has booked as deployed. `allocate()` computes what the Vault would be left holding once the release settles and reverts if that is below `floor_bps` of the total, so the check happens in the same transaction as the transfer and a refused allocation moves no funds and books no exposure.
+
+**Why a share and not a sum.** This is what replaced the Blend v2 liquidity buffer, and the unit is the reason the replacement is stronger rather than merely different. Blend gave fast-exit liquidity by holding a withdrawable position in someone else's lending market, which is only as instant as that market's utilization on the day it is needed. The floor gives it by never letting the USDC leave the Vault at all, which has no such dependency. But had the floor been written as a fixed number of dollars it would have inherited a different weakness: it would be most of a small book and a rounding error in a large one, and it would need re-tuning by hand every time the protocol grew. Withdrawal pressure scales with the size of the book, so the liquidity guaranteed against it has to scale too. A ratio does that on its own.
+
+**A floor only binds if the caps can reach it.** That is a property of the configuration, not of the code. Two pools capped at 30% each can deploy at most 60% between them, so a 20% floor could never be the reason an allocation is refused: 40% would stay idle whatever the operator did, the pool cap would fire first every time, and the floor would pass its own unit test while doing nothing on-chain. The deployed configuration is chosen the other way round — pool caps of 4000 bps each, summing to 8000, against a floor that releases 7500 — so there are states reachable by ordinary allocations in which every concentration cap is satisfied and the floor is the only limit refusing the call. That case is exercised on testnet as a submitted transaction carrying the Engine's own error code, not asserted in prose.
+
+The floor is set by the Curator through an admin-gated call, and every change emits a `ReserveFloorUpdated(floor_bps)` event. The Engine ships fail-closed: `initialize()` leaves every cap at zero and the floor at 10000 bps, so an Engine that has been deployed but not configured cannot deploy capital at all.
 
 ### 6.2 Liquidity Sources (priority order)
 
@@ -459,12 +499,12 @@ The Allocation Engine enforces a minimum idle USDC reserve as a contract-level i
 
 | Category | Threat | Mitigation |
 |---|---|---|
-| **Spoofing** | Unauthorized agUSD mint | `mint` / `burn` restricted to Vault. `require_auth()` on all functions. |
+| **Spoofing** | Unauthorized agUSD mint | `mint` restricted to the recorded minter (the Vault), and `set_minter` closes at the first mint. `burn` is holder-authorized and cannot inflate supply. `require_auth()` throughout. |
 | **Spoofing** | Fake oracle reporter | Authorized reporter set. `push_nav()` validates caller. Rotation requires admin + event. |
 | **Tampering** | NAV manipulation | Deviation bounds (>5% rejected). Two-step confirmation for large changes. |
-| **Tampering** | Allocation to compromised pool | On-chain concentration caps (pool, originator, jurisdiction) and reserve floor. `allocate()` reverts if exceeded. |
+| **Tampering** | Allocation to compromised pool | On-chain concentration caps (pool, originator, jurisdiction) and the reserve floor, all four in bps of total assets. `allocate()` reverts if any is exceeded. |
 | **Repudiation** | Originator denies allocation | Soroban events on every `allocate` / `deallocate`. Indexed with block provenance. |
-| **Repudiation** | Disputed yield | `yield_distributed` events with amount + resulting exchange rate. Fully reconstructable. |
+| **Repudiation** | Disputed yield | Every distribution moves real agUSD in, so it leaves a SEP-41 `transfer` event and a matching move in `nav()` and `exchange_rate()`. Fully reconstructable from the chain. A dedicated `yield_distributed` event is planned. |
 | **Info Disclosure** | LP position exposure | Public chain by design. No private data in contracts. |
 | **DoS** | Withdrawal queue flood | Minimum amount + agUSD burn cost. TTL on claim records. |
 | **DoS** | Oracle starvation | Deposits/stakes continue. Only withdrawals/allocations revert. Admin updates reporter set. |
@@ -474,9 +514,9 @@ The Allocation Engine enforces a minimum idle USDC reserve as a contract-level i
 
 | Role | V1 Holder | Permissions | Evolution |
 |---|---|---|---|
-| Admin | 2-of-3 multi-sig | Pause, register pools, set caps, set reserve floor, update reporters | Governance + 48h timelock |
+| Admin | 2-of-3 multi-sig | Pause, register pools, set caps, set the reserve floor in bps, repoint counterparties while the guards allow it, update reporters | Governance + 48h timelock |
 | Reporter | Dedicated hot wallet | Push NAV to Oracle | Multi-reporter quorum (2-of-3) |
-| Yield Distributor | Backend service key | `distribute_yield()` | Keeper network |
+| Yield Distributor | = Admin in V1 | `distribute_yield()`, which moves the distributor's own agUSD | Dedicated service key, then keeper network |
 | Curator | = Admin in V1 | Whitelist pools, risk params | Independent risk committee |
 
 **Pausability:** When paused, deposits and withdrawals blocked. Staking/unstaking continue. Oracle updates continue.
@@ -491,9 +531,9 @@ The Allocation Engine enforces a minimum idle USDC reserve as a contract-level i
 | Vault | Persistent | Withdrawal claims (by claim_id) | Claims pending for weeks |
 | agUSD | Instance | Metadata, supply, Vault address | Standard token data |
 | agUSD | Persistent | Balances, allowances | Long-lived user data |
-| sagUSD | Instance | Exchange rate, total shares, distributor | Every stake/unstake |
-| sagUSD | Persistent | Share balances | Long-lived user data |
-| Alloc. Engine | Instance | Admin, caps, reserve floor, pool registry | Config, every allocation |
+| sagUSD | Instance | Admin, staked token, NAV, cooldown, stake counter, display allocations | Every stake/unstake |
+| sagUSD | Persistent | Share balances, pending unstake requests | Long-lived user data; a request outlives the shares that created it |
+| Alloc. Engine | Instance | Admin, Vault, caps, reserve floor in bps, pool registry | Config, every allocation |
 | Alloc. Engine | Persistent | Per-pool exposure records | Persist across settlement |
 | Oracle | Instance | Reporter set, thresholds | Configuration |
 | Oracle | Temporary | Latest NAV + timestamp | Replaced each update, auto-expires |
