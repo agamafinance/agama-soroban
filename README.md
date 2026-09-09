@@ -926,11 +926,16 @@ bash scripts/deploy-mediums.sh
 # contracts, which are still live, and the transaction the fixed ones refuse
 # is submitted there.
 bash scripts/smoke-mediums.sh           # all five
+bash scripts/smoke-mediums.sh ttl       # M3, the claim that archives
 bash scripts/smoke-mediums.sh caps      # M1, the caps a write-down reset
 bash scripts/smoke-mediums.sh stranded  # M2, capital with no way out
-bash scripts/smoke-mediums.sh ttl       # M3, the claim that archives
 bash scripts/smoke-mediums.sh rotation  # M4, a half finished rotation
 bash scripts/smoke-mediums.sh wiring    # M5, initialize became a constructor
+# The order above is the order `all` runs them in, which is working capital
+# order rather than finding order: M3 needs a whole agUSD in one claim because
+# that is the anti-dust minimum, and it is the only stage that hands every
+# stroop of it back. M2 has to follow M1, because what it recovers is what M1
+# wrote off. The other three are independent of everything.
 
 # Deploy the agUSD + sagUSD + credit vault set (already live on testnet)
 cp .env.example .env
