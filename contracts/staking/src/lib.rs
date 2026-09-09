@@ -61,16 +61,41 @@
 //! it, so repointing would leave both denominated in a token the contract does
 //! not hold. Before that there is nothing to strand.
 //!
+//! # Why there is no NAV setter any more
+//!
+//! There was one. `report_nav(new_nav)` was admin gated, took any non-negative
+//! value, checked nothing against the balance the contract actually held, and
+//! emitted no event. It was described as being for demo and reconciliation.
+//!
+//! NAV is the denominator of both directions of the share price: `stake` mints
+//! `amount * supply / nav` and `request_unstake` returns `shares * nav /
+//! supply`. A setter on that number is not a reporting convenience, it is an
+//! instruction to reprice every share in the contract. With 1000 agUSD staked,
+//! `report_nav(1)` collapses the NAV to one stroop, staking 99 stroops then
+//! buys 99% of the share supply, restoring the NAV restores the value behind
+//! those shares, and unstaking walks away with 990 agUSD of somebody else's
+//! deposit. Two calls, no cash, no event.
+//!
+//! `distribute_yield` is the entry point that was always meant to be used: it
+//! moves real agUSD in from an account that signed for it, and raises the NAV
+//! by exactly what arrived, so it cannot overstate the book. Once it existed
+//! there was no remaining reason for a bare setter, and the setter is gone
+//! rather than bounded. Nothing in this workspace called it, no script called
+//! it, and the six deployed credit vaults are older instances that keep their
+//! own copy of it on-chain; removing it here removes it from every instance
+//! deployed from this source.
+//!
+//! NAV now moves in exactly three ways, all of them backed by a transfer:
+//! `stake` in, `request_unstake` out, `distribute_yield` in.
+//!
 //! # What the admin can still do
 //!
-//! `report_nav` overwrites the reported NAV outright, which is the denominator
-//! every share is redeemed against, and `distribute_yield` moves the admin's
-//! own agUSD in. The re-initialization guard below stops a stranger doing
-//! either; it does not stop the admin, and it is not sold as doing so. As
+//! `distribute_yield` moves the admin's own agUSD in, and `set_allocations`
+//! writes display metadata. The re-initialization guard below stops a stranger
+//! doing either; it does not stop the admin, and it is not sold as doing so. As
 //! everywhere else in V1 the mitigation is the multi-signature admin and the
-//! timelock on the roadmap. `report_nav` exists for demo and reconciliation,
-//! and `distribute_yield`, which moves real agUSD and cannot overstate the
-//! book, is the path that should be used.
+//! timelock on the roadmap. What has changed is that no admin call can now move
+//! the share price without moving the assets behind it.
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, token::TokenClient, Address,
@@ -143,9 +168,9 @@ impl Staking {
     /// One time setup.
     ///
     /// Re-initialization is rejected. Without that guard anyone could call this
-    /// a second time, name themselves admin, repoint the staked asset and reset
-    /// the NAV, which between them are enough to drain the contract: the NAV is
-    /// the denominator every share is redeemed against.
+    /// a second time, name themselves admin and repoint the staked asset, which
+    /// between them are enough to strand every share against a token the
+    /// contract does not hold.
     pub fn initialize(
         e: Env,
         admin: Address,
@@ -303,17 +328,6 @@ impl Staking {
         TokenClient::new(&e, &agusd).transfer(&admin, &e.current_contract_address(), &amount);
         let nav = Self::nav(e.clone());
         e.storage().instance().set(&Cfg::Nav, &(nav + amount));
-    }
-
-    /// Admin override of the reported NAV (demo / reconciliation). Prefer
-    /// `distribute_yield`, which keeps the vault solvent by moving real agUSD.
-    pub fn report_nav(e: Env, new_nav: i128) {
-        let admin: Address = e.storage().instance().get(&Cfg::Admin).unwrap();
-        admin.require_auth();
-        if new_nav < 0 {
-            panic!("nav must be non-negative");
-        }
-        e.storage().instance().set(&Cfg::Nav, &new_nav);
     }
 
     /// Record the off-chain "Kiro" liquidity-strategy allocations (UI display only).
