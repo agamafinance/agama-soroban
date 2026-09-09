@@ -1,6 +1,6 @@
 #![cfg(test)]
 use super::*;
-use allocation_engine::{AllocationEngine, AllocationEngineClient};
+use allocation_engine::{AllocationEngine, AllocationEngineClient, EngineError};
 use mock_usdc::{MockUsdc, MockUsdcClient};
 use oracle_adapter::{OracleAdapter, OracleAdapterClient};
 use private_credit::{PrivateCreditAdapter, PrivateCreditAdapterClient};
@@ -1168,4 +1168,75 @@ fn the_admin_role_can_be_handed_over_in_two_steps_and_only_to_a_live_key() {
         f.vault.try_accept_admin(&successor),
         Err(Ok(VaultError::NoPendingAdmin))
     );
+}
+
+// ---------------------------------------------------------------------------
+// Second adversarial review
+// ---------------------------------------------------------------------------
+
+/// The reserve floor is a share of a base a write-down cannot move.
+///
+/// `record_writedown` lowers `deployed_capital` with no cash moving. While the
+/// floor was a share of net assets, that lowered the floor's absolute size by
+/// `floor_bps` of whatever was written off, so allocating to the floor and
+/// writing the position down, over and over, walked the entire reserves out of
+/// the Vault in slices that were each individually inside the limit. On this
+/// exact fixture it left one stroop of a 1000 USDC book behind a 25% floor.
+#[test]
+fn a_write_down_buys_no_room_under_the_reserve_floor() {
+    let f = setup();
+    f.engine.set_reserve_floor(&f.admin, &2_500u32);
+    f.vault.set_reserve_floor(&f.admin, &2_500u32);
+    depositor(&f, 1_000 * USDC);
+
+    // One honest allocation takes the book to the floor, and the floor holds.
+    f.engine.allocate(&f.admin, &f.pool, &(750 * USDC));
+    assert_eq!(f.vault.free_reserves(), 250 * USDC);
+    assert!(f.engine.try_allocate(&f.admin, &f.pool, &1).is_err());
+
+    // Recognise the whole position as lost. No cash moves: the adapter is still
+    // holding every dollar of it.
+    f.engine
+        .write_down(&f.admin, &f.pool, &(750 * USDC), &symbol_short!("DEFAULT"));
+    assert_eq!(f.usdc.balance(&f.pool), 750 * USDC);
+    assert_eq!(f.vault.deployed_capital(), 0);
+    assert_eq!(f.vault.recognised_losses(), 750 * USDC);
+
+    // The base the floor is a share of has not moved, so neither has the floor.
+    assert_eq!(f.vault.get_net_assets(), 250 * USDC);
+    assert_eq!(f.vault.floor_base(), 1_000 * USDC);
+    assert_eq!(
+        f.engine.try_allocate(&f.admin, &f.pool, &1),
+        Err(Ok(EngineError::ReserveFloorBreached))
+    );
+
+    // And it stays put however many times the loop is run.
+    for _ in 0..40 {
+        let free = f.vault.free_reserves();
+        if free <= 0 {
+            break;
+        }
+        let mut take = free;
+        while take > 0 && f.engine.try_allocate(&f.admin, &f.pool, &take).is_err() {
+            take = take * 9 / 10;
+        }
+        if take == 0 {
+            break;
+        }
+        f.engine
+            .write_down(&f.admin, &f.pool, &take, &symbol_short!("DEFAULT"));
+    }
+    assert_eq!(
+        f.vault.free_reserves(),
+        250 * USDC,
+        "the 25% floor has to hold across write-downs, not only across allocations"
+    );
+
+    // A fresh deposit raises the base and releases headroom in the ordinary
+    // way, so the guard fails closed without stranding the contract.
+    depositor(&f, 1_000 * USDC);
+    assert_eq!(f.vault.floor_base(), 2_000 * USDC);
+    f.engine.allocate(&f.admin, &f.pool, &(750 * USDC));
+    assert_eq!(f.vault.free_reserves(), 500 * USDC);
+    assert!(f.engine.try_allocate(&f.admin, &f.pool, &1).is_err());
 }

@@ -91,6 +91,7 @@
 //!    only by a repayment it can see in its own balance or by an admin
 //!    authorized write-down
 //!  - `outstanding_liabilities`, the queued withdrawals it already owes
+//!  - `recognised_losses`, everything it has written off, which never falls
 //!  - `reserve_floor_bps`, its own copy of the floor, admin set and fail closed
 //!    at 100% until it is configured
 //!
@@ -100,6 +101,18 @@
 //! same book one call earlier. A hostile one meets it on the first call and
 //! cannot get past it on any subsequent one, because the Vault's own record of
 //! what it has released is not something the Engine can rewrite.
+//!
+//! The floor is a share of `floor_base`, not of net assets, and the difference
+//! between those two is the whole of the second review's first finding.
+//! `record_writedown` lowers `deployed_capital` with no cash moving, so a floor
+//! measured against net assets is a floor whose absolute size the admin can
+//! lower at will: allocate to the floor, write the position down, and the floor
+//! has come down with it. Forty rounds of that took all but one stroop of a
+//! 1000 USDC book out of a Vault holding a 25% floor, with every individual
+//! call inside the limit and the pool adapter keeping every dollar. Recognised
+//! losses therefore stay in the base for good, which makes a write-down buy
+//! nothing, and which is also the more honest base: agUSD redeems one for one,
+//! so a default does not reduce by a stroop what this Vault owes.
 //!
 //! # What the admin can still do, stated plainly
 //!
@@ -275,7 +288,14 @@ enum Cfg {
     /// balance holds above this arrived without the Vault being told, which is
     /// exactly what a pool repayment looks like from in here, and is what
     /// `record_repayment` is checked against.
-    Booked,    /// Half finished admin handover: proposed, not yet accepted.
+    Booked,
+    /// Deployed capital written off since deployment, cumulative and never
+    /// reduced. It is not an asset and it is not counted as one; it stays on
+    /// the books because it is the denominator of the reserve floor, and a
+    /// denominator a write-down can shrink is a floor a write-down can walk
+    /// through.
+    WrittenOff,
+    /// Half finished admin handover: proposed, not yet accepted.
     PendingAdmin,
 }
 
@@ -684,14 +704,34 @@ impl Vault {
     ///    have already burned their agUSD and are owed this cash; lending it
     ///    out is how a claim becomes unpayable.
     ///  - free reserves after the release cannot fall below `reserve_floor_bps`
-    ///    of net assets, where net assets are free reserves plus the capital
-    ///    this Vault has released and not seen back.
+    ///    of `floor_base`, which is free reserves, plus the capital this Vault
+    ///    has released and not seen back, plus everything it has ever written
+    ///    off.
     ///
-    /// Net assets are invariant under an allocation, which is what makes the
-    /// second limit hold across repeated calls rather than only within one. A
-    /// hostile Engine gets the first release an honest one would have been
-    /// allowed, and then gets nothing, because `deployed_capital` went up by
-    /// exactly what it took and is not a number the Engine can write.
+    /// The base is invariant under an allocation, which is what makes the second
+    /// limit hold across repeated calls rather than only within one. A hostile
+    /// Engine gets the first release an honest one would have been allowed, and
+    /// then gets nothing, because `deployed_capital` went up by exactly what it
+    /// took and is not a number the Engine can write.
+    ///
+    /// The write-off term is why the base is not simply net assets, and it is
+    /// the whole of the second review's first finding. `record_writedown` is
+    /// the one call that lowers `deployed_capital` with no cash moving, so if
+    /// the floor were a percentage of net assets it would be a percentage of a
+    /// number the admin can lower at will. Allocate to the floor, write the
+    /// position down, and the floor has moved down with it; forty rounds of
+    /// that took 999.9999999 of 1000 USDC out of a Vault holding a 25% floor
+    /// while the adapter kept every dollar. Keeping recognised losses in the
+    /// base makes a write-down buy exactly nothing.
+    ///
+    /// It is also the more correct base under a real default, which is the test
+    /// of whether a guard is a hack. agUSD is redeemed one for one, so the
+    /// protocol's nominal liability does not shrink when its assets do: a book
+    /// that has just lost a quarter of itself owes precisely what it owed
+    /// before and has less to pay it with, and the last thing it should do is
+    /// conclude that it may now lend out more. New deposits raise the base and
+    /// restore deployable headroom in the ordinary way, so this fails closed
+    /// without stranding the contract.
     pub fn settle_allocation(e: Env, pool: Address, amount: i128) -> Result<(), VaultError> {
         let engine: Address = e
             .storage()
@@ -709,8 +749,8 @@ impl Vault {
             return Err(VaultError::InsufficientLiquidity);
         }
         let deployed_after = Self::deployed_capital(e.clone()) + amount;
-        let net_assets = free_after + deployed_after;
-        if free_after * BPS < Self::reserve_floor_bps(e.clone()) as i128 * net_assets {
+        let base = free_after + deployed_after + Self::recognised_losses(e.clone());
+        if free_after * BPS < Self::reserve_floor_bps(e.clone()) as i128 * base {
             return Err(VaultError::ReserveFloorBreached);
         }
 
@@ -782,6 +822,17 @@ impl Vault {
     /// Recognising a loss is the honest action, not the suspicious one. Until
     /// it happens the Vault reports capital it does not have, and the reserve
     /// ratio is overstated by exactly the size of the loss.
+    ///
+    /// What the loss must not do is buy the caller anything. The amount is
+    /// added to `recognised_losses`, which never falls, and which stays in the
+    /// denominator of the reserve floor for the life of the contract. Without
+    /// that, this call lowered the base the floor is a percentage of, so
+    /// alternating `allocate` and `write_down` walked the whole of the reserves
+    /// out of the Vault a slice at a time with every individual call inside the
+    /// floor. Two authorizations were never going to be enough on their own,
+    /// because both of them are the same key, and a guard that a legitimate
+    /// operation and an attack pass identically is not a guard: the arithmetic
+    /// has to be the thing that says no.
     pub fn record_writedown(e: Env, admin: Address, amount: i128) -> Result<(), VaultError> {
         let engine: Address = e
             .storage()
@@ -797,11 +848,14 @@ impl Vault {
         if amount > deployed {
             return Err(VaultError::DeployedUnderflow);
         }
+        let losses = Self::recognised_losses(e.clone()) + amount;
         e.storage().instance().set(&Cfg::Deployed, &(deployed - amount));
+        e.storage().instance().set(&Cfg::WrittenOff, &losses);
         Self::bump_instance(&e);
         WriteDownRecorded {
             amount,
             deployed: deployed - amount,
+            recognised_losses: losses,
         }
         .publish(&e);
         Ok(())
@@ -936,12 +990,40 @@ impl Vault {
     }
 
     /// Assets the queued withdrawals have no claim on: free reserves plus
-    /// deployed capital. This is the denominator of the reserve floor.
+    /// deployed capital. The honest measure of what the Vault is worth, and for
+    /// that reason not the denominator of the reserve floor: see `floor_base`.
     pub fn get_net_assets(e: Env) -> Result<i128, VaultError> {
         if !e.storage().instance().has(&Cfg::Engine) {
             return Err(VaultError::NotInitialized);
         }
         Ok(Self::free_reserves(e.clone()) + Self::deployed_capital(e))
+    }
+
+    /// Deployed capital written off since deployment, cumulative. It only ever
+    /// rises, and there is no entry point that lowers it.
+    ///
+    /// It is not an asset and `get_net_assets` correctly excludes it. It exists
+    /// because the reserve floor needs a base that a write-down cannot move: a
+    /// floor measured as a share of net assets is a floor whose absolute size
+    /// falls every time the admin recognises a loss, real or otherwise, and
+    /// that is enough to walk the whole of the reserves out of the contract in
+    /// slices that are each individually within the floor.
+    pub fn recognised_losses(e: Env) -> i128 {
+        e.storage().instance().get(&Cfg::WrittenOff).unwrap_or(0)
+    }
+
+    /// The denominator `reserve_floor_bps` is a share of: net assets plus
+    /// everything ever written off.
+    ///
+    /// Under a protocol that has never taken a loss this is exactly
+    /// `get_net_assets`, which is the ordinary case and the one the deployed
+    /// configuration is sized against. After a loss the two part company, and
+    /// the floor keeps asking for a buffer against the book as it was rather
+    /// than the book as it is. That is the conservative direction and it is
+    /// also the correct one: agUSD redeems one for one, so a default does not
+    /// reduce by one stroop what the Vault owes.
+    pub fn floor_base(e: Env) -> Result<i128, VaultError> {
+        Ok(Self::get_net_assets(e.clone())? + Self::recognised_losses(e))
     }
 
     /// NAV for the Vault's feed, straight from the Oracle Adapter. A stale feed
@@ -1195,6 +1277,11 @@ pub struct WriteDownRecorded {
     pub amount: i128,
     /// Capital still out at the pools after the write-down.
     pub deployed: i128,
+    /// Everything written off since deployment, after this one. It never falls,
+    /// and it stays in the denominator of the reserve floor, so the event
+    /// carries the number that says how much of the floor's base is a memory of
+    /// capital rather than capital.
+    pub recognised_losses: i128,
 }
 
 /// Emitted when the Vault is repointed at a different agUSD. Repointing the
