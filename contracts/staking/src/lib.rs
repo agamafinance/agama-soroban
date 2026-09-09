@@ -3,11 +3,47 @@
 //!
 //! Users stake agUSD and receive sagUSD shares priced at `NAV / totalShares`
 //! (ERC-4626 style). Yield is delivered by the strategist calling
-//! `accrue_yield`, which transfers real agUSD into the vault and raises the
+//! `distribute_yield`, which transfers real agUSD into the vault and raises the
 //! NAV, so every share appreciates and there is nothing to claim by hand.
 //! Unstaking is a two step request then claim with a cooldown (it mirrors the
 //! EVM sagYLD flow). `set_allocations` records the off-chain "Kiro" liquidity
 //! strategies purely for UI display.
+//!
+//! # The `distribute_yield` / assets-per-share convention
+//!
+//! These are the names Agama committed to publicly, in its answer to the SCF
+//! panel: sagUSD adopts the `distribute_yield` / assets-per-share accounting
+//! convention, as an interface compatibility rather than a protocol-level
+//! integration. No DeFindex contract is called, no DeFindex contract is
+//! trusted, and nothing here depends on their deployment. This contract now
+//! honours that commitment; it previously used `accrue_yield` and `share_price`
+//! and so did not.
+//!
+//! One correction, recorded here because the repository is going to audit and
+//! the claim is checkable. DeFindex's own vault does not publish functions
+//! under either of these names. Its interface is multi-asset
+//! (`fetch_total_managed_funds`, `get_asset_amounts_per_shares`,
+//! `distribute_fees`, and strategy level `harvest`), it exposes no scalar
+//! price-per-share getter at all, and it has no vault level yield distribution
+//! entry point. So this is a naming convention Agama has adopted on its own
+//! side, matching DeFindex's economics: shares are never rebased, nothing is
+//! pushed to holders, and a position appreciates because the assets behind each
+//! share grow. It is not call compatibility with a DeFindex vault, and it
+//! should not be described as such.
+//!
+//! `exchange_rate` is that view: agUSD per sagUSD share, scaled to 7 decimals.
+//! `share_price` is kept as an alias of it, returning the same number from the
+//! same computation, because the generation 1 agUSD contract
+//! (`contracts/agusd`) calls `share_price` on the six deployed credit vaults,
+//! which are instances of this contract. Dropping the old name would break a
+//! caller that is live on testnet for no gain: a wallet looking for
+//! `exchange_rate` does not care that a second name answers as well.
+//!
+//! The yield entry point is a hard rename rather than an alias. It is a state
+//! changing, admin authorized path with no on-chain caller anywhere in this
+//! workspace, so there is nothing to break, and keeping two names for one way
+//! of moving real money into the contract would mean two entry points an
+//! auditor has to check instead of one.
 //!
 //! # The agUSD pointer
 //!
@@ -28,13 +64,13 @@
 //! # What the admin can still do
 //!
 //! `report_nav` overwrites the reported NAV outright, which is the denominator
-//! every share is redeemed against, and `accrue_yield` moves the admin's own
-//! agUSD in. The re-initialization guard below stops a stranger doing either;
-//! it does not stop the admin, and it is not sold as doing so. As everywhere
-//! else in V1 the mitigation is the multi-signature admin and the timelock on
-//! the roadmap. `report_nav` exists for demo and reconciliation, and
-//! `accrue_yield`, which moves real agUSD and cannot overstate the book, is the
-//! path that should be used.
+//! every share is redeemed against, and `distribute_yield` moves the admin's
+//! own agUSD in. The re-initialization guard below stops a stranger doing
+//! either; it does not stop the admin, and it is not sold as doing so. As
+//! everywhere else in V1 the mitigation is the multi-signature admin and the
+//! timelock on the roadmap. `report_nav` exists for demo and reconciliation,
+//! and `distribute_yield`, which moves real agUSD and cannot overstate the
+//! book, is the path that should be used.
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, token::TokenClient, Address,
@@ -148,7 +184,7 @@ impl Staking {
     /// records that a stake has happened rather than what the balance is now,
     /// since unwinding to zero is not the same thing as never having taken
     /// custody and the pending queue can be non-empty while the share supply is
-    /// nil. The NAV and the balance are checked as well because `accrue_yield`
+    /// nil. The NAV and the balance are checked as well because `distribute_yield`
     /// takes custody without going near the counter: a contract holding a
     /// thousand agUSD of undistributed yield and no shares would otherwise
     /// still look untouched, and the first staker after a repoint would be
@@ -250,9 +286,14 @@ impl Staking {
         p.assets
     }
 
-    /// Strategist delivers yield: transfers agUSD into the vault and raises the NAV.
-    /// Every existing share appreciates proportionally.
-    pub fn accrue_yield(e: Env, amount: i128) {
+    /// Strategist delivers yield: transfers agUSD into the vault and raises the
+    /// NAV. Every existing share appreciates proportionally, so there is
+    /// nothing to claim by hand and no rebasing.
+    ///
+    /// Named for the convention Agama committed to. The distributor is the
+    /// stored admin and authorizes the call itself, so the agUSD comes out of
+    /// an account that signed for it: this cannot mint value, only move it in.
+    pub fn distribute_yield(e: Env, amount: i128) {
         let admin: Address = e.storage().instance().get(&Cfg::Admin).unwrap();
         admin.require_auth();
         if amount <= 0 {
@@ -265,7 +306,7 @@ impl Staking {
     }
 
     /// Admin override of the reported NAV (demo / reconciliation). Prefer
-    /// `accrue_yield`, which keeps the vault solvent by moving real agUSD.
+    /// `distribute_yield`, which keeps the vault solvent by moving real agUSD.
     pub fn report_nav(e: Env, new_nav: i128) {
         let admin: Address = e.storage().instance().get(&Cfg::Admin).unwrap();
         admin.require_auth();
@@ -289,14 +330,30 @@ impl Staking {
     pub fn total_shares(e: Env) -> i128 {
         tok::total_supply(&e)
     }
-    /// Share price scaled to 7 decimals (ONE = 1.0). Starts at 1.0.
-    pub fn share_price(e: Env) -> i128 {
+    /// agUSD per sagUSD share, scaled to 7 decimals (ONE = 1.0). Starts at 1.0
+    /// and only ever moves with the NAV, which is what makes yield passive.
+    ///
+    /// This is the assets-per-share view under the name Agama committed to. It
+    /// is the canonical one; `share_price` below is an alias.
+    pub fn exchange_rate(e: Env) -> i128 {
         let supply = tok::total_supply(&e);
         if supply == 0 {
             ONE
         } else {
             Self::nav(e.clone()) * ONE / supply
         }
+    }
+
+    /// Alias of [`Staking::exchange_rate`], under the name this contract
+    /// carried before it took the DeFindex one.
+    ///
+    /// Kept rather than renamed away because it has a live on-chain caller:
+    /// the generation 1 agUSD contract (`contracts/agusd`) prices its
+    /// positions in the six deployed credit vaults through `share_price`, and
+    /// those vaults are instances of this contract. One computation, two
+    /// names, no second source of truth.
+    pub fn share_price(e: Env) -> i128 {
+        Self::exchange_rate(e)
     }
     pub fn pending(e: Env, addr: Address) -> Pending {
         e.storage()
