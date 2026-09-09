@@ -36,6 +36,20 @@
 //! owner simply never returns freezes every withdrawal behind it forever, and
 //! the attacker keeps their agUSD.
 //!
+//! That covered the claimant who will not come back. It did not cover the
+//! claimant who cannot be paid, which is worse, because the owner cannot fix it
+//! by showing up either. The Vault's USDC is a Stellar Asset Contract over a
+//! classic asset, so a payout fails whenever the destination has no trustline,
+//! has had it frozen by the issuer, has a limit below the claim, or no longer
+//! exists, and a failed payout used to trap the whole call and leave the head
+//! pointer where it was. One USDC and a lowered trustline limit stopped every
+//! withdrawal in the protocol permanently. `settle_withdrawal` now attempts the
+//! delivery instead of assuming it: if the token refuses, the claim is marked
+//! deferred and stepped over, unpaid and still owed, and its owner collects it
+//! through `claim_withdrawal` whenever the obstruction is gone. A deferred
+//! claim loses its place in the queue, which is a real cost and falls on the
+//! only party who can do anything about the cause of it.
+//!
 //! # A queued claim is a liability, and the Vault counts it
 //!
 //! `request_withdrawal` burns the agUSD immediately and leaves the USDC here,
@@ -234,6 +248,9 @@ pub enum VaultError {
     NoPendingAdmin = 320,
     /// `accept_admin` was called by an address that was not the one proposed.
     NotPendingAdmin = 321,
+    /// The Vault holds the cash and tried to send it, and the token refused to
+    /// deliver it to the claim's owner.
+    PaymentRejected = 322,
 }
 
 /// A queued withdrawal. The agUSD is burned at request time, so this record is
@@ -299,11 +316,15 @@ enum Cfg {
     PendingAdmin,
 }
 
-/// Persistent storage: the claim records, keyed by claim id.
+/// Persistent storage: the claim records, keyed by claim id, and the flag that
+/// marks one the queue has stepped over.
 #[derive(Clone)]
 #[contracttype]
 enum Store {
     Claim(u64),
+    /// Set on a claim `settle_withdrawal` could not deliver. The claim is still
+    /// owed and still counted; what it has lost is its place in the queue.
+    Deferred(u64),
 }
 
 /// Emitted when an admin handover is proposed. The role has not moved yet: this
@@ -634,9 +655,22 @@ impl Vault {
     /// having: one that cannot be reordered by whoever is running the protocol
     /// on the day it is under stress.
     ///
-    /// The head advances only when a claim is paid. If its owner never returns
-    /// to call this, `settle_withdrawal` is how the queue moves on without
-    /// them: same recipient, same amount, same position, different caller.
+    /// The head advances only when a claim is paid or stepped over. If its
+    /// owner never returns to call this, `settle_withdrawal` is how the queue
+    /// moves on without them: same recipient, same amount, same position,
+    /// different caller.
+    ///
+    /// There is a second door into this function, and it is not a way round the
+    /// ordering. A claim `settle_withdrawal` could not deliver is marked
+    /// deferred and left unpaid, and its owner collects it here whenever the
+    /// obstruction is gone, which by then is no longer at the head. Only a
+    /// claim the queue has already stepped over can arrive that way, only its
+    /// recorded owner can take it, and it can only be taken once.
+    ///
+    /// If the token refuses to deliver, this call fails rather than deferring.
+    /// The owner is the party who can fix a missing trustline, a frozen one or
+    /// one whose limit is too low, so the owner is the party who should be told
+    /// about it, by a named error rather than a trap.
     pub fn claim_withdrawal(e: Env, from: Address, claim_id: u64) -> Result<(), VaultError> {
         from.require_auth();
 
@@ -647,10 +681,21 @@ impl Vault {
         if claim.claimed {
             return Err(VaultError::AlreadyClaimed);
         }
-        if claim_id != Self::queue_head(e.clone()) {
+        let at_head = claim_id == Self::queue_head(e.clone());
+        let deferred = Self::is_deferred(e.clone(), claim_id);
+        if !at_head && !deferred {
             return Err(VaultError::NotAtQueueHead);
         }
-        Self::pay_head(&e, claim_id, claim)
+        if !Self::deliver(&e, claim_id, claim)? {
+            return Err(VaultError::PaymentRejected);
+        }
+        if deferred {
+            e.storage().persistent().remove(&Store::Deferred(claim_id));
+        } else {
+            e.storage().instance().set(&Cfg::QueueHead, &(claim_id + 1));
+        }
+        Self::bump_instance(&e);
+        Ok(())
     }
 
     /// Pay the claim at the head of the queue to its recorded owner, and
@@ -670,6 +715,31 @@ impl Vault {
     /// nothing: one claim at the anti-dust minimum, never claimed, froze every
     /// withdrawal in the protocol for as long as its owner cared to wait, and
     /// the owner kept the agUSD's worth of USDC at the end of it.
+    ///
+    /// # The head that cannot be paid, rather than will not
+    ///
+    /// Paying the head is a token transfer, and the Vault's USDC is a Stellar
+    /// Asset Contract over a classic asset, so the transfer fails whenever the
+    /// destination account has no trustline for USDC, has had it frozen by the
+    /// issuer, has a limit below the claim, or no longer exists. Any one of
+    /// those used to trap the whole invocation, which meant the head never
+    /// advanced and every withdrawal behind it stopped for good, with no admin
+    /// path around it because there deliberately is not one. It cost an
+    /// attacker one USDC and a lowered trustline limit, and it happened by
+    /// accident the first time an issuer froze a claimant.
+    ///
+    /// So delivery is attempted rather than assumed. If the token refuses, this
+    /// call writes nothing about the payment, marks the claim deferred,
+    /// advances the head over it and says so in an event. The claim stays unpaid
+    /// and stays counted in `outstanding_liabilities`, so its cash stays
+    /// reserved and undeployable, and its owner collects it through
+    /// `claim_withdrawal` once the obstruction is gone.
+    ///
+    /// The trade is real and it is worth stating: a deferred claim loses its
+    /// place in the queue, so claims behind it may be paid first. That cost
+    /// falls on the only party who can do anything about the cause of it, which
+    /// is the right party to bear it, and the alternative is letting one
+    /// unpayable claimant hold every other depositor hostage indefinitely.
     pub fn settle_withdrawal(e: Env) -> Result<u64, VaultError> {
         let claim_id = Self::queue_head(e.clone());
         if claim_id >= Self::queue_tail(e.clone()) {
@@ -682,7 +752,20 @@ impl Vault {
             // unreachable is the one an audit should not have to take on trust.
             return Err(VaultError::AlreadyClaimed);
         }
-        Self::pay_head(&e, claim_id, claim)?;
+        let owner = claim.owner.clone();
+        let amount = claim.amount;
+        let delivered = Self::deliver(&e, claim_id, claim)?;
+        e.storage().instance().set(&Cfg::QueueHead, &(claim_id + 1));
+        if !delivered {
+            Self::set_deferred(&e, claim_id);
+            WithdrawalDeferred {
+                user: owner,
+                claim_id,
+                amount,
+            }
+            .publish(&e);
+        }
+        Self::bump_instance(&e);
         Ok(claim_id)
     }
 
@@ -1055,20 +1138,34 @@ impl Vault {
     /// pool repays. Storing a flag would mean someone has to remember to
     /// refresh it, and a claim that is payable but marked pending is worse
     /// than no status at all.
+    /// A deferred claim is one `settle_withdrawal` could not deliver, because
+    /// the token refused to hand the USDC to its owner. It is unpaid, still
+    /// owed, still counted in `outstanding_liabilities`, and no longer in the
+    /// way of anybody else. Its owner collects it through `claim_withdrawal`,
+    /// out of head order, once whatever blocked the delivery is gone.
+    pub fn is_deferred(e: Env, claim_id: u64) -> bool {
+        e.storage()
+            .persistent()
+            .get(&Store::Deferred(claim_id))
+            .unwrap_or(false)
+    }
+
     pub fn claim_status(e: Env, claim_id: u64) -> Result<ClaimStatus, VaultError> {
         let claim = Self::read_claim(&e, claim_id)?;
         if claim.claimed {
             return Ok(ClaimStatus::Claimed);
         }
-        if claim_id == Self::queue_head(e.clone())
-            && Self::idle_reserves(e.clone()) >= claim.amount
-        {
+        let collectable =
+            claim_id == Self::queue_head(e.clone()) || Self::is_deferred(e.clone(), claim_id);
+        if collectable && Self::idle_reserves(e.clone()) >= claim.amount {
             return Ok(ClaimStatus::Ready);
         }
         Ok(ClaimStatus::Pending)
     }
 
-    /// Next claim id that may be paid. Nothing behind it can be paid first.
+    /// Next claim id the queue has not reached. Nothing behind it can be paid
+    /// first, and the only claims in front of it that can still be paid are the
+    /// deferred ones, which are out of everyone else's way by construction.
     pub fn queue_head(e: Env) -> u64 {
         e.storage().instance().get(&Cfg::QueueHead).unwrap_or(1)
     }
@@ -1078,7 +1175,9 @@ impl Vault {
         e.storage().instance().get(&Cfg::QueueTail).unwrap_or(1)
     }
 
-    /// Claims requested and not yet paid.
+    /// Claims the queue has not reached yet. A deferred claim is not counted
+    /// here, because it is no longer in the queue; it is still owed, and
+    /// `outstanding_liabilities` is the number that says so.
     pub fn queue_length(e: Env) -> u64 {
         Self::queue_tail(e.clone()) - Self::queue_head(e)
     }
@@ -1152,30 +1251,49 @@ impl Vault {
             .ok_or(VaultError::ClaimNotFound)
     }
 
-    /// Pay `claim` and advance the head. Shared by `claim_withdrawal` and
-    /// `settle_withdrawal` so the two cannot drift: the caller differs, the
-    /// payment does not. The claim is marked and the head moved before the
-    /// transfer, so the record is written whatever the token does.
-    fn pay_head(e: &Env, claim_id: u64, mut claim: Claim) -> Result<(), VaultError> {
+    /// Try to hand `claim` to its owner, and book the payment only if the USDC
+    /// actually moved. `Ok(true)` means paid, `Ok(false)` means the token
+    /// refused and nothing at all has been written. Shared by
+    /// `claim_withdrawal` and `settle_withdrawal` so the two cannot drift: the
+    /// caller differs, the payment does not.
+    ///
+    /// The transfer happens before the bookkeeping, which is the reverse of the
+    /// usual advice and is the only order that can work here, because the
+    /// bookkeeping is what the outcome of the transfer decides. It is safe for
+    /// a reason specific to this platform rather than by luck: the Soroban host
+    /// refuses to re-enter a contract that is already on the call stack, so a
+    /// token that tried to call back into the Vault mid-payment would abort the
+    /// invocation rather than observe a half-written queue. Everything written
+    /// after a failed transfer is written after the host has already rolled the
+    /// failed frame back.
+    ///
+    /// Advancing the head is deliberately not done here. A deferred claim is
+    /// collected long after the head has moved past it, and paying one must not
+    /// drag the pointer backwards, so the two callers each move it or do not.
+    fn deliver(e: &Env, claim_id: u64, mut claim: Claim) -> Result<bool, VaultError> {
         if Self::idle_reserves(e.clone()) < claim.amount {
             return Err(VaultError::InsufficientLiquidity);
         }
+        let usdc = Self::usdc(e.clone())?;
+        let delivered = matches!(
+            TokenClient::new(e, &usdc).try_transfer(
+                &e.current_contract_address(),
+                &claim.owner,
+                &claim.amount,
+            ),
+            Ok(Ok(()))
+        );
+        if !delivered {
+            return Ok(false);
+        }
+
         claim.claimed = true;
         Self::write_claim(e, claim_id, &claim);
-        e.storage().instance().set(&Cfg::QueueHead, &(claim_id + 1));
         Self::set_queued(
             e,
             Self::outstanding_liabilities(e.clone()) - claim.amount,
         );
         Self::add_booked(e, -claim.amount);
-        Self::bump_instance(e);
-
-        let usdc = Self::usdc(e.clone())?;
-        TokenClient::new(e, &usdc).transfer(
-            &e.current_contract_address(),
-            &claim.owner,
-            &claim.amount,
-        );
 
         WithdrawalClaimed {
             user: claim.owner,
@@ -1183,7 +1301,15 @@ impl Vault {
             amount: claim.amount,
         }
         .publish(e);
-        Ok(())
+        Ok(true)
+    }
+
+    fn set_deferred(e: &Env, claim_id: u64) {
+        let key = Store::Deferred(claim_id);
+        e.storage().persistent().set(&key, &true);
+        e.storage()
+            .persistent()
+            .extend_ttl(&key, CLAIM_LIFETIME, CLAIM_BUMP);
     }
 
     fn set_queued(e: &Env, value: i128) {
@@ -1236,6 +1362,21 @@ pub struct WithdrawalRequested {
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WithdrawalClaimed {
+    #[topic]
+    pub user: Address,
+    #[topic]
+    pub claim_id: u64,
+    pub amount: i128,
+}
+
+/// Emitted when `settle_withdrawal` could not hand a claim to its owner and
+/// stepped over it. The claim is unpaid and still owed; what has changed is
+/// that it is no longer blocking the queue. It belongs in the event stream
+/// because it is the only way a claim leaves the queue without being paid, and
+/// because the owner needs to know their payment bounced.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WithdrawalDeferred {
     #[topic]
     pub user: Address,
     #[topic]

@@ -1174,6 +1174,277 @@ fn the_admin_role_can_be_handed_over_in_two_steps_and_only_to_a_live_key() {
 // Second adversarial review
 // ---------------------------------------------------------------------------
 
+/// A token that refuses to deliver to one address, which is what a Stellar
+/// Asset Contract does when the destination has no trustline for the asset, has
+/// had it frozen by the issuer, has a limit below the amount, or no longer
+/// exists. The Vault's USDC is a SAC over a classic asset, so all four are
+/// ordinary states rather than exotic ones.
+#[contracttype]
+#[derive(Clone)]
+enum FrozenKey {
+    Balance(Address),
+    Blocked,
+}
+
+#[contract]
+pub struct UndeliverableToken;
+
+#[contractimpl]
+impl UndeliverableToken {
+    pub fn faucet(e: Env, to: Address, amount: i128) {
+        let held: i128 = e
+            .storage()
+            .persistent()
+            .get(&FrozenKey::Balance(to.clone()))
+            .unwrap_or(0);
+        e.storage()
+            .persistent()
+            .set(&FrozenKey::Balance(to), &(held + amount));
+    }
+
+    /// Stop the token delivering to `who`, and start again with `unblock`.
+    pub fn block(e: Env, who: Address) {
+        e.storage().instance().set(&FrozenKey::Blocked, &who);
+    }
+
+    pub fn unblock(e: Env) {
+        e.storage().instance().remove(&FrozenKey::Blocked);
+    }
+
+    pub fn balance(e: Env, id: Address) -> i128 {
+        e.storage()
+            .persistent()
+            .get(&FrozenKey::Balance(id))
+            .unwrap_or(0)
+    }
+
+    pub fn transfer(e: Env, from: Address, to: Address, amount: i128) {
+        from.require_auth();
+        let blocked: Option<Address> = e.storage().instance().get(&FrozenKey::Blocked);
+        if blocked == Some(to.clone()) {
+            panic!("no trustline");
+        }
+        let held: i128 = e
+            .storage()
+            .persistent()
+            .get(&FrozenKey::Balance(from.clone()))
+            .unwrap_or(0);
+        if held < amount {
+            panic!("insufficient balance");
+        }
+        e.storage()
+            .persistent()
+            .set(&FrozenKey::Balance(from), &(held - amount));
+        let credited: i128 = e
+            .storage()
+            .persistent()
+            .get(&FrozenKey::Balance(to.clone()))
+            .unwrap_or(0);
+        e.storage()
+            .persistent()
+            .set(&FrozenKey::Balance(to), &(credited + amount));
+    }
+}
+
+struct FrozenFix {
+    e: Env,
+    vault: VaultClient<'static>,
+    usdc: UndeliverableTokenClient<'static>,
+}
+
+/// A Vault whose USDC can be made to refuse a delivery. No Engine allocations
+/// here: what is under test is the payout path.
+fn frozen_setup() -> FrozenFix {
+    let e = Env::default();
+    e.mock_all_auths();
+    e.ledger().set_timestamp(T0);
+    let admin = Address::generate(&e);
+
+    let usdc_id = e.register(UndeliverableToken, ());
+    let usdc = UndeliverableTokenClient::new(&e, &usdc_id);
+
+    let vault_id = e.register(Vault, ());
+    let vault = VaultClient::new(&e, &vault_id);
+
+    let agusd_id = e.register(MockUsdc, ());
+    MockUsdcClient::new(&e, &agusd_id).initialize(
+        &vault_id,
+        &7u32,
+        &String::from_str(&e, "Agama USD"),
+        &String::from_str(&e, "agUSD"),
+    );
+
+    let engine_id = e.register(AllocationEngine, ());
+    AllocationEngineClient::new(&e, &engine_id).initialize(&admin, &vault_id);
+    vault.initialize(&admin, &usdc_id, &agusd_id, &engine_id);
+
+    FrozenFix { e, vault, usdc }
+}
+
+/// One claim nobody can deliver used to stop every withdrawal in the protocol,
+/// permanently.
+///
+/// `settle_withdrawal` fixed the head claimant who never comes back. It did
+/// nothing for the head claimant who cannot be paid, which is worse, because
+/// the owner cannot resolve it by showing up either: the transfer traps, the
+/// whole invocation traps, `queue_head` stays where it is, and the queue is
+/// FIFO with no admin path around it by design. One USDC and a lowered
+/// trustline limit bought a permanent freeze of everybody else's money.
+///
+/// Delivery is now attempted rather than assumed. A claim the token refuses is
+/// stepped over, unpaid, and the queue carries on.
+#[test]
+fn a_claim_that_cannot_be_delivered_does_not_freeze_the_queue() {
+    let f = frozen_setup();
+    let griefer = Address::generate(&f.e);
+    let bob = Address::generate(&f.e);
+    f.usdc.faucet(&griefer, &(1 * USDC));
+    f.usdc.faucet(&bob, &(500 * USDC));
+    f.vault.deposit(&griefer, &(1 * USDC));
+    f.vault.deposit(&bob, &(500 * USDC));
+
+    // The anti-dust minimum, queued first, in front of a real withdrawal.
+    let dust = f.vault.request_withdrawal(&griefer, &(1 * USDC));
+    let real = f.vault.request_withdrawal(&bob, &(500 * USDC));
+    assert_eq!((dust, real), (1, 2));
+    assert_eq!(f.vault.outstanding_liabilities(), 501 * USDC);
+
+    // And now the griefer makes itself unpayable.
+    f.usdc.block(&griefer);
+
+    // The claim's own owner is told, by a named error rather than a trap,
+    // because the owner is the one who can fix the cause.
+    assert_eq!(
+        f.vault.try_claim_withdrawal(&griefer, &dust),
+        Err(Ok(VaultError::PaymentRejected))
+    );
+
+    // Anybody may step the queue over it. The claim is not paid, not lost, and
+    // no longer in the way.
+    assert_eq!(f.vault.settle_withdrawal(), dust);
+    assert!(f.vault.is_deferred(&dust));
+    assert!(!f.vault.get_claim(&dust).claimed);
+    assert_eq!(f.vault.queue_head(), 2);
+    // Still owed, so its cash is still reserved and still undeployable.
+    assert_eq!(f.vault.outstanding_liabilities(), 501 * USDC);
+    assert_eq!(f.vault.free_reserves(), 0);
+
+    // Bob, who has done nothing wrong, is paid.
+    f.vault.claim_withdrawal(&bob, &real);
+    assert_eq!(f.usdc.balance(&bob), 500 * USDC);
+    assert_eq!(f.vault.outstanding_liabilities(), 1 * USDC);
+    assert_eq!(f.vault.queue_length(), 0);
+}
+
+/// A deferred claim is a delayed payment, not a forfeited one.
+#[test]
+fn a_deferred_claim_is_still_owed_and_collectable_out_of_order() {
+    let f = frozen_setup();
+    let griefer = Address::generate(&f.e);
+    let bob = Address::generate(&f.e);
+    f.usdc.faucet(&griefer, &(10 * USDC));
+    f.usdc.faucet(&bob, &(500 * USDC));
+    f.vault.deposit(&griefer, &(10 * USDC));
+    f.vault.deposit(&bob, &(500 * USDC));
+
+    let stuck = f.vault.request_withdrawal(&griefer, &(10 * USDC));
+    let after = f.vault.request_withdrawal(&bob, &(500 * USDC));
+    f.usdc.block(&griefer);
+    f.vault.settle_withdrawal();
+    f.vault.claim_withdrawal(&bob, &after);
+
+    // Nobody else can take it, in either entry point. `settle_withdrawal` has
+    // already passed it, and it is not anybody else's claim.
+    assert_eq!(
+        f.vault.try_claim_withdrawal(&bob, &stuck),
+        Err(Ok(VaultError::NotClaimOwner))
+    );
+    assert_eq!(
+        f.vault.try_settle_withdrawal(),
+        Err(Ok(VaultError::QueueEmpty))
+    );
+
+    // The obstruction goes away, and the owner collects, out of head order,
+    // without dragging the head pointer backwards.
+    f.usdc.unblock();
+    assert_eq!(f.vault.claim_status(&stuck), ClaimStatus::Ready);
+    f.vault.claim_withdrawal(&griefer, &stuck);
+    assert_eq!(f.usdc.balance(&griefer), 10 * USDC);
+    assert_eq!(f.vault.queue_head(), 3);
+    assert!(!f.vault.is_deferred(&stuck));
+    assert_eq!(f.vault.claim_status(&stuck), ClaimStatus::Claimed);
+
+    // Once, and only once. The liability was decremented exactly one time.
+    assert_eq!(
+        f.vault.try_claim_withdrawal(&griefer, &stuck),
+        Err(Ok(VaultError::AlreadyClaimed))
+    );
+    assert_eq!(f.vault.outstanding_liabilities(), 0);
+    assert_eq!(f.vault.idle_reserves(), 0);
+}
+
+/// Stepping over a claim does not hand it to whoever stepped over it, and it
+/// does not make it collectable by anyone but its owner.
+///
+/// Checked with targeted authorizations rather than the fixture's blanket mock,
+/// which turns authorization off wholesale and would prove nothing here.
+#[test]
+fn only_the_owner_can_collect_a_deferred_claim() {
+    let f = frozen_setup();
+    let owner = Address::generate(&f.e);
+    let stranger = Address::generate(&f.e);
+    f.usdc.faucet(&owner, &(10 * USDC));
+    f.vault.deposit(&owner, &(10 * USDC));
+    let claim = f.vault.request_withdrawal(&owner, &(10 * USDC));
+    f.usdc.block(&owner);
+    f.vault.settle_withdrawal();
+    f.usdc.unblock();
+
+    // A stranger signing for itself: refused on ownership.
+    f.e.mock_auths(&[MockAuth {
+        address: &stranger,
+        invoke: &MockAuthInvoke {
+            contract: &f.vault.address,
+            fn_name: "claim_withdrawal",
+            args: (stranger.clone(), claim).into_val(&f.e),
+            sub_invokes: &[],
+        },
+    }]);
+    assert_eq!(
+        f.vault.try_claim_withdrawal(&stranger, &claim),
+        Err(Ok(VaultError::NotClaimOwner))
+    );
+
+    // A stranger naming the owner: refused on authorization, because the call
+    // is not signed by the address it claims to be acting for.
+    f.e.mock_auths(&[MockAuth {
+        address: &stranger,
+        invoke: &MockAuthInvoke {
+            contract: &f.vault.address,
+            fn_name: "claim_withdrawal",
+            args: (owner.clone(), claim).into_val(&f.e),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(f.vault.try_claim_withdrawal(&owner, &claim).is_err());
+    assert_eq!(f.usdc.balance(&stranger), 0);
+    assert_eq!(f.usdc.balance(&owner), 0);
+    assert!(f.vault.is_deferred(&claim));
+
+    // The owner, signing for itself, is paid.
+    f.e.mock_auths(&[MockAuth {
+        address: &owner,
+        invoke: &MockAuthInvoke {
+            contract: &f.vault.address,
+            fn_name: "claim_withdrawal",
+            args: (owner.clone(), claim).into_val(&f.e),
+            sub_invokes: &[],
+        },
+    }]);
+    f.vault.claim_withdrawal(&owner, &claim);
+    assert_eq!(f.usdc.balance(&owner), 10 * USDC);
+}
+
 /// The reserve floor is a share of a base a write-down cannot move.
 ///
 /// `record_writedown` lowers `deployed_capital` with no cash moving. While the
