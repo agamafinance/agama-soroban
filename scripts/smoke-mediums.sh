@@ -469,6 +469,25 @@ refused 301 "and with no Engine it releases nothing, because set_engine is the o
 assert_eq "a Vault ships with no Engine at all" "$(stellar contract invoke --id "$FRESH" --source $SRC --network $NET --send=no -- allocation_engine 2>&1 | grep -oE '#3[0-9]+' | head -1)" "#301"
 refused 606 "and an adapter refuses an Engine that does not govern the Vault offered" \
   "$PC" set_counterparties --admin "$ADMIN" --engine "$ENGINE" --vault "$ADMIN"
+# The whole justification for redeploying seven contracts rather than rewiring
+# them is that their bytecode no longer matched the repository. That claim is
+# checkable, so it is checked: the code on the ledger is fetched back and
+# compared with what this tree builds.
+echo "  the deployed bytecode against the source it is supposed to be."
+for pair in "vault:$VAULT:vault.wasm" "agusd:$AGUSD:agusd_core.wasm" \
+            "engine:$ENGINE:allocation_engine.wasm" "private-credit:$PC:private_credit.wasm" \
+            "etherfuse:$EF:etherfuse.wasm"; do
+  name=${pair%%:*}; rest=${pair#*:}; id=${rest%%:*}; wasm=${rest#*:}
+  stellar contract fetch --id "$id" --network $NET --out-file /tmp/agama-onchain.wasm >/dev/null 2>&1
+  on=$(shasum -a 256 /tmp/agama-onchain.wasm 2>/dev/null | cut -d' ' -f1)
+  loc=$(shasum -a 256 "target/wasm32v1-none/release/$wasm" 2>/dev/null | cut -d' ' -f1)
+  if [ -n "$on" ] && [ "$on" = "$loc" ]; then
+    ok "$name on the ledger is byte for byte what this tree builds"
+  else
+    bad "$name differs: ledger ${on:0:16} against local ${loc:0:16}"
+  fi
+done
+
 assert_eq "the deployed Engine names the Vault" "$(q "$ENGINE" vault)" "$VAULT"
 assert_eq "the deployed Vault names the Engine" "$(q "$VAULT" allocation_engine)" "$ENGINE"
 assert_eq "the deployed agUSD names the Vault as its minter" "$(q "$AGUSD" minter)" "$VAULT"

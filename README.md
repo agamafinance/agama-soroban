@@ -524,6 +524,12 @@ answers `NotInitialized` from `allocation_engine()` and releases nothing, and a
 fresh Vault refuses an agUSD that does not name it as minter with
 `AgUsdMismatch` (324).
 
+The claim that made this a redeployment rather than a rewiring is checkable, so
+the stage checks it: the code is fetched back off the ledger and compared with
+what the tree builds. All five contracts under test are byte for byte identical
+to their WASM here, which is the property an audit needs and the reason none of
+them could be reused through a setter.
+
 **The Engine moved once more, through the setters rather than a redeployment.**
 `write_down` checked the amount before it checked the admin alignment, so an
 operator with a half finished rotation was told the amount was wrong, which
