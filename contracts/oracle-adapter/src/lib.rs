@@ -112,6 +112,10 @@ pub const ETHERFUSE_DEVIATION_BPS: u32 = 0;
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u32)]
 pub enum OracleError {
+    /// Retired with `initialize`, which a `__constructor` replaced. The host
+    /// runs a constructor exactly once, inside the deploy, so there is no
+    /// second call for this to be the answer to. The number is kept rather than
+    /// reused so that an old error code never means something new.
     AlreadyInitialized = 500,
     NotInitialized = 501,
     NotAdmin = 502,
@@ -194,7 +198,8 @@ pub struct NavPoint {
 enum Cfg {
     Admin,
     Reporters,
-    Feeds,    /// Half finished admin handover: proposed, not yet accepted.
+    Feeds,
+    /// Half finished admin handover: proposed, not yet accepted.
     PendingAdmin,
 }
 
@@ -291,10 +296,16 @@ pub struct OracleAdapter;
 impl OracleAdapter {
     /// One time setup. Re-initialization is rejected so an operator cannot
     /// quietly swap the admin, the reporter set or the feed guards.
-    pub fn initialize(e: Env, admin: Address) -> Result<(), OracleError> {
-        if e.storage().instance().has(&Cfg::Admin) {
-            return Err(OracleError::AlreadyInitialized);
-        }
+    /// Record the admin, with an empty reporter set and no feeds registered, in the transaction that deploys it.
+    ///
+    /// This was `initialize`, a separate call, and being separate was the
+    /// problem. A contract sitting deployed and uninitialized is a contract
+    /// whose admin is whoever sends the next transaction, and the deployer's
+    /// own call is public before it is mined, so it can be front-run by an
+    /// identical one naming somebody else. On this contract that is the authority to name the reporters every NAV in the protocol is trusted from. A constructor runs inside
+    /// the deploy, so there is no window to race, and the host runs it exactly
+    /// once, which is what used to need a re-initialization guard.
+    pub fn __constructor(e: Env, admin: Address) -> Result<(), OracleError> {
         admin.require_auth();
         e.storage().instance().set(&Cfg::Admin, &admin);
         e.storage()
