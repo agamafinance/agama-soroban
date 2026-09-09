@@ -238,6 +238,136 @@ fn a_claim_can_only_be_taken_by_its_owner_and_only_once() {
 }
 
 #[test]
+fn a_third_party_can_settle_the_head_claim_for_its_owner() {
+    let f = setup();
+    let alice = depositor(&f, 1_000 * USDC);
+    let stranger = Address::generate(&f.e);
+
+    let claim_id = f.vault.request_withdrawal(&alice, &(400 * USDC));
+    assert_eq!(f.vault.claim_status(&claim_id), ClaimStatus::Ready);
+
+    // Alice never comes back. A stranger settles the claim instead, and the
+    // money still lands with Alice, not with whoever called.
+    let settled = f.vault.settle_withdrawal();
+    assert_eq!(settled, claim_id);
+    assert_eq!(f.usdc.balance(&alice), 400 * USDC);
+    assert_eq!(f.usdc.balance(&stranger), 0);
+    assert_eq!(f.vault.claim_status(&claim_id), ClaimStatus::Claimed);
+    assert_eq!(f.vault.queue_head(), claim_id + 1);
+}
+
+#[test]
+fn settling_advances_the_queue_for_the_next_claimant() {
+    let f = setup();
+    let alice = depositor(&f, 1_000 * USDC);
+    let bob = depositor(&f, 1_000 * USDC);
+
+    f.vault.request_withdrawal(&alice, &(100 * USDC));
+    let b = f.vault.request_withdrawal(&bob, &(200 * USDC));
+
+    assert_eq!(f.vault.claim_status(&b), ClaimStatus::Pending);
+    f.vault.settle_withdrawal();
+    assert_eq!(f.vault.claim_status(&b), ClaimStatus::Ready);
+
+    // Bob can now claim for himself, the ordinary way.
+    f.vault.claim_withdrawal(&bob, &b);
+    assert_eq!(f.usdc.balance(&alice), 100 * USDC);
+    assert_eq!(f.usdc.balance(&bob), 200 * USDC);
+    assert_eq!(f.vault.queue_head(), 3);
+}
+
+#[test]
+fn settling_cannot_redirect_payment_to_the_caller() {
+    let f = setup();
+    let alice = depositor(&f, 1_000 * USDC);
+    let mallory = Address::generate(&f.e);
+
+    f.vault.request_withdrawal(&alice, &(400 * USDC));
+    // Nothing about the call names Mallory, so nothing about the payout can
+    // either: `settle_withdrawal` takes no recipient argument at all.
+    f.vault.settle_withdrawal();
+    assert_eq!(f.usdc.balance(&alice), 400 * USDC);
+    assert_eq!(f.usdc.balance(&mallory), 0);
+}
+
+#[test]
+fn settling_with_insufficient_reserves_fails_cleanly() {
+    let f = setup();
+    let alice = depositor(&f, 1_000 * USDC);
+
+    // Put 900 to work in the pool, leaving 100 idle against a 500 claim.
+    f.engine.allocate(&f.admin, &f.pool, &(900 * USDC));
+    let claim_id = f.vault.request_withdrawal(&alice, &(500 * USDC));
+    assert_eq!(
+        f.vault.try_settle_withdrawal(),
+        Err(Ok(VaultError::InsufficientLiquidity))
+    );
+    assert_eq!(f.vault.queue_head(), claim_id);
+    assert_eq!(f.usdc.balance(&alice), 0);
+
+    // The pool repays, and the same call that used to fail now succeeds with
+    // no other action.
+    f.engine.deallocate(&f.pool, &(600 * USDC));
+    f.vault.settle_withdrawal();
+    assert_eq!(f.usdc.balance(&alice), 500 * USDC);
+}
+
+#[test]
+fn settling_an_empty_queue_fails_cleanly() {
+    let f = setup();
+    depositor(&f, 1_000 * USDC);
+    assert_eq!(f.vault.queue_length(), 0);
+    assert_eq!(
+        f.vault.try_settle_withdrawal(),
+        Err(Ok(VaultError::QueueEmpty))
+    );
+}
+
+#[test]
+fn settling_respects_the_pause_circuit_breaker() {
+    let f = setup();
+    let alice = depositor(&f, 1_000 * USDC);
+    f.vault.request_withdrawal(&alice, &(100 * USDC));
+
+    f.vault.set_paused(&f.admin, &true);
+    assert_eq!(
+        f.vault.try_settle_withdrawal(),
+        Err(Ok(VaultError::Paused))
+    );
+    f.vault.set_paused(&f.admin, &false);
+    f.vault.settle_withdrawal();
+    assert_eq!(f.usdc.balance(&alice), 100 * USDC);
+}
+
+#[test]
+fn settling_stays_strictly_fifo_across_several_claims() {
+    let f = setup();
+    let alice = depositor(&f, 1_000 * USDC);
+    let bob = depositor(&f, 1_000 * USDC);
+    let carol = depositor(&f, 1_000 * USDC);
+    let dave = depositor(&f, 1_000 * USDC);
+
+    let a = f.vault.request_withdrawal(&alice, &(100 * USDC));
+    let b = f.vault.request_withdrawal(&bob, &(200 * USDC));
+    let c = f.vault.request_withdrawal(&carol, &(300 * USDC));
+    let d = f.vault.request_withdrawal(&dave, &(400 * USDC));
+
+    // A mix of self-claims and third party settlements, and the order paid
+    // matches the order requested regardless of which path was used.
+    assert_eq!(f.vault.settle_withdrawal(), a);
+    f.vault.claim_withdrawal(&bob, &b);
+    assert_eq!(f.vault.settle_withdrawal(), c);
+    assert_eq!(f.vault.settle_withdrawal(), d);
+
+    assert_eq!(f.usdc.balance(&alice), 100 * USDC);
+    assert_eq!(f.usdc.balance(&bob), 200 * USDC);
+    assert_eq!(f.usdc.balance(&carol), 300 * USDC);
+    assert_eq!(f.usdc.balance(&dave), 400 * USDC);
+    assert_eq!(f.vault.queue_head(), 5);
+    assert_eq!(f.vault.queue_length(), 0);
+}
+
+#[test]
 fn pausing_blocks_deposits_and_withdrawals() {
     let f = setup();
     let alice = depositor(&f, 1_000 * USDC);
