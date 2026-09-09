@@ -22,15 +22,17 @@ fn setup() -> Fix {
     let admin = Address::generate(&e);
     let minter = Address::generate(&e);
 
-    let id = e.register(AgUsdCore, ());
-    let token = AgUsdCoreClient::new(&e, &id);
-    token.initialize(
-        &admin,
-        &minter,
-        &7u32,
-        &String::from_str(&e, "Agama USD"),
-        &String::from_str(&e, "agUSD"),
+    let id = e.register(
+        AgUsdCore,
+        (
+            admin.clone(),
+            minter.clone(),
+            7u32,
+            String::from_str(&e, "Agama USD"),
+            String::from_str(&e, "agUSD"),
+        ),
     );
+    let token = AgUsdCoreClient::new(&e, &id);
 
     Fix {
         e,
@@ -41,7 +43,7 @@ fn setup() -> Fix {
 }
 
 #[test]
-fn initialize_records_the_minter_and_the_metadata() {
+fn the_constructor_records_the_minter_and_the_metadata() {
     let f = setup();
     assert_eq!(f.token.minter(), f.minter);
     assert_eq!(f.token.admin(), f.admin);
@@ -49,25 +51,6 @@ fn initialize_records_the_minter_and_the_metadata() {
     assert_eq!(f.token.name(), String::from_str(&f.e, "Agama USD"));
     assert_eq!(f.token.symbol(), String::from_str(&f.e, "agUSD"));
     assert_eq!(f.token.total_supply(), 0);
-}
-
-#[test]
-fn cannot_be_reinitialized() {
-    let f = setup();
-    let attacker = Address::generate(&f.e);
-    // The attack this blocks is naming yourself minter on a token that already
-    // has a book, and printing against it.
-    assert_eq!(
-        f.token.try_initialize(
-            &attacker,
-            &attacker,
-            &7u32,
-            &String::from_str(&f.e, "Agama USD"),
-            &String::from_str(&f.e, "agUSD"),
-        ),
-        Err(Ok(AgUsdCoreError::AlreadyInitialized))
-    );
-    assert_eq!(f.token.minter(), f.minter);
 }
 
 #[test]
@@ -182,21 +165,6 @@ fn minting_zero_or_a_negative_amount_is_rejected() {
 }
 
 #[test]
-fn minting_before_the_minter_is_wired_says_so() {
-    let e = Env::default();
-    e.mock_all_auths();
-    let id = e.register(AgUsdCore, ());
-    let token = AgUsdCoreClient::new(&e, &id);
-    let alice = Address::generate(&e);
-
-    // No default minter, no silent success: an unwired token refuses.
-    assert_eq!(
-        token.try_mint(&alice, &(100 * UNIT)),
-        Err(Ok(AgUsdCoreError::NotInitialized))
-    );
-}
-
-#[test]
 fn the_sep41_surface_moves_balances_and_supply() {
     let f = setup();
     let alice = Address::generate(&f.e);
@@ -243,7 +211,6 @@ fn the_vault_mints_on_deposit_and_burns_on_a_withdrawal_request() {
     let e = Env::default();
     e.mock_all_auths();
     let admin = Address::generate(&e);
-    let engine = Address::generate(&e);
     let alice = Address::generate(&e);
 
     let usdc_id = e.register(MockUsdc, ());
@@ -255,21 +222,25 @@ fn the_vault_mints_on_deposit_and_burns_on_a_withdrawal_request() {
         &String::from_str(&e, "USDC"),
     );
 
-    let vault_id = e.register(Vault, ());
+    let vault_id = e.register(Vault, (admin.clone(), usdc_id.clone()));
     let vault = VaultClient::new(&e, &vault_id);
 
     // The Vault is the minter, so the token is deployed after it and wired to
     // its address. There is no setter to fix this up later, on purpose.
-    let agusd_id = e.register(AgUsdCore, ());
-    let agusd = AgUsdCoreClient::new(&e, &agusd_id);
-    agusd.initialize(
-        &admin,
-        &vault_id,
-        &7u32,
-        &String::from_str(&e, "Agama USD"),
-        &String::from_str(&e, "agUSD"),
+    let agusd_id = e.register(
+        AgUsdCore,
+        (
+            admin.clone(),
+            vault_id.clone(),
+            7u32,
+            String::from_str(&e, "Agama USD"),
+            String::from_str(&e, "agUSD"),
+        ),
     );
-    vault.initialize(&admin, &usdc_id, &agusd_id, &engine);
+    let agusd = AgUsdCoreClient::new(&e, &agusd_id);
+    // The Vault takes its token through the setter now, which is also the call
+    // that checks the token names this Vault as its minter.
+    vault.set_agusd(&admin, &agusd_id);
 
     usdc.faucet(&alice, &(1_000 * UNIT));
     assert_eq!(vault.deposit(&alice, &(400 * UNIT)), 400 * UNIT);
@@ -297,18 +268,27 @@ fn a_stranger_cannot_mint_the_vaults_token() {
     let e = Env::default();
     e.mock_all_auths();
     let admin = Address::generate(&e);
-    let vault_id = e.register(Vault, ());
+    let usdc_id = e.register(MockUsdc, ());
+    MockUsdcClient::new(&e, &usdc_id).initialize(
+        &admin,
+        &7u32,
+        &String::from_str(&e, "USD Coin"),
+        &String::from_str(&e, "USDC"),
+    );
+    let vault_id = e.register(Vault, (admin.clone(), usdc_id.clone()));
     let mallory = Address::generate(&e);
 
-    let agusd_id = e.register(AgUsdCore, ());
-    let agusd = AgUsdCoreClient::new(&e, &agusd_id);
-    agusd.initialize(
-        &admin,
-        &vault_id,
-        &7u32,
-        &String::from_str(&e, "Agama USD"),
-        &String::from_str(&e, "agUSD"),
+    let agusd_id = e.register(
+        AgUsdCore,
+        (
+            admin.clone(),
+            vault_id.clone(),
+            7u32,
+            String::from_str(&e, "Agama USD"),
+            String::from_str(&e, "agUSD"),
+        ),
     );
+    let agusd = AgUsdCoreClient::new(&e, &agusd_id);
 
     let args = (mallory.clone(), 100 * UNIT).into_val(&e);
     e.mock_auths(&[MockAuth {

@@ -44,6 +44,11 @@ impl MockUsdc {
         e.storage().instance().get(&Cfg::Admin).unwrap()
     }
 
+    /// Lets a MockUsdc stand in for agUSD in Vault fixtures, where the minter is the Vault.
+    pub fn minter(e: Env) -> Address {
+        e.storage().instance().get(&Cfg::Admin).unwrap()
+    }
+
     // ---- SEP-41 ----
     pub fn balance(e: Env, id: Address) -> i128 {
         tok::balance(&e, &id)

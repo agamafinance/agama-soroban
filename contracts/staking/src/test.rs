@@ -45,16 +45,18 @@ fn setup() -> Fix {
         &String::from_str(&e, "agUSD"),
     );
 
-    let v_id = e.register(Staking, ());
-    let vault = StakingClient::new(&e, &v_id);
-    vault.initialize(
-        &admin,
-        &ag_id,
-        &COOLDOWN,
-        &7u32,
-        &String::from_str(&e, "Staked agUSD"),
-        &String::from_str(&e, "sagUSD"),
+    let v_id = e.register(
+        Staking,
+        (
+            admin.clone(),
+            ag_id.clone(),
+            COOLDOWN,
+            7u32,
+            String::from_str(&e, "Staked agUSD"),
+            String::from_str(&e, "sagUSD"),
+        ),
     );
+    let vault = StakingClient::new(&e, &v_id);
 
     Fix { e, usdc, ag, vault, admin }
 }
@@ -106,28 +108,6 @@ fn full_yield_flow() {
     assert_eq!(claimed, 1_100_0000000);
     assert_eq!(f.ag.balance(&alice), 1_100_0000000);
     assert_eq!(f.vault.pending(&alice).assets, 0);
-}
-
-#[test]
-fn cannot_be_reinitialized() {
-    let f = setup();
-    let attacker = Address::generate(&f.e);
-    // The attack this blocks is naming yourself admin, repointing the staked
-    // asset and resetting the NAV, which is the denominator every share is
-    // redeemed against.
-    assert_eq!(
-        f.vault.try_initialize(
-            &attacker,
-            &attacker,
-            &COOLDOWN,
-            &7u32,
-            &String::from_str(&f.e, "Staked agUSD"),
-            &String::from_str(&f.e, "sagUSD"),
-        ),
-        Err(Ok(StakingError::AlreadyInitialized))
-    );
-    assert_eq!(f.vault.admin(), f.admin);
-    assert_eq!(f.vault.agusd(), f.ag.address);
 }
 
 #[test]
