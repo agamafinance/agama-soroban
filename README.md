@@ -379,9 +379,11 @@ One correction, recorded because the claim is checkable and this repository is g
 
 ### Vault Contract (`contracts/vault`) (deployed on testnet)
 
-USDC entry point. Accepts deposits, mints agUSD 1:1, routes capital through the Allocation Engine, and manages a two-step FIFO withdrawal queue (`request_withdrawal` / `claim_withdrawal`). Queries Oracle Adapter for NAV. Includes a circuit-breaker (`set_paused`).
+USDC entry point. Accepts deposits, mints agUSD 1:1, routes capital through the Allocation Engine, and manages a two-step FIFO withdrawal queue (`request_withdrawal` / `claim_withdrawal` / `settle_withdrawal`). Queries Oracle Adapter for NAV. Includes a circuit-breaker (`set_paused`).
 
 The queue is paid strictly in order and there is no admin path around it: `claim_withdrawal` refuses any claim that is not at the head. agUSD is burned when the withdrawal is requested, not when it is claimed, so a queued position cannot be sold or re-requested while it waits. A minimum withdrawal of 1 agUSD keeps dust requests from crowding the queue.
+
+A claimant who never returns no longer stalls everyone behind them: `settle_withdrawal` is a permissionless entry point that pays the head claim to its recorded owner and advances the queue. It takes no claim id and no recipient, so a caller cannot pick a different claim or redirect the payout; the only thing it can do is what the head claim's own owner could have done by calling `claim_withdrawal` themselves.
 
 **Two pointers, two setters.** `initialize()` writes the agUSD address and the Allocation Engine address, the Vault is not upgradeable, and both of them used to be one way doors. Both have now been through one. The first Vault pointed at a token with no `mint` and could never issue agUSD. The second pointed at an Engine that governs a different Vault and could never release a dollar of capital, because `settle_allocation` authorizes the address `initialize()` wrote and nothing else. Each mistake cost a redeployment, and the second cost two contracts rather than one, because the token names the Vault as its only minter.
 
