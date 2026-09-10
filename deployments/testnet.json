@@ -11,7 +11,7 @@
     "agusd": "CCXEP6QAAYEMFMV2JGBULD2NS6AQB6KQSBHLPPBJSDBCN6HOYIHNQ6H3",
     "staking": "CDFKRDCD7U4YU4DM2DJ4C76KQHB3B6UTYPH64HVUZLGEIITFVYCHYLEZ",
     "vault": "CBNAGG47MEXJQ3KQYXU75VLU4QC5CAEZ6VHY43MSOWHUZWVREPY2BUSB",
-    "allocationEngine": "CAPMQI4UWL3KJ2CCN252EYCRL3XIBHMY3ZTCKSXYYOLBY455LVTXMQYH",
+    "allocationEngine": "CBDEWCRBSAL3DIVPVQCCBKRMLRCMGKALC6IZ4SOJTWKGBAVEVAA27V4S",
     "oracleAdapter": "CCTAZFQ35P5KAAWTD2MLTYGEETKVF3N5ZR6MM6SVPQ22M2TKALINL6SX",
     "agusdCore": "CCUGWQ5DRO66BASGU5UZIX6YWIWJ6GKQOBAABT2246OE5WZOI6JFHA7V"
   },
@@ -429,6 +429,14 @@
       "address": "CAOUV6AA632DFRAUZ33J24OS2QNUMWQESH5HVZNOCT52JYCKHEVVULBX",
       "supersededBy": "allocationEngine",
       "reason": "Replaced by scripts/rewire-engine-review3.sh, for the one High finding of the third adversarial review. In this Engine register_pool proves an adapter names this Engine and this Engine's Vault, and nothing re-runs that check afterwards, while set_vault can move the Engine's own end of it. Every pool already registered then names the Vault the Engine has just stopped governing, and the next allocate releases the new Vault's USDC to an adapter that repays the old one, which in this protocol is a superseded Vault where nothing can move USDC at all. The position cannot be unwound either: deallocate sends the cash to the old Vault and asks the new one to confirm it arrived. allocate, deallocate and recover now re-run the check through the same helper register_pool uses. Nothing else was redeployed alongside it: the Vault took the replacement through set_engine and both adapters followed through set_counterparties."
+    },
+    {
+      "contract": "allocationEngine",
+      "generation": 10,
+      "label": "Allocation Engine, tenth deployment",
+      "address": "CAPMQI4UWL3KJ2CCN252EYCRL3XIBHMY3ZTCKSXYYOLBY455LVTXMQYH",
+      "supersededBy": "allocationEngine",
+      "reason": "Replaced by scripts/rewire-engine-m1.sh, for M1 of the third adversarial review. A pool adapter's recover_surplus may be taken by the adapter's own admin as well as by the Engine, which is how an adapter stuck to superseded counterparties is unstuck without a working Engine. Taken that way the cash reaches the Vault and no book moves, and in this Engine that is terminal: the surplus is gone, so recover gets NothingToRecover from the adapter and reverts, and Vault::record_recovery has no other caller. The write-down stays on recognised_losses for the life of the Vault, freezing the floor's share of it as undeployable reserves, and on the pool's concentration charge for the life of the Engine. book_recovery is recover with the adapter leg removed, bounded by the same unaccounted balance the Vault already checks. Nothing else was redeployed: the Vault took the replacement through set_engine and both adapters followed through set_counterparties."
     }
   ],
   "oracleFeedGuards": "The band bounds every report including the first, which a deviation bound cannot reach because a bound on a move needs something to move from. The minimum interval is measured in ledger time between accepted values, not in the timestamps the reporter supplies, because the reporter chooses those. The reference point is persistent, so it cannot expire out from under the checks that read it.",
@@ -439,7 +447,7 @@
     "agusdCore": "Unchanged. It names the Vault as its minter and the Vault did not move.",
     "staking": "Unchanged.",
     "oracleAdapter": "Unchanged.",
-    "poolAdapters.private-credit": "Repointed at the replacement Engine with set_counterparties, empty at the time as that setter requires, and before register_pool rather than after, which the third review made a precondition rather than a habit.",
+    "poolAdapters.private-credit": "Repointed at the replacement Engine with set_counterparties, empty at the time as that setter requires, and before register_pool rather than after.",
     "poolAdapters.etherfuse": "Repointed at the replacement Engine with set_counterparties, empty at the time as that setter requires, and before register_pool rather than after.",
     "usdc": "The real Circle USDC Stellar Asset Contract on testnet, never redeployed.",
     "creditVaults": "The six generation 1 credit vaults, untouched by this review.",
@@ -473,5 +481,6 @@
     "wasmVerified": "All seven protocol contracts were fetched from the ledger and their sha256 compared against a local stellar contract build before anything was changed: seven matches, zero differences, which independently confirms the claim the repository makes about its own bytecode. The replacement Engine was checked the same way after deployment: 773cc979d59f5aee8faf2c1723382d3f2bf443a5fedc2a0e3725be465a43c5b9.",
     "constructorReachability": "Re-derived rather than assumed, because seven contracts changed shape at once and a second constructor call would rewrite the admin of every one of them. __constructor is a genuine WASM export, it is in the export section of vault.wasm, so the only thing between it and a takeover is the host. soroban-env-host 23.0.1 call_n_internal refuses any function whose name begins with __ unless the call is an internal host call, and both InvokeHostFunction and every cross contract call use CallParams::default_external_call, which is not one. The guard holds in both directions.",
     "residue": "Nothing on the live deployment. The exploit and fix stages run against their own Vaults and a mock USDC with an open faucet, deliberately: the operator key holds well under a USDC of the real asset and some of it is stranded below the Vault anti-dust minimum, and nothing about this finding needs the real one. The live stage borrows half a USDC of the Vault own reserves and hands every stroop back, so the operator balance is unchanged at 0.6977610 and the Vault ends holding 2000000 against an agUSD supply of 2000000, exactly backed, with no recognised losses and an empty exposure book. One empty throwaway Vault, CAEHB22VL572YLUOAKUC7RHEPKAR7P2FRC2XE2LZRJUBOT4WGJ62P6QI, is left on the ledger holding nothing."
-  }
+  },
+  "strandedRecoveries": "A recovery reaches the Vault through the Engine, which sweeps the adapter and books what it swept in one call. The adapter also lets its own admin take that sweep, so that an adapter stuck to superseded counterparties can be unstuck without a working Engine, and taken that way the cash arrives with no book moving. Engine::book_recovery is the booking on its own, for exactly that case. It is bounded by the balance the Vault holds and cannot account for, the same test record_repayment and record_recovery already apply, so a recovery is still evidenced rather than asserted, and it grants no authority an admin did not have: sending USDC to an adapter and sweeping it through recover buys back the same headroom and no more. There is no matching book_repayment, because a repayment that reaches the Vault by another route cannot strand a position the way a recovery can: USDC leaves an adapter only through deallocate, which lowers the exposure by what it sends, and recover_surplus, which sends only what is above the exposure, so an adapter never holds less than it has booked and deallocate is never short. contracts/allocation-engine/src/test.rs pins that invariant so that adding a disbursement path breaks a test rather than a settlement."
 }
