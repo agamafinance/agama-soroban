@@ -407,24 +407,33 @@ All pool types implement a uniform adapter interface. The Engine is agnostic to 
 | Feed | Source | Trust Model | Staleness | Deviation | Band | Interval |
 |---|---|---|---|---|---|---|
 | Asset prices (USDC) | Reflector | Decentralized | 1 hour | 200 bps | 0.90 to 1.10 | 5 min |
-| Private credit NAV | Off-chain report → Backend → Reporter key | Centralized (V1, disclosed) | 7 days | 500 bps | 0.50 to 2.00 | 1 hour |
+| Private credit NAV | Off-chain report → Backend → Reporter key(s) | Centralized (V1, disclosed) → 2-of-3 quorum (V2) | 7 days | 500 bps | 0.50 to 2.00 | 1 hour |
 | Etherfuse bond price | Etherfuse API / on-chain | Deterministic | 48 hours | none | 0.50 to 2.00 | 1 hour |
 
 The band and the interval exist because a deviation bound is relative and cannot cover two cases on its own. It cannot reach the **first** report for a feed, since a bound on a move needs something to move from: before the band, `push_nav(i128::MAX)` was accepted and became the reference every later bound was a percentage of. And it says nothing about **how many** reports there can be, so forty pushes of +5% moved a NAV sevenfold in forty seconds with every one of them inside the bound. The interval is measured in ledger time between accepted values rather than in reported timestamps, because the reporter chooses those and can submit forty of them, a day apart, in the same minute.
+
+**V1 → V2: multi-reporter quorum.** V1 is a single disclosed reporter: one authorized address, one vote, and it lands. Every feed defaults to a quorum threshold of 1, which is exactly that. `set_quorum_threshold(admin, feed_id, n)` raises a feed above it, and once a feed's threshold is above 1, a value only commits after `n` distinct authorized reporters have submitted the same value for the same round, a round being identified by the feed and the reported timestamp. Each reporter gets one vote per round regardless of what it votes for, so a reporter cannot manufacture the second vote a round needs by signing twice. Partial agreement moves nothing: two reporters proposing two different values for the same round both sit short of quorum until enough of them converge on one. This is per-feed and reversible, an operating parameter the admin can raise or lower, not a write-once guard like a feed's staleness or deviation bound. Once a round does reach quorum, the value it agreed on still has to clear every guard in this section, band, monotonicity, the rate limit, the deviation bound, unchanged: quorum decides how many reporters have to agree before a value is even evaluated, not whether it is evaluated.
+
+Raising a feed's threshold defends against exactly one thing: a single reporter key being compromised or malfunctioning. It is not a defense against everything a NAV can get wrong. It does nothing against a colluding majority of that feed's reporter set, since collusion and honest agreement look identical to the contract. And it does nothing against reporters that are all honest and all wrong because they read the same bad upstream source, an incorrect servicer feed or a broken reconciliation job upstream of every reporter: three independent signatures on the same mistake are still a mistake, agreed upon. Quorum buys independence between reporters, not correctness of what they report.
 
 **Pipeline**
 
 ```text
 Originator (servicing data)
     → Agama Backend (reconciliation + validation)
-        → Reporter key calls push_nav(nav, timestamp)
-            → Oracle Adapter validates:
+        → Reporter key calls push_nav(nav, timestamp) or submit_nav(nav, timestamp)
+            → Oracle Adapter records the vote:
                 ✓ Caller in authorized reporter set
                 ✓ NAV inside the feed's absolute band (covers the first report)
-                ✓ Timestamp > last update, and not ahead of ledger time
-                ✓ Feed's minimum interval elapsed in ledger time
-                ✓ Deviation ≤ 5% from previous NAV
-                ✗ If exceeded → nav_rejected event
+                ✓ Timestamp not ahead of ledger time
+                ✓ Caller has not already voted in this feed's round for this timestamp
+                → Below the feed's quorum threshold: vote recorded, nothing else happens
+                → At the threshold, nav_quorum_reached, then the value the round
+                  agreed on is checked against the feed's state:
+                    ✓ Timestamp > last committed update
+                    ✓ Feed's minimum interval elapsed in ledger time
+                    ✓ Deviation ≤ 5% from previous NAV
+                    ✗ If exceeded → nav_rejected event
             → Vault Contract calls get_nav()
                 → Reverts with OracleStale if feed older than threshold
 ```
@@ -434,13 +443,14 @@ Originator (servicing data)
 | Failure | Impact | Mitigation |
 |---|---|---|
 | Reporter offline | Withdrawals/allocations revert | Deposits/stakes continue. Admin assigns backup reporter. |
-| Reporter compromised | False NAV pushed | Deviation bounds reject. V2: multi-reporter quorum. |
-| Originator misreports | Incorrect NAV | Backend reconciliation. >5% requires admin confirmation. |
+| One reporter compromised | False NAV pushed | Deviation bounds reject it regardless. With a feed's quorum threshold above 1, a lone compromised reporter cannot commit a value on its own at all. |
+| A majority of a feed's reporters compromised or colluding | False NAV agreed upon and pushed | Not mitigated by quorum, which cannot distinguish collusion from honest agreement. Deviation bounds still apply. Detection is operational: reporter key custody and monitoring. |
+| Originator misreports, all reporters relay it faithfully | Incorrect but internally consistent NAV | Not mitigated by quorum, since independent reporters agreeing on the same upstream mistake is exactly what quorum is designed to accept. Backend reconciliation. >5% requires admin confirmation. |
 | Reflector offline | Display-only impact | Core operations do not depend on Reflector. |
 
 **Test Coverage (all contracts)**
 
-End-to-end flows (deposit → stake → yield → redeem) · Cap-violation rejection · Re-initialization guards · Access control, with targeted authorizations rather than a blanket mock · Zero/negative validation · Oracle staleness, deviation, band and rate limit · Withdrawal queue ordering and permissionless settlement · A hostile Allocation Engine bounded by the Vault's own floor · Write-down accounting across three books · Two-step admin handover · Fuzzing on accounting invariants.
+End-to-end flows (deposit → stake → yield → redeem) · Cap-violation rejection · Re-initialization guards · Access control, with targeted authorizations rather than a blanket mock · Zero/negative validation · Oracle staleness, deviation, band and rate limit · Oracle quorum: partial votes commit nothing, one vote per reporter per round, disagreeing values never reach quorum, every guard still binds on the value a round agreed on · Withdrawal queue ordering and permissionless settlement · A hostile Allocation Engine bounded by the Vault's own floor · Write-down accounting across three books · Two-step admin handover · Fuzzing on accounting invariants.
 
 ## 5. Settlement & Off-Chain Bridge
 
@@ -557,7 +567,7 @@ The floor is set by the Curator through an admin-gated call, and every change em
 | Category | Threat | Mitigation |
 |---|---|---|
 | **Spoofing** | Unauthorized agUSD mint | `mint` restricted to the recorded minter (the Vault), and `set_minter` closes at the first mint. `burn` is holder-authorized and cannot inflate supply. `require_auth()` throughout. |
-| **Spoofing** | Fake oracle reporter | Authorized reporter set. `push_nav()` validates caller. Rotation requires admin + event. |
+| **Spoofing** | Fake oracle reporter | Authorized reporter set. `push_nav()` validates caller. Rotation requires admin + event. A feed's quorum threshold, admin-settable and 1 by default, can require several distinct reporters to agree before a value commits, so spoofing a single key stops being enough on its own; see §4.5 for what that does and does not cover. |
 | **Tampering** | NAV manipulation | Three guards, not one: a per-push deviation bound (>5% rejected), an absolute band per feed that also covers the first report, and a minimum interval in ledger time between accepted values. The reference point is persistent, so it cannot expire out from under the checks that read it. |
 | **Tampering** | Allocation to compromised pool | On-chain concentration caps (pool, originator, jurisdiction) and the reserve floor, all four in bps of net assets. `allocate()` reverts if any is exceeded. `register_pool` refuses an adapter that does not name this Engine and this Engine's Vault, and `allocate`, `deallocate` and `recover` re-run that check rather than resting on it. |
 | **Tampering** | An adapter left behind when the Engine follows its Vault to a new generation | The adapter check is a condition of use and not only of registration. `set_vault` moves the Engine's end of a pairing the registry cannot be cleared of, so a pool registered before it names a Vault the Engine no longer governs — and the next allocation would release the new Vault's USDC to an adapter that repays the old one, which in this protocol is a superseded Vault where nothing can move USDC at all. `allocate`, `deallocate` and `recover` refuse it with `AdapterMismatch` until `set_counterparties` brings the adapter across. |
@@ -584,7 +594,7 @@ The floor is set by the Curator through an admin-gated call, and every change em
 | Role | V1 Holder | Permissions | Evolution |
 |---|---|---|---|
 | Admin | 2-of-3 multi-sig | Pause, register pools, set caps, set the reserve floor in bps on both the Engine and the Vault, write down a defaulted exposure, repoint counterparties while the guards allow it, update reporters, propose a successor admin | Governance + 48h timelock |
-| Reporter | Dedicated hot wallet | Push NAV to Oracle | Multi-reporter quorum (2-of-3) |
+| Reporter | Dedicated hot wallet(s) | Push or vote NAV to Oracle | V1: one reporter, threshold 1 (default). V2: `set_quorum_threshold` raised to 2-of-3, live today, per feed |
 | Yield Distributor | = Admin in V1 | `distribute_yield()`, which moves the distributor's own agUSD | Dedicated service key, then keeper network |
 | Curator | = Admin in V1 | Whitelist pools, risk params | Independent risk committee |
 
