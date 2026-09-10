@@ -885,9 +885,16 @@ fn disagreeing_values_never_reach_quorum() {
         PushOutcome::Accepted
     );
     assert_eq!(f.oracle.get_nav(&FEED_PC_NAV), b);
-    // a never reached quorum and never will: the round that committed b left
-    // a's tally exactly where it was, at one vote short.
+    // a never reached quorum and never will. Its tally is still standing at one
+    // vote short, and committing b advanced the feed's timestamp past this
+    // round, so the second vote a would need cannot be cast at all: whoever
+    // tries is refused for the timestamp rather than counted.
     assert_eq!(f.oracle.quorum_votes(&FEED_PC_NAV, &T0, &a), 1);
+    assert_eq!(
+        f.oracle.try_submit_nav(&f.reporter, &FEED_PC_NAV, &a, &T0),
+        Err(Ok(OracleError::NonMonotonicTimestamp))
+    );
+    assert_eq!(f.oracle.get_nav(&FEED_PC_NAV), b);
 }
 
 /// Reaching quorum only changes how many reporters have to agree before the
@@ -963,4 +970,63 @@ fn every_existing_guard_still_binds_on_the_committed_quorum_value() {
     let r = f.oracle.try_submit_nav(&r2, &FEED_PC_NAV, &nav, &T0);
     assert_eq!(r, Err(Ok(OracleError::NonMonotonicTimestamp)));
     assert_eq!(f.oracle.get_nav(&FEED_PC_NAV), nav);
+}
+
+/// A refused round keeps the record of who voted in it, and it has to.
+///
+/// `clear_round` removes the voters map and the winning value's tally. Every
+/// other value keeps the votes it collected, and nothing remembers who cast
+/// them. Where the round committed, monotonicity closes the timestamp behind
+/// it and the leftovers are harmless. Where the round was refused, and a
+/// refusal moves no state at all, the timestamp stays open: the stale tally is
+/// still standing, the guard against voting twice is gone, and the reporter
+/// that seeded the loser needs one more vote of its own to reach a quorum that
+/// is supposed to require two distinct reporters.
+#[test]
+fn a_refused_round_keeps_the_record_of_who_voted_in_it() {
+    let f = setup();
+    let r2 = Address::generate(&f.e);
+    let r3 = Address::generate(&f.e);
+    f.oracle.add_reporter(&f.admin, &r2);
+    f.oracle.add_reporter(&f.admin, &r3);
+
+    // A reference value, so the deviation bound has something to measure from.
+    f.oracle.push_nav(&f.reporter, &FEED_PC_NAV, &ONE, &T0);
+    f.oracle.set_quorum_threshold(&f.admin, &FEED_PC_NAV, &2u32);
+
+    let t1 = T0 + NAV_MIN_INTERVAL;
+    f.e.ledger().set_timestamp(t1);
+
+    // The compromised reporter seeds a value of its own. Inside the 500 bps
+    // bound, so it is a value that would commit if it ever reached quorum.
+    let theirs = ONE * 104 / 100;
+    assert_eq!(
+        f.oracle.submit_nav(&r2, &FEED_PC_NAV, &theirs, &t1),
+        PushOutcome::Pending
+    );
+
+    // Two honest reporters agree on something the deviation bound refuses.
+    let refused = ONE * 150 / 100;
+    assert_eq!(
+        f.oracle.submit_nav(&f.reporter, &FEED_PC_NAV, &refused, &t1),
+        PushOutcome::Pending
+    );
+    assert_eq!(
+        f.oracle.submit_nav(&r3, &FEED_PC_NAV, &refused, &t1),
+        PushOutcome::RejectedDeviation
+    );
+    // The refusal moved nothing, which is what leaves the round open.
+    assert_eq!(f.oracle.get_nav(&FEED_PC_NAV), ONE);
+
+    // And the seeded tally is still standing.
+    assert_eq!(f.oracle.quorum_votes(&FEED_PC_NAV, &t1, &theirs), 1);
+
+    // One reporter, voting a second time into a round it already voted in.
+    let second = f.oracle.try_submit_nav(&r2, &FEED_PC_NAV, &theirs, &t1);
+    assert_eq!(
+        second,
+        Err(Ok(OracleError::AlreadyVoted)),
+        "one reporter reached a quorum of two on its own"
+    );
+    assert_eq!(f.oracle.get_nav(&FEED_PC_NAV), ONE);
 }

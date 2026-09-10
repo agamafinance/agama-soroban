@@ -760,15 +760,6 @@ impl OracleAdapter {
         if votes < threshold {
             return Ok(CommitOutcome::Pending);
         }
-        // Quorum reached: the round is done, whichever way the guards below
-        // land, so its bookkeeping is cleared here rather than kept around.
-        // That matters for a threshold of 1 as much as for any other: without
-        // it, a reporter who reuses a timestamp after it already committed
-        // would be told it already voted in this round instead of the more
-        // specific, and correct, non-monotonic timestamp. Clearing puts every
-        // later attempt at this same (feed, timestamp) back on `check_commit`,
-        // which is the guard that actually knows whether it is a replay.
-        Self::clear_round(e, feed_id, timestamp, nav);
         // A threshold of 1 is V1 behaviour: the first vote always meets it,
         // and this event would say nothing `nav_updated` does not already
         // say, so it only fires above the default.
@@ -783,8 +774,37 @@ impl OracleAdapter {
         }
 
         match Self::check_commit(e, &feed, feed_id, reporter, nav, timestamp)? {
-            Some(rejection) => Ok(CommitOutcome::Rejected(rejection)),
+            Some(rejection) => {
+                // A refused round is still open, and that is the whole reason
+                // its voter record has to survive.
+                //
+                // Clearing on the way out of any resolution looks symmetric
+                // and is not, because the two outcomes leave the timestamp in
+                // different places. A commit advances the feed's stored
+                // timestamp, so monotonicity closes this round behind it and
+                // the leftovers cannot be voted into. A refusal moves no state
+                // at all: the timestamp is still acceptable, the tallies every
+                // losing value collected are still standing, and the voter map
+                // is the only thing left that knows who has already spoken. Take
+                // it away and one reporter seeds a value, waits for the round to
+                // be refused on some other value, votes for its own a second
+                // time and carries a quorum of two on its own. That is not a
+                // corner of the feature, it is the feature: a threshold above 1
+                // buys independence between reporters and nothing else, and a
+                // round a single key can carry has bought none.
+                //
+                // A threshold of 1 is exempt, and it is exempt by definition
+                // rather than by exception: one vote is the entire round, so
+                // there is no second voter for the record to be protecting
+                // against, and keeping it would only change which error a
+                // repeated report gets. V1 behaviour stays exactly as it was.
+                if threshold == 1 {
+                    Self::clear_round(e, feed_id, timestamp, nav);
+                }
+                Ok(CommitOutcome::Rejected(rejection))
+            }
             None => {
+                Self::clear_round(e, feed_id, timestamp, nav);
                 Self::store(e, reporter.clone(), feed_id.clone(), nav, timestamp);
                 Ok(CommitOutcome::Accepted)
             }
