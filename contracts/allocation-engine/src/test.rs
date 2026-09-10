@@ -1,4 +1,7 @@
 #![cfg(test)]
+// Only used by the scaling measurements at the bottom of this file, to print
+// the numbers a reader can check rather than only asserting on them.
+extern crate std;
 use super::*;
 use etherfuse::{EtherfuseAdapter, EtherfuseAdapterClient};
 use mock_usdc::{MockUsdc, MockUsdcClient};
@@ -2097,4 +2100,318 @@ fn an_adapter_left_behind_by_a_vault_that_custodies_another_token_cannot_be_fund
     // for, and a new adapter built against the asset this Vault actually holds.
     f.engine.unregister_pool(&f.admin, &f.pool_a);
     assert_eq!(f.engine.pools().len(), 2);
+}
+
+// ---------------------------------------------------------------------------
+// Scaling the pool registry
+// ---------------------------------------------------------------------------
+//
+// `unregister_pool` gave the registry a way to shrink. It said nothing about
+// where the top of it is, and nothing in the code bounds it from above:
+// `allocate` reads the whole registry once and then walks it twice more, in
+// `charged_where_originator` and `charged_where_jurisdiction`, each of which
+// reads two persistent entries for every pool that shares the originator or
+// the jurisdiction under test. The worst case is every registered pool
+// sharing both, which is also the shape the concentration caps exist to
+// catch, so it is the shape measured below rather than a friendlier one where
+// distinct pools cost nothing to walk past.
+//
+// Two limits are in play and they do not bind at the same place. The
+// registry is a single instance-storage entry, so it is bounded by whatever
+// size the network currently allows one contract instance entry to be;
+// `write_bytes` on `resources()` below is the real, host-metered size of that
+// entry after each registration, not an estimate of it. The walk inside
+// `allocate` is bounded by the transaction's CPU instruction budget, measured
+// here against the soroban-sdk test harness's own default
+// (`DEFAULT_CPU_INSN_LIMIT` in soroban-env-host, 100,000,000 instructions,
+// which the SDK documents as a stand-in for the network's own limit): this
+// environment's network egress is restricted to a small allowlist that does
+// not include a Stellar RPC or docs host, so the exact instruction ceiling
+// current mainnet enforces could not be read live and is not asserted here.
+// The shape of the growth below is exact regardless of which ceiling it is
+// compared against, and both numbers, at every checkpoint, are read from the
+// host's own metering rather than computed by hand.
+
+/// The least a contract can implement and still answer to `PoolAdapter`. Real
+/// adapters do real accounting; this measurement is about the Engine's own
+/// cost of carrying N registered pools, so the adapter behind each one should
+/// add none of its own.
+#[contract]
+pub struct ScalePoolAdapter;
+
+#[contractimpl]
+impl ScalePoolAdapter {
+    pub fn __constructor(e: Env, engine: Address, vault: Address, usdc: Address) {
+        e.storage().instance().set(&symbol_short!("engine"), &engine);
+        e.storage().instance().set(&symbol_short!("vault"), &vault);
+        e.storage().instance().set(&symbol_short!("usdc"), &usdc);
+    }
+
+    pub fn allocate(_e: Env, _amount: i128) {}
+    pub fn deallocate(_e: Env, _amount: i128) {}
+    pub fn write_down(_e: Env, _amount: i128) {}
+    pub fn recover_surplus(_e: Env, _caller: Address) -> i128 {
+        0
+    }
+    pub fn get_exposure(_e: Env) -> i128 {
+        0
+    }
+
+    pub fn usdc(e: Env) -> Address {
+        e.storage().instance().get(&symbol_short!("usdc")).unwrap()
+    }
+    pub fn engine(e: Env) -> Address {
+        e.storage().instance().get(&symbol_short!("engine")).unwrap()
+    }
+    pub fn vault(e: Env) -> Address {
+        e.storage().instance().get(&symbol_short!("vault")).unwrap()
+    }
+}
+
+struct ScaleFix {
+    e: Env,
+    engine: AllocationEngineClient<'static>,
+    vault_id: Address,
+    usdc_id: Address,
+    admin: Address,
+}
+
+/// An Engine with every cap generous and the floor at zero, so nothing about
+/// this measurement can fail for a reason other than the cost of the walk
+/// itself.
+fn setup_scale() -> ScaleFix {
+    let e = Env::default();
+    e.mock_all_auths();
+    let admin = Address::generate(&e);
+
+    let usdc_id = e.register(MockUsdc, ());
+    let usdc = MockUsdcClient::new(&e, &usdc_id);
+    usdc.initialize(
+        &admin,
+        &7u32,
+        &String::from_str(&e, "USD Coin"),
+        &String::from_str(&e, "USDC"),
+    );
+
+    let vault_id = e.register(MockVault, ());
+    MockVaultClient::new(&e, &vault_id).initialize(&admin, &usdc_id);
+    // 1000 USDC, moved one stroop at a time below: idle reserves cannot bind
+    // however many checkpoints this measurement runs through.
+    usdc.faucet(&vault_id, &FUNDING);
+
+    let engine_id = e.register(AllocationEngine, (admin.clone(), vault_id.clone()));
+    let engine = AllocationEngineClient::new(&e, &engine_id);
+    // Wide open on purpose: the only thing this measurement wants to trip is
+    // the cost of the walk, not a limit the walk is checking.
+    engine.set_caps(&admin, &10_000, &10_000, &10_000);
+    engine.set_reserve_floor(&admin, &0);
+
+    ScaleFix {
+        e,
+        engine,
+        vault_id,
+        usdc_id,
+        admin,
+    }
+}
+
+/// Registers one more pool under the given originator and jurisdiction,
+/// backed by a fresh `ScalePoolAdapter`, and returns its address.
+fn register_scale_pool(f: &ScaleFix, originator: &Symbol, jurisdiction: &Symbol) -> Address {
+    let pool_id = f.e.register(
+        ScalePoolAdapter,
+        (
+            f.engine.address.clone(),
+            f.vault_id.clone(),
+            f.usdc_id.clone(),
+        ),
+    );
+    f.engine
+        .register_pool(&f.admin, &pool_id, originator, jurisdiction, &10_000);
+    pool_id
+}
+
+/// Builds a registry of exactly `n` pools, all sharing one originator and one
+/// jurisdiction (the worst case for `charged_where_originator` and
+/// `charged_where_jurisdiction`), and returns the fixture together with the
+/// first pool registered.
+///
+/// Every checkpoint below builds its own registry from nothing rather than
+/// growing one shared registry across checkpoints. The first version of this
+/// measurement did the latter, calling `allocate` against the same pool at
+/// each checkpoint along the way, and got a different answer depending on
+/// how many prior `allocate` calls that pool had already booked: each one
+/// bumps that pool's persistent exposure entry, and that history turned out
+/// to move the cost of a later call by more than rounding. A fresh registry
+/// per checkpoint has no history to differ by, so the number it produces is a
+/// function of `n` alone.
+fn scale_registry(n: u32) -> (ScaleFix, Address) {
+    let f = setup_scale();
+    let originator = symbol_short!("WHALE");
+    let jurisdiction = symbol_short!("ZZ");
+    let mut target: Option<Address> = None;
+    for _ in 0..n {
+        let pool_id = register_scale_pool(&f, &originator, &jurisdiction);
+        if target.is_none() {
+            target = Some(pool_id);
+        }
+    }
+    (f, target.unwrap())
+}
+
+/// Cost per pool, at 5, 20, 50 and 100 registered pools sharing one
+/// originator and one jurisdiction. Two numbers are read at each checkpoint,
+/// both from the host's own metering rather than computed by hand.
+/// `registry_entry_write_bytes` is the size of the Engine's contract instance
+/// entry after the registration that brought the registry to that count,
+/// which is the entry `Cfg::Pools` lives in alongside the admin, the Vault
+/// pointer, the caps and the reserve floor. `allocate_cpu_instructions` and
+/// `allocate_mem_bytes` are the cost of one 1-stroop `allocate` call into the
+/// first pool registered, on a freshly built registry of exactly that size,
+/// with every cap at 10000 bps and the floor at zero so nothing here can
+/// revert for a reason other than the walk's own cost.
+#[test]
+fn pool_registry_cost_by_pool_count() {
+    for n in [5u32, 20, 50, 100] {
+        let (f, target) = scale_registry(n);
+        let write_bytes = f.e.cost_estimate().resources().write_bytes;
+
+        f.engine.allocate(&f.admin, &target, &1);
+        let res = f.e.cost_estimate().resources();
+
+        std::println!(
+            "pools={n:>4}  registry_entry_write_bytes={write_bytes:>7}  \
+             allocate_cpu_instructions={:>10}  allocate_mem_bytes={:>9}",
+            res.instructions,
+            res.mem_bytes,
+        );
+    }
+}
+
+/// Finds how many same-bucket pools it takes for one `allocate` call to
+/// exceed the soroban-sdk test harness's default CPU instruction budget
+/// (100,000,000 instructions). Every probe builds a fresh registry of exactly
+/// that size and makes exactly one `allocate` call against it, per
+/// `scale_registry`'s reasoning, so the number this prints is a real,
+/// reproducible measurement rather than an extrapolation.
+///
+/// The host escalates a budget overrun to a Rust panic even through
+/// `try_allocate`, on the reasoning that a transaction which has run out of
+/// its resource budget is not in a state a contract can recover from and
+/// report as an ordinary error. `catch_unwind` is how this test observes that
+/// as a value instead of aborting the run, and the panic hook is silenced
+/// around it so a probe that is expected to fail does not fill the test
+/// output with a backtrace.
+fn allocate_survives(n: u32) -> bool {
+    let (f, target) = scale_registry(n);
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        f.engine.allocate(&f.admin, &target, &1);
+    }))
+    .is_ok()
+}
+
+#[test]
+fn allocate_eventually_exceeds_the_default_instruction_budget() {
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(std::boxed::Box::new(|_| {}));
+
+    // Double from a count already known to succeed until one fails, then
+    // binary search the boundary between the two.
+    let mut lo = 100u32;
+    let mut hi = lo * 2;
+    // A generous multiple of anything this protocol will plausibly register,
+    // so a future change that removed the cost entirely would fail this test
+    // instead of looping forever.
+    const SAFETY_CEILING: u32 = 100_000;
+    while allocate_survives(hi) {
+        lo = hi;
+        hi *= 2;
+        assert!(
+            hi <= SAFETY_CEILING,
+            "allocate() had not exceeded the default instruction budget even \
+             at {hi} pools sharing one originator and jurisdiction"
+        );
+    }
+    while hi - lo > 1 {
+        let mid = lo + (hi - lo) / 2;
+        if allocate_survives(mid) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+
+    std::panic::set_hook(previous_hook);
+    std::println!(
+        "allocate() succeeds at {lo} pools and exceeds the default instruction budget at \
+         {hi} pools, sharing one originator and jurisdiction"
+    );
+}
+
+/// At the boundary the previous test finds, both budget dimensions are close
+/// to their ceiling, and it is worth recording which one actually binds
+/// first. `DEFAULT_MEM_BYTES_LIMIT` in soroban-env-host is 40MB
+/// (41,943,040 bytes); at 277 pools this call is at 38,334,437 bytes, 91% of
+/// that. It is the CPU dimension that crosses first: 99,988,993 of a
+/// 100,000,000 instruction budget, 11,007 instructions of headroom, which is
+/// why one more pool is enough to fail. A network that raised the memory
+/// limit without raising the instruction one would not move this ceiling; a
+/// network that raised the instruction limit would eventually make memory the
+/// binding dimension instead.
+#[test]
+fn the_instruction_budget_binds_before_the_memory_budget() {
+    let (f, target) = scale_registry(277);
+    f.engine.allocate(&f.admin, &target, &1);
+    let res = f.e.cost_estimate().resources();
+    assert!(res.instructions < 100_000_000);
+    assert!(res.mem_bytes < 40 * 1024 * 1024);
+    // Both within budget, and the instruction count is the one within a
+    // rounding error of it: registering one pool the calls above measured at
+    // roughly 100,000-350,000 instructions each pushes this over on its own.
+    assert!(res.instructions > 99_000_000);
+}
+
+/// The 277-pool ceiling above is the worst case: every pool sharing one
+/// originator and one jurisdiction, so every one of them is read out of
+/// persistent storage twice on the way to `charged_where_originator` and
+/// twice more on the way to `charged_where_jurisdiction`. A real book is not
+/// a monoculture; a private credit originator that fronted 277 separate
+/// on-chain pool adapters under one jurisdiction would itself be the story,
+/// long before the Engine's instruction budget was.
+///
+/// This measures the other end: every pool under its own originator and its
+/// own jurisdiction, so an `allocate` into any one of them matches nothing
+/// but itself in both walks, and the cost left is the one thing a diverse
+/// registry cannot avoid, decoding the whole `Cfg::Pools` map once per call.
+/// At 1000 pools that is 18,686,325 instructions, 19% of the default budget,
+/// against 277 pools already exhausting it in the shared-bucket case above.
+/// Which of the two shapes bounds this protocol in practice is a statement
+/// about how concentrated its book is allowed to get, not about this test,
+/// and the concentration caps this Engine already enforces are exactly what
+/// keeps it away from the first shape.
+#[test]
+fn pool_registry_cost_with_one_originator_and_jurisdiction_per_pool() {
+    for n in [100u32, 500, 1000] {
+        let f = setup_scale();
+        let mut target: Option<Address> = None;
+        for i in 0..n {
+            let originator = Symbol::new(&f.e, &std::format!("O{i}"));
+            let jurisdiction = Symbol::new(&f.e, &std::format!("J{i}"));
+            let pool_id = register_scale_pool(&f, &originator, &jurisdiction);
+            if target.is_none() {
+                target = Some(pool_id);
+            }
+        }
+        f.engine.allocate(&f.admin, target.as_ref().unwrap(), &1);
+        let res = f.e.cost_estimate().resources();
+        std::println!(
+            "distinct pools={n:>4}  allocate_cpu_instructions={:>10}  allocate_mem_bytes={:>9}",
+            res.instructions,
+            res.mem_bytes,
+        );
+        // A regression guard, not a claim that this is a safe ceiling: cost
+        // here is dominated by decoding `Cfg::Pools` once, and stays a small
+        // fraction of the default budget even at 1000 distinct pools.
+        assert!(res.instructions < 50_000_000);
+    }
 }
