@@ -66,6 +66,31 @@ fn setup() -> Fix {
     }
 }
 
+/// Mock authorization for exactly one reporter's `push_nav`/`submit_nav`
+/// call, rather than the blanket `mock_all_auths` every other fixture call
+/// uses. The blanket mock authorizes any address for anything, which proves
+/// nothing about whether a vote is actually bound to the reporter that cast
+/// it; this binds the mock to one specific signer and one specific call.
+fn mock_reporter_auth(
+    e: &Env,
+    oracle: &Address,
+    reporter: &Address,
+    fn_name: &'static str,
+    feed_id: &Symbol,
+    nav: i128,
+    timestamp: u64,
+) {
+    e.mock_auths(&[MockAuth {
+        address: reporter,
+        invoke: &MockAuthInvoke {
+            contract: oracle,
+            fn_name,
+            args: (reporter.clone(), feed_id.clone(), nav, timestamp).into_val(e),
+            sub_invokes: &[],
+        },
+    }]);
+}
+
 /// True if any event carries `name` as one of its topics. `events().all()`
 /// only reflects the most recent invocation, so this has to be called
 /// immediately after the call under test.
@@ -329,17 +354,15 @@ fn feed_guards_are_write_once() {
     let f = setup();
     // Re-registering USDC/USD with a 100% deviation bound must not silently
     // disarm the guard for every consumer already reading that feed id.
-    let r = f
-        .oracle
-        .try_register_feed(
-            &f.admin,
-            &FEED_USDC_USD,
-            &3_600u64,
-            &10_000u32,
-            &1i128,
-            &(i128::MAX),
-            &0u64,
-        );
+    let r = f.oracle.try_register_feed(
+        &f.admin,
+        &FEED_USDC_USD,
+        &3_600u64,
+        &10_000u32,
+        &1i128,
+        &(i128::MAX),
+        &0u64,
+    );
     assert_eq!(r, Err(Ok(OracleError::FeedAlreadyRegistered)));
     assert_eq!(f.oracle.get_feed(&FEED_USDC_USD).deviation_bps, 200);
 }
@@ -364,16 +387,15 @@ fn feed_config_is_validated() {
     );
     // A bound above 100% is not a bound.
     assert_eq!(
-        f.oracle
-            .try_register_feed(
-                &f.admin,
-                &new_feed,
-                &3_600u64,
-                &10_001u32,
-                &NAV_BAND_MIN,
-                &NAV_BAND_MAX,
-                &NAV_MIN_INTERVAL
-            ),
+        f.oracle.try_register_feed(
+            &f.admin,
+            &new_feed,
+            &3_600u64,
+            &10_001u32,
+            &NAV_BAND_MIN,
+            &NAV_BAND_MAX,
+            &NAV_MIN_INTERVAL
+        ),
         Err(Ok(OracleError::InvalidFeedConfig))
     );
     // A band that is not a band: no lower edge, or an upper edge below the
@@ -413,16 +435,15 @@ fn non_admin_cannot_manage_reporters_or_feeds() {
         Err(Ok(OracleError::NotAdmin))
     );
     assert_eq!(
-        f.oracle
-            .try_register_feed(
-                &stranger,
-                &Symbol::new(&f.e, "X"),
-                &3_600u64,
-                &200u32,
-                &NAV_BAND_MIN,
-                &NAV_BAND_MAX,
-                &NAV_MIN_INTERVAL
-            ),
+        f.oracle.try_register_feed(
+            &stranger,
+            &Symbol::new(&f.e, "X"),
+            &3_600u64,
+            &200u32,
+            &NAV_BAND_MIN,
+            &NAV_BAND_MAX,
+            &NAV_MIN_INTERVAL
+        ),
         Err(Ok(OracleError::NotAdmin))
     );
 }
@@ -608,4 +629,404 @@ fn the_admin_role_moves_only_to_an_address_that_signs_for_it() {
         f.oracle.try_accept_admin(&successor),
         Err(Ok(OracleError::NoPendingAdmin))
     );
+}
+
+// ---- quorum ----
+
+/// Every feed defaults to a threshold of 1, which is what makes V2 an
+/// admin-gated upgrade rather than a rewrite: a feed nobody has raised keeps
+/// behaving exactly as it did before quorum existed, first vote and it
+/// lands, no `nav_quorum_reached` event either, since that event would say
+/// nothing `nav_updated` does not already say at this threshold.
+#[test]
+fn quorum_threshold_defaults_to_one_and_a_single_vote_commits() {
+    let f = setup();
+    assert_eq!(f.oracle.quorum_threshold(&FEED_USDC_USD), 1);
+
+    assert_eq!(
+        f.oracle.submit_nav(&f.reporter, &FEED_USDC_USD, &ONE, &T0),
+        PushOutcome::Accepted
+    );
+    // Checked immediately after the call under test: `events().all()` only
+    // reflects the most recent invocation, so a view call in between would
+    // silently see nothing.
+    assert!(emitted(&f.e, "nav_updated"));
+    assert!(!emitted(&f.e, "nav_quorum_reached"));
+    assert_eq!(f.oracle.get_nav(&FEED_USDC_USD), ONE);
+}
+
+/// `set_quorum_threshold` is the admin-gated on ramp to V2: it is refused for
+/// a non-admin, for an unregistered feed, and for a threshold of zero, which
+/// no report could ever satisfy. A valid call is visible in the event stream.
+#[test]
+fn set_quorum_threshold_is_admin_gated_and_validated() {
+    let f = setup();
+    let stranger = Address::generate(&f.e);
+
+    assert_eq!(
+        f.oracle
+            .try_set_quorum_threshold(&stranger, &FEED_PC_NAV, &2u32),
+        Err(Ok(OracleError::NotAdmin))
+    );
+    let unknown = Symbol::new(&f.e, "NOPE");
+    assert_eq!(
+        f.oracle.try_set_quorum_threshold(&f.admin, &unknown, &2u32),
+        Err(Ok(OracleError::FeedNotRegistered))
+    );
+    assert_eq!(
+        f.oracle
+            .try_set_quorum_threshold(&f.admin, &FEED_PC_NAV, &0u32),
+        Err(Ok(OracleError::InvalidQuorumThreshold))
+    );
+
+    f.oracle.set_quorum_threshold(&f.admin, &FEED_PC_NAV, &2u32);
+    assert!(emitted(&f.e, "quorum_threshold_set"));
+    assert_eq!(f.oracle.quorum_threshold(&FEED_PC_NAV), 2);
+}
+
+/// The headline behaviour: with a threshold of 2, one reporter's vote is not
+/// enough. Nothing moves until a second, distinct reporter submits the same
+/// value for the same round, and only then does it commit.
+#[test]
+fn quorum_of_two_commits_only_once_two_reporters_agree() {
+    let f = setup();
+    let r2 = Address::generate(&f.e);
+    f.oracle.add_reporter(&f.admin, &r2);
+    f.oracle.set_quorum_threshold(&f.admin, &FEED_PC_NAV, &2u32);
+
+    let nav = ONE;
+    assert_eq!(
+        f.oracle.submit_nav(&f.reporter, &FEED_PC_NAV, &nav, &T0),
+        PushOutcome::Pending
+    );
+    assert!(!emitted(&f.e, "nav_quorum_reached"));
+    assert_eq!(f.oracle.quorum_votes(&FEED_PC_NAV, &T0, &nav), 1);
+    assert_eq!(
+        f.oracle.try_get_nav(&FEED_PC_NAV),
+        Err(Ok(OracleError::NoNavReported))
+    );
+
+    assert_eq!(
+        f.oracle.submit_nav(&r2, &FEED_PC_NAV, &nav, &T0),
+        PushOutcome::Accepted
+    );
+    assert!(emitted(&f.e, "nav_quorum_reached"));
+    assert!(emitted(&f.e, "nav_updated"));
+    assert_eq!(f.oracle.get_nav(&FEED_PC_NAV), nav);
+
+    // push_nav agrees: it never fails on a merely pending vote, only on a
+    // reached-and-then-rejected one.
+    let t1 = T0 + NAV_MIN_INTERVAL;
+    f.e.ledger().set_timestamp(t1);
+    f.oracle.push_nav(&f.reporter, &FEED_PC_NAV, &nav, &t1);
+    assert_eq!(f.oracle.get_nav(&FEED_PC_NAV), nav); // still the old point
+    f.oracle.push_nav(&r2, &FEED_PC_NAV, &nav, &t1);
+    assert_eq!(f.oracle.last_update(&FEED_PC_NAV).timestamp, t1);
+}
+
+/// One vote per reporter per round, whatever value it casts. A reporter
+/// cannot manufacture the second vote a round needs by signing twice, and
+/// this specifically has to be proven with a mock bound to that reporter's
+/// own signature: the blanket `mock_all_auths` authorizes every address for
+/// everything and would let a double vote through even if the contract
+/// checked nothing at all.
+#[test]
+fn a_reporter_cannot_vote_twice_in_the_same_round() {
+    let f = setup();
+    let r2 = Address::generate(&f.e);
+    f.e.mock_all_auths();
+    f.oracle.add_reporter(&f.admin, &r2);
+    f.oracle.set_quorum_threshold(&f.admin, &FEED_PC_NAV, &2u32);
+
+    let nav = ONE;
+    mock_reporter_auth(
+        &f.e,
+        &f.oracle.address,
+        &f.reporter,
+        "submit_nav",
+        &FEED_PC_NAV,
+        nav,
+        T0,
+    );
+    assert_eq!(
+        f.oracle.submit_nav(&f.reporter, &FEED_PC_NAV, &nav, &T0),
+        PushOutcome::Pending
+    );
+
+    // The same reporter, the same round, the same value: still a second vote
+    // from one signer, and it is refused.
+    mock_reporter_auth(
+        &f.e,
+        &f.oracle.address,
+        &f.reporter,
+        "submit_nav",
+        &FEED_PC_NAV,
+        nav,
+        T0,
+    );
+    assert_eq!(
+        f.oracle
+            .try_submit_nav(&f.reporter, &FEED_PC_NAV, &nav, &T0),
+        Err(Ok(OracleError::AlreadyVoted))
+    );
+
+    // Nor does casting a different value in the same round buy it a second
+    // vote: the round is keyed by the reporter and the timestamp, not by
+    // what was voted for.
+    let other = ONE * 101 / 100;
+    mock_reporter_auth(
+        &f.e,
+        &f.oracle.address,
+        &f.reporter,
+        "submit_nav",
+        &FEED_PC_NAV,
+        other,
+        T0,
+    );
+    assert_eq!(
+        f.oracle
+            .try_submit_nav(&f.reporter, &FEED_PC_NAV, &other, &T0),
+        Err(Ok(OracleError::AlreadyVoted))
+    );
+
+    // A genuinely distinct reporter still reaches quorum normally.
+    mock_reporter_auth(
+        &f.e,
+        &f.oracle.address,
+        &r2,
+        "submit_nav",
+        &FEED_PC_NAV,
+        nav,
+        T0,
+    );
+    assert_eq!(
+        f.oracle.submit_nav(&r2, &FEED_PC_NAV, &nav, &T0),
+        PushOutcome::Accepted
+    );
+    assert_eq!(f.oracle.get_nav(&FEED_PC_NAV), nav);
+}
+
+/// An address outside the reporter set cannot contribute a vote toward
+/// quorum, mocked with its own signature so the rejection is proven to come
+/// from the reporter-set check rather than from an auth failure that a
+/// blanket mock would have papered over either way.
+#[test]
+fn a_non_reporter_cannot_contribute_a_vote_toward_quorum() {
+    let f = setup();
+    let r2 = Address::generate(&f.e);
+    let stranger = Address::generate(&f.e);
+    f.e.mock_all_auths();
+    f.oracle.add_reporter(&f.admin, &r2);
+    f.oracle.set_quorum_threshold(&f.admin, &FEED_PC_NAV, &2u32);
+
+    let nav = ONE;
+    mock_reporter_auth(
+        &f.e,
+        &f.oracle.address,
+        &stranger,
+        "submit_nav",
+        &FEED_PC_NAV,
+        nav,
+        T0,
+    );
+    assert_eq!(
+        f.oracle.try_submit_nav(&stranger, &FEED_PC_NAV, &nav, &T0),
+        Err(Ok(OracleError::UnauthorizedReporter))
+    );
+    // Nothing was recorded: the two real reporters still need two votes of
+    // their own, the stranger's attempt bought the round nothing.
+    assert_eq!(f.oracle.quorum_votes(&FEED_PC_NAV, &T0, &nav), 0);
+
+    f.e.mock_all_auths();
+    assert_eq!(
+        f.oracle.submit_nav(&f.reporter, &FEED_PC_NAV, &nav, &T0),
+        PushOutcome::Pending
+    );
+    assert_eq!(
+        f.oracle.submit_nav(&r2, &FEED_PC_NAV, &nav, &T0),
+        PushOutcome::Accepted
+    );
+}
+
+/// Two reporters disagreeing never reaches quorum on either value, no matter
+/// how many votes accumulate, until a third breaks the tie toward one of
+/// them. Partial agreement moves nothing.
+#[test]
+fn disagreeing_values_never_reach_quorum() {
+    let f = setup();
+    let r2 = Address::generate(&f.e);
+    let r3 = Address::generate(&f.e);
+    f.oracle.add_reporter(&f.admin, &r2);
+    f.oracle.add_reporter(&f.admin, &r3);
+    f.oracle.set_quorum_threshold(&f.admin, &FEED_PC_NAV, &2u32);
+
+    let a = ONE;
+    let b = ONE * 101 / 100;
+    assert_eq!(
+        f.oracle.submit_nav(&f.reporter, &FEED_PC_NAV, &a, &T0),
+        PushOutcome::Pending
+    );
+    assert_eq!(
+        f.oracle.submit_nav(&r2, &FEED_PC_NAV, &b, &T0),
+        PushOutcome::Pending
+    );
+    // Two votes cast, none of it moved state: they split across two values,
+    // one apiece.
+    assert_eq!(
+        f.oracle.try_get_nav(&FEED_PC_NAV),
+        Err(Ok(OracleError::NoNavReported))
+    );
+    assert_eq!(f.oracle.quorum_votes(&FEED_PC_NAV, &T0, &a), 1);
+    assert_eq!(f.oracle.quorum_votes(&FEED_PC_NAV, &T0, &b), 1);
+
+    // r3 breaks the tie toward b.
+    assert_eq!(
+        f.oracle.submit_nav(&r3, &FEED_PC_NAV, &b, &T0),
+        PushOutcome::Accepted
+    );
+    assert_eq!(f.oracle.get_nav(&FEED_PC_NAV), b);
+    // a never reached quorum and never will. Its tally is still standing at one
+    // vote short, and committing b advanced the feed's timestamp past this
+    // round, so the second vote a would need cannot be cast at all: whoever
+    // tries is refused for the timestamp rather than counted.
+    assert_eq!(f.oracle.quorum_votes(&FEED_PC_NAV, &T0, &a), 1);
+    assert_eq!(
+        f.oracle.try_submit_nav(&f.reporter, &FEED_PC_NAV, &a, &T0),
+        Err(Ok(OracleError::NonMonotonicTimestamp))
+    );
+    assert_eq!(f.oracle.get_nav(&FEED_PC_NAV), b);
+}
+
+/// Reaching quorum only changes how many reporters have to agree before the
+/// single-reporter guards are evaluated, not whether they are. Every one of
+/// them, band, rate limit, deviation and monotonicity, still binds on the
+/// value a round agreed on.
+#[test]
+fn every_existing_guard_still_binds_on_the_committed_quorum_value() {
+    let f = setup();
+    let r2 = Address::generate(&f.e);
+    let r3 = Address::generate(&f.e);
+    f.oracle.add_reporter(&f.admin, &r2);
+    f.oracle.add_reporter(&f.admin, &r3);
+    f.oracle.set_quorum_threshold(&f.admin, &FEED_PC_NAV, &2u32);
+
+    // Band: an out of band value, the first report for this feed included, is
+    // refused before it is even counted as a vote.
+    assert_eq!(
+        f.oracle
+            .try_submit_nav(&f.reporter, &FEED_PC_NAV, &(NAV_BAND_MAX + 1), &T0),
+        Err(Ok(OracleError::NavOutOfBand))
+    );
+    assert_eq!(
+        f.oracle
+            .quorum_votes(&FEED_PC_NAV, &T0, &(NAV_BAND_MAX + 1)),
+        0
+    );
+
+    // Establish a reference value through quorum.
+    let nav = ONE;
+    f.oracle.submit_nav(&f.reporter, &FEED_PC_NAV, &nav, &T0);
+    f.oracle.submit_nav(&r2, &FEED_PC_NAV, &nav, &T0);
+    assert_eq!(f.oracle.get_nav(&FEED_PC_NAV), nav);
+
+    // Rate limit: two reporters agreeing inside the feed's minimum interval
+    // still fails once quorum is reached, and fails the whole call rather
+    // than being treated as a disputed valuation.
+    let soon = T0 + 60;
+    f.e.ledger().set_timestamp(soon);
+    f.oracle.submit_nav(&f.reporter, &FEED_PC_NAV, &nav, &soon);
+    let r = f.oracle.try_submit_nav(&r2, &FEED_PC_NAV, &nav, &soon);
+    assert_eq!(r, Err(Ok(OracleError::TooSoon)));
+    assert_eq!(f.oracle.get_nav(&FEED_PC_NAV), nav);
+
+    // Deviation: two reporters agreeing on a move past the bound still fails
+    // once quorum is reached, via submit_nav's rejection outcome...
+    let later = T0 + NAV_MIN_INTERVAL;
+    f.e.ledger().set_timestamp(later);
+    let beyond = nav * 120 / 100; // 2000 bps against a 500 bps bound
+    f.oracle
+        .submit_nav(&f.reporter, &FEED_PC_NAV, &beyond, &later);
+    assert_eq!(
+        f.oracle.submit_nav(&r2, &FEED_PC_NAV, &beyond, &later),
+        PushOutcome::RejectedDeviation
+    );
+    assert!(emitted(&f.e, "nav_rejected"));
+    assert_eq!(f.oracle.get_nav(&FEED_PC_NAV), nav);
+
+    // ...and via push_nav's failed transaction, with the same two reporters
+    // never having spent their vote on it.
+    let later2 = later + NAV_MIN_INTERVAL;
+    f.e.ledger().set_timestamp(later2);
+    f.oracle
+        .push_nav(&f.reporter, &FEED_PC_NAV, &beyond, &later2);
+    let r = f.oracle.try_push_nav(&r3, &FEED_PC_NAV, &beyond, &later2);
+    assert_eq!(r, Err(Ok(OracleError::DeviationOutOfBounds)));
+    assert_eq!(f.oracle.get_nav(&FEED_PC_NAV), nav);
+
+    // Monotonic timestamp: replaying the timestamp that already committed
+    // still fails once quorum is reached again, even from two reporters that
+    // have not voted in this round before.
+    f.oracle.submit_nav(&f.reporter, &FEED_PC_NAV, &nav, &T0);
+    let r = f.oracle.try_submit_nav(&r2, &FEED_PC_NAV, &nav, &T0);
+    assert_eq!(r, Err(Ok(OracleError::NonMonotonicTimestamp)));
+    assert_eq!(f.oracle.get_nav(&FEED_PC_NAV), nav);
+}
+
+/// A refused round keeps the record of who voted in it, and it has to.
+///
+/// `clear_round` removes the voters map and the winning value's tally. Every
+/// other value keeps the votes it collected, and nothing remembers who cast
+/// them. Where the round committed, monotonicity closes the timestamp behind
+/// it and the leftovers are harmless. Where the round was refused, and a
+/// refusal moves no state at all, the timestamp stays open: the stale tally is
+/// still standing, the guard against voting twice is gone, and the reporter
+/// that seeded the loser needs one more vote of its own to reach a quorum that
+/// is supposed to require two distinct reporters.
+#[test]
+fn a_refused_round_keeps_the_record_of_who_voted_in_it() {
+    let f = setup();
+    let r2 = Address::generate(&f.e);
+    let r3 = Address::generate(&f.e);
+    f.oracle.add_reporter(&f.admin, &r2);
+    f.oracle.add_reporter(&f.admin, &r3);
+
+    // A reference value, so the deviation bound has something to measure from.
+    f.oracle.push_nav(&f.reporter, &FEED_PC_NAV, &ONE, &T0);
+    f.oracle.set_quorum_threshold(&f.admin, &FEED_PC_NAV, &2u32);
+
+    let t1 = T0 + NAV_MIN_INTERVAL;
+    f.e.ledger().set_timestamp(t1);
+
+    // The compromised reporter seeds a value of its own. Inside the 500 bps
+    // bound, so it is a value that would commit if it ever reached quorum.
+    let theirs = ONE * 104 / 100;
+    assert_eq!(
+        f.oracle.submit_nav(&r2, &FEED_PC_NAV, &theirs, &t1),
+        PushOutcome::Pending
+    );
+
+    // Two honest reporters agree on something the deviation bound refuses.
+    let refused = ONE * 150 / 100;
+    assert_eq!(
+        f.oracle.submit_nav(&f.reporter, &FEED_PC_NAV, &refused, &t1),
+        PushOutcome::Pending
+    );
+    assert_eq!(
+        f.oracle.submit_nav(&r3, &FEED_PC_NAV, &refused, &t1),
+        PushOutcome::RejectedDeviation
+    );
+    // The refusal moved nothing, which is what leaves the round open.
+    assert_eq!(f.oracle.get_nav(&FEED_PC_NAV), ONE);
+
+    // And the seeded tally is still standing.
+    assert_eq!(f.oracle.quorum_votes(&FEED_PC_NAV, &t1, &theirs), 1);
+
+    // One reporter, voting a second time into a round it already voted in.
+    let second = f.oracle.try_submit_nav(&r2, &FEED_PC_NAV, &theirs, &t1);
+    assert_eq!(
+        second,
+        Err(Ok(OracleError::AlreadyVoted)),
+        "one reporter reached a quorum of two on its own"
+    );
+    assert_eq!(f.oracle.get_nav(&FEED_PC_NAV), ONE);
 }

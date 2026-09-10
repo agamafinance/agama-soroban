@@ -173,6 +173,11 @@ echo "-- Built from $PRE_FIX_REV, the commit before the fix, so this is the"
 echo "-- contract that has the bug rather than a description of it."
 
 rm -rf "$PRE_FIX_TREE"
+# Removing the directory does not remove git's registration of it, so the next
+# `worktree add` refuses the path as already in use and every assertion that
+# depends on the pre-fix build fails with it. This script is meant to be
+# re-runnable, so it prunes first.
+git worktree prune
 git worktree add --detach "$PRE_FIX_TREE" "$PRE_FIX_REV" >/dev/null 2>&1
 ( cd "$PRE_FIX_TREE" && stellar contract build >/dev/null 2>&1 )
 PRE_WASM="$PRE_FIX_TREE/target/wasm32v1-none/release/allocation_engine.wasm"
