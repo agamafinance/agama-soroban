@@ -77,13 +77,39 @@ echo "  (showing the four most recent)"
 if [ "${1:-}" = "--wasm" ]; then
   echo ""
   echo "==> every deployed contract is byte for byte the source in this tree"
+  # A divergence between the source and the ledger is allowed exactly when it is
+  # declared. Without this the check has only two settings, both wrong: fail on
+  # a gap the team has decided to carry, or be weakened until it stops catching
+  # the gaps nobody decided to carry. Declaring turns it into a statement with a
+  # reason attached, which is a thing a reviewer can disagree with.
+  PENDING=$(python3 -c "
+import json
+d = json.load(open('deployments/testnet.json'))
+for e in d.get('pendingRedeployment', []):
+    print(e['contract'])
+")
+  if [ -n "$PENDING" ]; then
+    echo "  declared as pending redeployment: $(echo "$PENDING" | tr '\n' ' ')"
+  fi
   stellar contract build >/dev/null 2>&1 || bad "the release build failed, so nothing was compared"
   while IFS='|' read -r name addr wasm; do
     [ -n "$addr" ] || continue
     chain=$(stellar contract fetch --id "$addr" --network testnet 2>/dev/null | shasum -a 256 | cut -d' ' -f1)
     local_hash=$(shasum -a 256 "target/wasm32v1-none/release/$wasm" 2>/dev/null | cut -d' ' -f1)
-    if [ -n "$chain" ] && [ "$chain" = "$local_hash" ]; then ok "$name"
-    else bad "$name differs: chain ${chain:0:16} vs local ${local_hash:0:16}"; fi
+    if [ -n "$chain" ] && [ "$chain" = "$local_hash" ]; then
+      # A contract that matches must not be sitting in the declared list, or the
+      # declaration has outlived the divergence and is now a false statement of
+      # its own.
+      if echo "$PENDING" | grep -qx "$name"; then
+        bad "$name matches the chain but is still declared as pending redeployment"
+      else
+        ok "$name"
+      fi
+    elif echo "$PENDING" | grep -qx "$name"; then
+      ok "$name differs and is declared: chain ${chain:0:16} vs local ${local_hash:0:16}"
+    else
+      bad "$name differs and nothing declares it: chain ${chain:0:16} vs local ${local_hash:0:16}"
+    fi
   done < <(python3 -c "
 import json
 d = json.load(open('deployments/testnet.json'))

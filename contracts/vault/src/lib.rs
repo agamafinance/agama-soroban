@@ -190,7 +190,7 @@
 use soroban_sdk::{
     contract, contractclient, contracterror, contractevent, contractimpl, contracttype,
     token::TokenClient, Address, Env, Symbol,
-};
+ Val};
 
 const BPS: i128 = 10_000;
 
@@ -239,6 +239,14 @@ pub trait AllocationEngineInterface {
 #[contractclient(name = "OracleClient")]
 pub trait OracleInterface {
     fn get_nav(e: Env, feed_id: Symbol) -> i128;
+    /// A feed's registered parameters. The Vault does not read them; it asks
+    /// the question to find out whether the answer exists, which is what tells
+    /// it that the address is an oracle and that this feed is one it knows.
+    /// Typed as `Val` deliberately: binding the Vault to the Oracle Adapter's
+    /// `Feed` layout would make a field added there a decode failure here, and
+    /// the thing being checked is the existence of the answer rather than
+    /// anything in it.
+    fn get_feed(e: Env, feed_id: Symbol) -> Val;
 }
 
 #[contracterror]
@@ -299,6 +307,9 @@ pub enum VaultError {
     AgUsdMismatch = 324,
     /// The address given as USDC does not answer the token interface.
     InvalidUsdc = 325,
+    /// The address offered as this Vault's oracle does not answer the oracle
+    /// interface, or answers it without knowing the feed it was offered with.
+    OracleMismatch = 326,
 }
 
 /// A queued withdrawal. The agUSD is burned at request time, so this record is
@@ -489,9 +500,40 @@ impl Vault {
         feed_id: Symbol,
     ) -> Result<(), VaultError> {
         Self::require_admin(&e, &admin)?;
+        // Interrogated like every other counterparty this Vault points at, and
+        // until now the only one that was not. `set_agusd` proves the token
+        // names this Vault as its minter; `set_engine` proves the Engine
+        // governs this Vault and arrives with an empty book; this proved
+        // nothing, so the address did not have to be a contract, a contract did
+        // not have to be an oracle, and an oracle did not have to have heard of
+        // the feed.
+        //
+        // `get_feed` is the question because it separates the two failures that
+        // matter and depends on neither of the two that do not. An address that
+        // is not an oracle cannot answer it at all. An oracle that does not know
+        // this feed refuses it. And it says nothing about whether a value has
+        // been pushed yet or whether the last one is stale, which is right:
+        // pointing a Vault at a freshly deployed oracle before its first report,
+        // or at one whose reporter is down, is an ordinary operation and often
+        // the reason for repointing in the first place.
+        //
+        // What no check can reach is the wrong feed on the right oracle. A Vault
+        // whose book is private credit can be pointed at a government bond feed
+        // and both contracts will agree it is a fine thing to do. That one is an
+        // operator's assertion, which is why the pair is now readable rather
+        // than only inferable from the number it produces.
+        match OracleClient::new(&e, &oracle).try_get_feed(&feed_id) {
+            Ok(Ok(_)) => {}
+            _ => return Err(VaultError::OracleMismatch),
+        }
         e.storage().instance().set(&Cfg::Oracle, &oracle);
         e.storage().instance().set(&Cfg::OracleFeed, &feed_id);
         Self::bump_instance(&e);
+        OracleRepointed {
+            oracle,
+            feed_id,
+        }
+        .publish(&e);
         Ok(())
     }
 
@@ -1314,6 +1356,13 @@ impl Vault {
             .instance()
             .get(&Cfg::OracleFeed)
             .ok_or(VaultError::OracleNotConfigured)?;
+        // Deliberately called without `try_`, so the Oracle Adapter's own error
+        // reaches the caller unchanged: 504 for a feed it does not know, 511
+        // for one whose last value is older than its staleness window, 512 for
+        // one that has never reported. Translating those into a single Vault
+        // error was considered and rejected, because it would replace three
+        // distinct facts with one, and the caller can now find out which oracle
+        // and which feed produced it by reading `oracle()` and `oracle_feed()`.
         Ok(OracleClient::new(&e, &oracle).get_nav(&feed_id))
     }
 
@@ -1411,6 +1460,30 @@ impl Vault {
             .instance()
             .get(&Cfg::Engine)
             .ok_or(VaultError::NotInitialized)
+    }
+
+    /// The Oracle Adapter this Vault reads its NAV from.
+    ///
+    /// Every other counterparty this Vault points at could be read back and
+    /// this pair could not, which is how an unvalidated `set_oracle` stayed
+    /// unnoticed: the only way to find out where the Vault was pointed was to
+    /// call `get_nav()` and infer it from the number, and a wrong pointer
+    /// produces a perfectly plausible number.
+    pub fn oracle(e: Env) -> Result<Address, VaultError> {
+        e.storage()
+            .instance()
+            .get(&Cfg::Oracle)
+            .ok_or(VaultError::OracleNotConfigured)
+    }
+
+    /// The feed on that oracle whose value `get_nav()` reports. It is the other
+    /// half of the pair and it is set by the same call, so it is readable by
+    /// the same right.
+    pub fn oracle_feed(e: Env) -> Result<Symbol, VaultError> {
+        e.storage()
+            .instance()
+            .get(&Cfg::OracleFeed)
+            .ok_or(VaultError::OracleNotConfigured)
     }
 
     // ---- internals ----
@@ -1643,6 +1716,17 @@ pub struct AgUsdRepointed {
 
 /// Emitted when the Vault is repointed at a different Allocation Engine.
 /// Repointing the Engine is the authority to release those reserves.
+/// Emitted when the Vault's oracle pointer moves. It carries the feed as well
+/// as the address, because the pair is what determines the number `get_nav()`
+/// reports and half of it moving is as consequential as the other half.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OracleRepointed {
+    #[topic]
+    pub oracle: Address,
+    pub feed_id: Symbol,
+}
+
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EngineRepointed {
