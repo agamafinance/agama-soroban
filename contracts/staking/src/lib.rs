@@ -123,6 +123,18 @@ pub enum StakingError {
     NoPendingAdmin = 804,
     /// `accept_admin` was called by an address that was not the one proposed.
     NotPendingAdmin = 805,
+    /// A stake, an unstake or a yield distribution of zero or less.
+    InvalidAmount = 806,
+    /// The stake was large enough to be a positive number of assets and small
+    /// enough to round to no shares at all. Refused rather than taken, because
+    /// taking it is taking a deposit and giving nothing back for it.
+    ZeroShares = 807,
+    /// An unstake with no shares in existence to price it against.
+    NoSupply = 808,
+    /// `claim` with nothing recorded as owed.
+    NothingPending = 809,
+    /// `claim` before the cooldown on the pending balance has run out.
+    StillInCooldown = 810,
 }
 
 /// Emitted when the staked asset is repointed. It can only happen before the
@@ -270,12 +282,16 @@ impl Staking {
     }
 
     /// Stake agUSD, mint sagUSD shares at the current share price.
-    pub fn stake(e: Env, from: Address, amount: i128) -> i128 {
+    pub fn stake(e: Env, from: Address, amount: i128) -> Result<i128, StakingError> {
         from.require_auth();
         if amount <= 0 {
-            panic!("amount must be positive");
+            return Err(StakingError::InvalidAmount);
         }
-        let agusd: Address = e.storage().instance().get(&Cfg::AgUsd).unwrap();
+        let agusd: Address = e
+            .storage()
+            .instance()
+            .get(&Cfg::AgUsd)
+            .ok_or(StakingError::NotInitialized)?;
         TokenClient::new(&e, &agusd).transfer(&from, &e.current_contract_address(), &amount);
 
         let nav = Self::nav(e.clone());
@@ -286,26 +302,26 @@ impl Staking {
             amount * supply / nav
         };
         if shares <= 0 {
-            panic!("zero shares");
+            return Err(StakingError::ZeroShares);
         }
         tok::mint(&e, &from, shares);
         e.storage().instance().set(&Cfg::Nav, &(nav + amount));
         e.storage()
             .instance()
             .set(&Cfg::Stakes, &(Self::stakes(e.clone()) + 1));
-        shares
+        Ok(shares)
     }
 
     /// Request to unstake `shares`: burns the shares now, locks the agUSD owed
     /// behind the cooldown. Claimable via `claim` after the cooldown elapses.
-    pub fn request_unstake(e: Env, from: Address, shares: i128) -> i128 {
+    pub fn request_unstake(e: Env, from: Address, shares: i128) -> Result<i128, StakingError> {
         from.require_auth();
         if shares <= 0 {
-            panic!("shares must be positive");
+            return Err(StakingError::InvalidAmount);
         }
         let supply = tok::total_supply(&e);
         if supply == 0 {
-            panic!("no supply");
+            return Err(StakingError::NoSupply);
         }
         let nav = Self::nav(e.clone());
         let assets = shares * nav / supply;
@@ -322,11 +338,11 @@ impl Staking {
         p.assets += assets;
         p.claimable_at = e.ledger().timestamp() + cooldown;
         e.storage().persistent().set(&key, &p);
-        assets
+        Ok(assets)
     }
 
     /// Claim agUSD from a matured unstake request.
-    pub fn claim(e: Env, from: Address) -> i128 {
+    pub fn claim(e: Env, from: Address) -> Result<i128, StakingError> {
         from.require_auth();
         let key = Store::Pending(from.clone());
         let p: Pending = e
@@ -335,15 +351,19 @@ impl Staking {
             .get(&key)
             .unwrap_or(Pending { assets: 0, claimable_at: 0 });
         if p.assets <= 0 {
-            panic!("nothing pending");
+            return Err(StakingError::NothingPending);
         }
         if e.ledger().timestamp() < p.claimable_at {
-            panic!("still in cooldown");
+            return Err(StakingError::StillInCooldown);
         }
-        let agusd: Address = e.storage().instance().get(&Cfg::AgUsd).unwrap();
+        let agusd: Address = e
+            .storage()
+            .instance()
+            .get(&Cfg::AgUsd)
+            .ok_or(StakingError::NotInitialized)?;
         TokenClient::new(&e, &agusd).transfer(&e.current_contract_address(), &from, &p.assets);
         e.storage().persistent().remove(&key);
-        p.assets
+        Ok(p.assets)
     }
 
     /// Strategist delivers yield: transfers agUSD into the vault and raises the
@@ -353,16 +373,21 @@ impl Staking {
     /// Named for the convention Agama committed to. The distributor is the
     /// stored admin and authorizes the call itself, so the agUSD comes out of
     /// an account that signed for it: this cannot mint value, only move it in.
-    pub fn distribute_yield(e: Env, amount: i128) {
+    pub fn distribute_yield(e: Env, amount: i128) -> Result<(), StakingError> {
         let admin: Address = e.storage().instance().get(&Cfg::Admin).unwrap();
         admin.require_auth();
         if amount <= 0 {
-            panic!("amount must be positive");
+            return Err(StakingError::InvalidAmount);
         }
-        let agusd: Address = e.storage().instance().get(&Cfg::AgUsd).unwrap();
+        let agusd: Address = e
+            .storage()
+            .instance()
+            .get(&Cfg::AgUsd)
+            .ok_or(StakingError::NotInitialized)?;
         TokenClient::new(&e, &agusd).transfer(&admin, &e.current_contract_address(), &amount);
         let nav = Self::nav(e.clone());
         e.storage().instance().set(&Cfg::Nav, &(nav + amount));
+        Ok(())
     }
 
     /// Record the off-chain "Kiro" liquidity-strategy allocations (UI display only).
