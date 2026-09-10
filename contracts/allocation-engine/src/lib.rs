@@ -181,6 +181,9 @@ pub trait VaultInterface {
     /// the Engine can instruct a release but never holds the funds itself. The
     /// Vault applies its own floor to this and can refuse.
     fn settle_allocation(e: Env, pool: Address, amount: i128);
+    /// The token the Vault custodies, which is the one an adapter has to be
+    /// holding for anything it is sent to be able to come back.
+    fn usdc(e: Env) -> Address;
     /// Tell the Vault that `amount` has come back from a pool. The Vault
     /// verifies it against its own balance before believing it.
     fn record_repayment(e: Env, amount: i128);
@@ -213,6 +216,10 @@ pub trait PoolAdapter {
     /// capital rather than a withdrawal.
     fn recover_surplus(e: Env, caller: Address) -> i128;
     fn get_exposure(e: Env) -> i128;
+    /// The token this adapter transfers with. Checked against the Vault's,
+    /// because an adapter wired to the right contracts and the wrong asset
+    /// takes the Vault's USDC and can never send it back.
+    fn usdc(e: Env) -> Address;
     /// The Engine this adapter takes instructions from.
     fn engine(e: Env) -> Address;
     /// The Vault this adapter repays. `register_pool` checks both, because an
@@ -1600,10 +1607,27 @@ impl AllocationEngine {
         let adapter = PoolAdapterClient::new(e, pool_id);
         match (adapter.try_engine(), adapter.try_vault()) {
             (Ok(Ok(engine)), Ok(Ok(vault)))
-                if engine == e.current_contract_address() && vault == vault_address =>
-            {
-                Ok(())
-            }
+                if engine == e.current_contract_address() && vault == vault_address => {}
+            _ => return Err(EngineError::AdapterMismatch),
+        }
+        // Two edges of the triangle were checked and the third was not. Both of
+        // the above are about which contracts are wired together; this one is
+        // about the asset, and the asset is what the transfers actually move.
+        //
+        // An adapter holding the right pointers and the wrong token passes
+        // everything else and is a one way door. `settle_allocation` sends what
+        // the Vault holds, so real USDC arrives; `deallocate` sends back the
+        // token the adapter stores, of which it has none, and traps;
+        // `recover_surplus` measures its surplus in that same token and reports
+        // nothing to recover. A write-down clears all three books and the money
+        // stays where it is. That is the failure that retired three generations
+        // of the private credit adapter, reachable here through a constructor
+        // argument nothing interrogated.
+        match (
+            adapter.try_usdc(),
+            VaultClient::new(e, &vault_address).try_usdc(),
+        ) {
+            (Ok(Ok(held)), Ok(Ok(custodied))) if held == custodied => Ok(()),
             _ => Err(EngineError::AdapterMismatch),
         }
     }
