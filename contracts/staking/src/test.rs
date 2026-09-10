@@ -354,3 +354,132 @@ fn the_admin_role_moves_only_to_an_address_that_signs_for_it() {
         Err(Ok(StakingError::NoPendingAdmin))
     );
 }
+
+/// Every refusal in this contract used to be a string panic.
+///
+/// It was the only contract in the repository whose core entry points trapped
+/// rather than returning a code, so an integrator could see that a stake had
+/// failed and not why, and could not branch on it. The documentation was honest
+/// about it, which is not the same as it being right: it listed the 800 range
+/// for the admin calls and "traps: amount must be positive" for the ones a user
+/// actually calls.
+#[test]
+fn every_refusal_returns_a_code_rather_than_trapping() {
+    let f = setup();
+    let alice = Address::generate(&f.e);
+    fund_agusd(&f, &alice, 1_000_0000000);
+
+    assert_eq!(
+        f.vault.try_stake(&alice, &0),
+        Err(Ok(StakingError::InvalidAmount))
+    );
+    assert_eq!(
+        f.vault.try_stake(&alice, &-1),
+        Err(Ok(StakingError::InvalidAmount))
+    );
+    assert_eq!(
+        f.vault.try_request_unstake(&alice, &0),
+        Err(Ok(StakingError::InvalidAmount))
+    );
+    // Nothing has been staked, so there are no shares to price an unstake with.
+    assert_eq!(
+        f.vault.try_request_unstake(&alice, &1),
+        Err(Ok(StakingError::NoSupply))
+    );
+    assert_eq!(
+        f.vault.try_claim(&alice),
+        Err(Ok(StakingError::NothingPending))
+    );
+    assert_eq!(
+        f.vault.try_distribute_yield(&0),
+        Err(Ok(StakingError::InvalidAmount))
+    );
+
+    f.vault.stake(&alice, &100_0000000);
+    f.vault.request_unstake(&alice, &50_0000000);
+    assert_eq!(
+        f.vault.try_claim(&alice),
+        Err(Ok(StakingError::StillInCooldown))
+    );
+    f.e.ledger().set_timestamp(1_000 + COOLDOWN + 1);
+    f.vault.claim(&alice);
+}
+
+/// The custody invariant: everything this contract holds is either priced into
+/// the share price or owed to somebody who has already left.
+///
+/// `nav` is a stored counter rather than a balance read, which is what makes
+/// the share price undonatable: sending agUSD to this address directly does not
+/// move `exchange_rate` by a stroop, so the first staker cannot be sandwiched
+/// by a donation the way a vault that reads its own balance can. The price of
+/// that is a second thing to keep in step, and this is what keeps it honest:
+/// after every operation the balance has to equal `nav` plus everything sitting
+/// in a pending unstake.
+///
+/// `request_unstake` is the interesting one. It burns the shares and takes the
+/// assets out of `nav` immediately, while the agUSD stays here until the
+/// cooldown runs out. So during the cooldown the contract is holding money that
+/// is no longer part of the share price and belongs to somebody who has already
+/// gone, which is exactly the distinction the Vault draws between its balance
+/// and its free reserves.
+#[test]
+fn what_this_contract_holds_is_always_navsized_plus_what_it_owes() {
+    let f = setup();
+    let alice = Address::generate(&f.e);
+    let bob = Address::generate(&f.e);
+    fund_agusd(&f, &alice, 1_000_0000000);
+    fund_agusd(&f, &bob, 1_000_0000000);
+    fund_agusd(&f, &f.admin, 500_0000000);
+
+    let held = |f: &Fix| f.ag.balance(&f.vault.address);
+    let owed = |f: &Fix, who: &Address| f.vault.pending(who).assets;
+    let check = |f: &Fix, note: &str| {
+        assert_eq!(
+            held(f),
+            f.vault.nav() + owed(f, &alice) + owed(f, &bob),
+            "{}",
+            note
+        );
+    };
+
+    check(&f, "empty");
+    f.vault.stake(&alice, &400_0000000);
+    check(&f, "one staker");
+    f.vault.stake(&bob, &600_0000000);
+    check(&f, "two stakers");
+
+    f.vault.distribute_yield(&100_0000000);
+    check(&f, "after yield");
+
+    // Burned shares, assets out of nav, agUSD still here.
+    f.vault.request_unstake(&alice, &200_0000000);
+    check(&f, "one unstake pending");
+    assert!(owed(&f, &alice) > 0, "the request recorded nothing");
+
+    // Yield distributed while a claim is pending goes to whoever is still
+    // staked, and the pending balance does not move.
+    let alice_owed = owed(&f, &alice);
+    f.vault.distribute_yield(&50_0000000);
+    assert_eq!(owed(&f, &alice), alice_owed, "a departed staker took yield");
+    check(&f, "yield while a claim is pending");
+
+    f.e.ledger().set_timestamp(1_000 + COOLDOWN + 1);
+    f.vault.claim(&alice);
+    check(&f, "after the claim is paid");
+
+    // A donation raises the balance and nothing else, which is the invariant
+    // failing in the safe direction: it is not priced in, so it cannot move the
+    // share price, and it is not owed to anybody, so it strands.
+    let rate_before = f.vault.exchange_rate();
+    f.ag.transfer(&bob, &f.vault.address, &10_0000000);
+    assert_eq!(
+        f.vault.exchange_rate(),
+        rate_before,
+        "a direct transfer moved the share price"
+    );
+    assert_eq!(
+        held(&f),
+        f.vault.nav() + owed(&f, &alice) + owed(&f, &bob) + 10_0000000,
+        "the donation is the whole of the difference"
+    );
+}
