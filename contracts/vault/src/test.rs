@@ -1850,3 +1850,154 @@ fn a_vault_that_has_not_been_given_an_engine_releases_nothing() {
     assert_eq!(bare.deployed_capital(), 100 * USDC);
     assert_eq!(f.usdc.balance(&spare_pool), 100 * USDC);
 }
+
+/// `set_oracle` was the one counterparty setter on this Vault that proved
+/// nothing about what it was pointed at.
+///
+/// `set_agusd` requires the token to name this Vault as its minter and
+/// `set_engine` requires the Engine to govern this Vault and arrive with an
+/// empty book. This wrote both halves of the oracle pair after checking only
+/// that the caller was the admin, so the address did not have to be a contract,
+/// a contract did not have to be an oracle, and an oracle did not have to have
+/// heard of the feed.
+#[test]
+fn the_oracle_pointer_refuses_an_address_that_is_not_an_oracle() {
+    let f = setup();
+    let not_a_contract = Address::generate(&f.e);
+    assert_eq!(
+        f.vault
+            .try_set_oracle(&f.admin, &not_a_contract, &oracle_adapter::FEED_PC_NAV),
+        Err(Ok(VaultError::OracleMismatch))
+    );
+    // A contract that is not an oracle fails the same way: the USDC token has
+    // no get_feed to answer with.
+    assert_eq!(
+        f.vault
+            .try_set_oracle(&f.admin, &f.usdc.address, &oracle_adapter::FEED_PC_NAV),
+        Err(Ok(VaultError::OracleMismatch))
+    );
+    // And the pointer did not move under either.
+    assert_eq!(f.vault.oracle(), f.oracle.address);
+}
+
+#[test]
+fn the_oracle_pointer_refuses_a_feed_the_oracle_does_not_know() {
+    let f = setup();
+    assert_eq!(
+        f.vault
+            .try_set_oracle(&f.admin, &f.oracle.address, &symbol_short!("NOPE")),
+        Err(Ok(VaultError::OracleMismatch))
+    );
+    assert_eq!(f.vault.oracle_feed(), oracle_adapter::FEED_PC_NAV);
+}
+
+/// What the check deliberately does not ask about is whether the feed has a
+/// value yet, or whether its last one is fresh. Pointing a Vault at a newly
+/// deployed oracle before its first report, or at one whose reporter is down,
+/// is an ordinary operation and is often the reason for repointing at all.
+#[test]
+fn the_oracle_pointer_moves_to_a_registered_feed_that_has_never_reported() {
+    let f = setup();
+    let fresh_id = f.e.register(OracleAdapter, (f.admin.clone(),));
+    let fresh = OracleAdapterClient::new(&f.e, &fresh_id);
+    fresh.add_reporter(&f.admin, &f.reporter);
+    fresh.register_feed(
+        &f.admin,
+        &oracle_adapter::FEED_PC_NAV,
+        &oracle_adapter::PRIVATE_CREDIT_STALENESS,
+        &oracle_adapter::PRIVATE_CREDIT_DEVIATION_BPS,
+        &oracle_adapter::NAV_BAND_MIN,
+        &oracle_adapter::NAV_BAND_MAX,
+        &oracle_adapter::NAV_MIN_INTERVAL,
+    );
+
+    f.vault
+        .set_oracle(&f.admin, &fresh_id, &oracle_adapter::FEED_PC_NAV);
+    assert_eq!(f.vault.oracle(), fresh_id);
+
+    // The pair is accepted, and reading it surfaces the Oracle Adapter's own
+    // error unchanged: 512 is its NoNavReported. That propagation is on purpose
+    // rather than an oversight, because 504, 511 and 512 are three different
+    // facts about the feed and a single Vault error would be one.
+    assert_eq!(
+        f.vault.try_get_nav(),
+        Err(Err(soroban_sdk::InvokeError::Contract(512)))
+    );
+
+    // And once the feed reports, the Vault reads it.
+    fresh.push_nav(
+        &f.reporter,
+        &oracle_adapter::FEED_PC_NAV,
+        &(11 * 1_000_000),
+        &f.e.ledger().timestamp(),
+    );
+    assert_eq!(f.vault.get_nav(), 11 * 1_000_000);
+}
+
+/// Both halves of the pair are readable, which they were not.
+///
+/// Every other counterparty on this Vault had a getter and this one did not, so
+/// the only way to find out where it pointed was to call `get_nav()` and infer
+/// it from the number. That inference is exactly what an unvalidated setter
+/// makes unreliable, which is why the two findings belong together: the missing
+/// getter is what let the missing check go unnoticed.
+#[test]
+fn the_oracle_pair_can_be_read_back() {
+    let f = setup();
+    assert_eq!(f.vault.oracle(), f.oracle.address);
+    assert_eq!(f.vault.oracle_feed(), oracle_adapter::FEED_PC_NAV);
+
+    f.oracle.register_feed(
+        &f.admin,
+        &oracle_adapter::FEED_EF_BOND,
+        &oracle_adapter::ETHERFUSE_STALENESS,
+        &oracle_adapter::ETHERFUSE_DEVIATION_BPS,
+        &oracle_adapter::NAV_BAND_MIN,
+        &oracle_adapter::NAV_BAND_MAX,
+        &oracle_adapter::NAV_MIN_INTERVAL,
+    );
+    f.vault
+        .set_oracle(&f.admin, &f.oracle.address, &oracle_adapter::FEED_EF_BOND);
+    assert_eq!(f.vault.oracle_feed(), oracle_adapter::FEED_EF_BOND);
+}
+
+/// The case no check can reach, stated as a case rather than left to be found.
+///
+/// A registered feed on a real oracle passes, and being the wrong feed for this
+/// Vault's book is not something either contract can know. A Vault holding
+/// private credit can be pointed at a government bond price and both sides will
+/// agree it is a reasonable thing to do, after which `get_nav()` reports a
+/// perfectly plausible number that is about somebody else's assets.
+///
+/// That is why it is worth being able to read the pair back. The check narrows
+/// the failure from "any address at all" to "a real feed that is the wrong
+/// one", and the getters are what make the remainder visible instead of
+/// inferable.
+#[test]
+fn the_wrong_feed_on_the_right_oracle_is_an_operators_assertion() {
+    let f = setup();
+    f.oracle.register_feed(
+        &f.admin,
+        &oracle_adapter::FEED_EF_BOND,
+        &oracle_adapter::ETHERFUSE_STALENESS,
+        &oracle_adapter::ETHERFUSE_DEVIATION_BPS,
+        &oracle_adapter::NAV_BAND_MIN,
+        &oracle_adapter::NAV_BAND_MAX,
+        &oracle_adapter::NAV_MIN_INTERVAL,
+    );
+    f.oracle.push_nav(
+        &f.reporter,
+        &oracle_adapter::FEED_EF_BOND,
+        &(1_025 * 10_000),
+        &f.e.ledger().timestamp(),
+    );
+
+    // Accepted, and now the Vault reports a bond price as its NAV.
+    f.vault
+        .set_oracle(&f.admin, &f.oracle.address, &oracle_adapter::FEED_EF_BOND);
+    assert_eq!(f.vault.get_nav(), 1_025 * 10_000);
+
+    // What has changed is that an operator can see it, in one call, without
+    // having to recognise the number.
+    assert_eq!(f.vault.oracle_feed(), oracle_adapter::FEED_EF_BOND);
+}
