@@ -4,7 +4,9 @@ use etherfuse::{EtherfuseAdapter, EtherfuseAdapterClient};
 use mock_usdc::{MockUsdc, MockUsdcClient};
 use private_credit::{PrivateCreditAdapter, PrivateCreditAdapterClient};
 use soroban_sdk::testutils::{Address as _, MockAuth, MockAuthInvoke};
-use soroban_sdk::{contract, contractimpl, symbol_short, token::TokenClient, IntoVal, String};
+use soroban_sdk::{
+    contract, contractimpl, symbol_short, token::TokenClient, IntoVal, InvokeError, String,
+};
 
 const USDC: i128 = 10_000_000; // 1 USDC at 7 decimals
 const FUNDING: i128 = 1_000 * USDC;
@@ -1504,4 +1506,238 @@ fn set_vault_refuses_exactly_what_the_constructor_refuses() {
     MockVaultClient::new(&f.e, &good_vault).initialize(&f.admin, &f.usdc.address);
     f.engine.set_vault(&f.admin, &good_vault);
     assert_eq!(f.engine.vault(), good_vault);
+}
+
+/// M1 of the third review, as the state it strands and the call that unstrands
+/// it.
+///
+/// The adapter's `recover_surplus` may be taken by the adapter's own admin as
+/// well as by the Engine. That fallback exists so that an adapter stuck to
+/// superseded counterparties can be unstuck without a working Engine, and taken
+/// that way it is described as the conservative direction: the cash reaches the
+/// Vault and no book moves. What it does not say is that the books can then
+/// never move at all. The surplus is gone, so `recover` reverts on the way in
+/// and `record_recovery` has no other caller, and the write-down the sweep was
+/// going to release is charged against the pool's cap and sitting in the
+/// reserve floor's base for good.
+#[test]
+fn a_surplus_swept_by_the_adapter_admin_can_still_be_booked() {
+    let f = setup();
+    let vault = MockVaultClient::new(&f.e, &f.vault_id);
+    f.engine.allocate(&f.admin, &f.pool_a, &(300 * USDC));
+    f.engine.write_down(
+        &f.admin,
+        &f.pool_a,
+        &(300 * USDC),
+        &symbol_short!("DEFAULT"),
+    );
+
+    // The position is written off on all three books and the adapter is still
+    // holding every dollar of it, which is what makes the whole balance a
+    // surplus.
+    assert_eq!(f.engine.written_off_pool(&f.pool_a), 300 * USDC);
+    assert_eq!(f.engine.written_off(), 300 * USDC);
+    assert_eq!(f.usdc.balance(&f.pool_a), 300 * USDC);
+
+    // The adapter admin takes the fallback. The cash goes to the Vault, which
+    // is the whole of what it promises.
+    f.adapter_a.recover_surplus(&f.admin);
+    assert_eq!(f.usdc.balance(&f.pool_a), 0);
+
+    // And now the ordinary path is closed, permanently: there is no surplus
+    // left for the Engine to sweep, so `recover` cannot reach the Vault leg at
+    // all. Before `book_recovery` this was the end of it.
+    // 611 is the adapter's own `NothingToRecover`, arriving as a sub-call
+    // error rather than an Engine one because `recover` calls the adapter
+    // without `try_`: there is no amount to pass on, so there is nothing for
+    // the Engine to decide about.
+    assert_eq!(
+        f.engine.try_recover(&f.admin, &f.pool_a),
+        Err(Err(InvokeError::Contract(611)))
+    );
+    assert_eq!(f.engine.written_off_pool(&f.pool_a), 300 * USDC);
+
+    // The booking on its own, against cash the Vault already holds.
+    f.engine.book_recovery(&f.admin, &f.pool_a, &(300 * USDC));
+
+    assert_eq!(vault.recovered(), 300 * USDC);
+    assert_eq!(f.engine.written_off_pool(&f.pool_a), 0);
+    assert_eq!(f.engine.written_off(), 0);
+
+    // The pool's cap is released with its charge, which is the point of
+    // releasing it: a loss that did not happen stops consuming a limit.
+    f.engine.allocate(&f.admin, &f.pool_a, &(300 * USDC));
+    assert_eq!(f.engine.get_exposure(&f.pool_a), 300 * USDC);
+}
+
+/// A recovery booked directly and a recovery swept through the adapter leave
+/// the Engine in states that cannot be told apart. That is the property that
+/// makes the new entry point a second door onto the same room rather than a
+/// second room.
+#[test]
+fn a_booked_recovery_and_a_swept_one_land_in_the_same_place() {
+    let swept = {
+        let f = setup();
+        f.engine.allocate(&f.admin, &f.pool_a, &(300 * USDC));
+        f.engine.write_down(
+            &f.admin,
+            &f.pool_a,
+            &(300 * USDC),
+            &symbol_short!("DEFAULT"),
+        );
+        f.engine.recover(&f.admin, &f.pool_a);
+        (
+            f.engine.written_off(),
+            f.engine.written_off_pool(&f.pool_a),
+            f.engine.total_allocated(),
+            MockVaultClient::new(&f.e, &f.vault_id).recovered(),
+        )
+    };
+
+    let booked = {
+        let f = setup();
+        f.engine.allocate(&f.admin, &f.pool_a, &(300 * USDC));
+        f.engine.write_down(
+            &f.admin,
+            &f.pool_a,
+            &(300 * USDC),
+            &symbol_short!("DEFAULT"),
+        );
+        f.adapter_a.recover_surplus(&f.admin);
+        f.engine.book_recovery(&f.admin, &f.pool_a, &(300 * USDC));
+        (
+            f.engine.written_off(),
+            f.engine.written_off_pool(&f.pool_a),
+            f.engine.total_allocated(),
+            MockVaultClient::new(&f.e, &f.vault_id).recovered(),
+        )
+    };
+
+    assert_eq!(swept, booked);
+}
+
+/// Surplus above the losses on the book is not an error and must not release
+/// more cap than the pool was ever charged. Interest paid over principal was
+/// never written off, so there is nothing of the pool's for it to give back.
+#[test]
+fn a_booked_recovery_releases_no_more_than_the_pool_was_charged() {
+    let f = setup();
+    // Both pools are fronted by the same originator, so the pair has to stay
+    // inside the originator cap as well as their own.
+    f.engine.allocate(&f.admin, &f.pool_a, &(250 * USDC));
+    f.engine.allocate(&f.admin, &f.pool_b, &(100 * USDC));
+    f.engine.write_down(
+        &f.admin,
+        &f.pool_a,
+        &(100 * USDC),
+        &symbol_short!("DEFAULT"),
+    );
+    f.engine.write_down(
+        &f.admin,
+        &f.pool_b,
+        &(100 * USDC),
+        &symbol_short!("DEFAULT"),
+    );
+    assert_eq!(f.engine.written_off(), 200 * USDC);
+
+    // 150 against a pool charged 100. The pool gives back its 100 and not a
+    // stroop of pool B's, while the global total takes the whole 150, which is
+    // the Vault's own rule for `recognised_losses` and is why the two stay
+    // equal.
+    f.engine.book_recovery(&f.admin, &f.pool_a, &(150 * USDC));
+    assert_eq!(f.engine.written_off_pool(&f.pool_a), 0);
+    assert_eq!(f.engine.written_off_pool(&f.pool_b), 100 * USDC);
+    assert_eq!(f.engine.written_off(), 50 * USDC);
+}
+
+/// The new entry point moves `recognised_losses`, which is a term in the
+/// reserve floor's base, so it is gated exactly as `recover` is: this Engine's
+/// admin, and the Vault's admin, which have to be the same address for the
+/// Vault leg to be signable at all.
+#[test]
+fn only_the_admin_can_book_a_recovery() {
+    let f = setup();
+    let stranger = Address::generate(&f.e);
+    f.engine.allocate(&f.admin, &f.pool_a, &(300 * USDC));
+    f.engine.write_down(
+        &f.admin,
+        &f.pool_a,
+        &(300 * USDC),
+        &symbol_short!("DEFAULT"),
+    );
+    f.adapter_a.recover_surplus(&f.admin);
+
+    assert_eq!(
+        f.engine
+            .try_book_recovery(&stranger, &f.pool_a, &(300 * USDC)),
+        Err(Ok(EngineError::NotAdmin))
+    );
+    assert_eq!(
+        f.engine.try_book_recovery(&f.admin, &f.pool_c, &0i128),
+        Err(Ok(EngineError::InvalidAmount))
+    );
+    let unregistered = extra_private_credit_pool(&f);
+    assert_eq!(
+        f.engine
+            .try_book_recovery(&f.admin, &unregistered, &USDC),
+        Err(Ok(EngineError::PoolNotRegistered))
+    );
+    assert_eq!(f.engine.written_off_pool(&f.pool_a), 300 * USDC);
+}
+
+/// M3 of the third review, re-derived and refused.
+///
+/// The finding said an originator repaying the Vault directly leaves the
+/// adapter with nothing to transfer, so `deallocate` panics and the position
+/// reports face value forever. The premise does not hold for these adapters,
+/// and this test is here to keep it not holding. USDC leaves an adapter by
+/// exactly two doors, `deallocate`, which lowers the exposure by what it sends,
+/// and `recover_surplus`, which sends only what is above the exposure and so
+/// stops at equality. Nothing else can move it, in particular nothing can pay
+/// it out to an originator. So `balance >= exposure` from a start of zero and
+/// zero, and `deallocate` is always funded for what it owes.
+///
+/// The day this contract set grows a disbursement path, that stops being true
+/// and this test is what says so, which is the reason to write it down as an
+/// invariant rather than as a note. There is no `book_repayment` because there
+/// is no state that needs one.
+#[test]
+fn an_adapter_can_never_hold_less_usdc_than_it_has_booked() {
+    let f = setup();
+    let check = |f: &Fix| {
+        assert!(f.usdc.balance(&f.pool_a) >= f.adapter_a.get_exposure());
+        assert!(f.usdc.balance(&f.pool_c) >= f.adapter_c.get_exposure());
+    };
+
+    check(&f);
+    f.engine.allocate(&f.admin, &f.pool_a, &(250 * USDC));
+    f.engine.allocate(&f.admin, &f.pool_c, &(150 * USDC));
+    check(&f);
+    f.engine.deallocate(&f.pool_a, &(120 * USDC));
+    check(&f);
+    f.engine
+        .write_down(&f.admin, &f.pool_a, &(80 * USDC), &symbol_short!("DEFAULT"));
+    check(&f);
+    f.engine.recover(&f.admin, &f.pool_a);
+    check(&f);
+    // The adapter admin's fallback sweep, taken on a position with nothing
+    // written off, moves the balance down to the exposure and stops there.
+    f.usdc.faucet(&f.pool_c, &(10 * USDC));
+    check(&f);
+    f.adapter_c.recover_surplus(&f.admin);
+    check(&f);
+
+    // A donation only ever widens the gap, so it cannot break the invariant
+    // either, and the surplus it creates is sweepable rather than stuck.
+    f.usdc.faucet(&f.pool_a, &(50 * USDC));
+    check(&f);
+    f.engine.recover(&f.admin, &f.pool_a);
+    check(&f);
+
+    // The whole remaining position comes home, which is the property the
+    // invariant exists to guarantee: `deallocate` is never short.
+    f.engine
+        .deallocate(&f.pool_a, &f.engine.get_exposure(&f.pool_a));
+    assert_eq!(f.engine.get_exposure(&f.pool_a), 0);
+    check(&f);
 }

@@ -1032,6 +1032,87 @@ impl AllocationEngine {
         Ok(amount)
     }
 
+    /// Book a recovery against cash that is already in the Vault, for a pool
+    /// whose adapter can no longer deliver it.
+    ///
+    /// `recover` sweeps the adapter and books what it swept, in one call, and
+    /// that is the path. The gap is on the far side of it. The adapter's
+    /// `recover_surplus` may also be taken by the adapter's own admin, which
+    /// exists so that an adapter stuck to superseded counterparties can be
+    /// unstuck without a working Engine. Taken that way the cash reaches the
+    /// Vault and no book moves, which the adapter calls the conservative
+    /// direction: true of the money, false of the consequences. The adapter's
+    /// surplus is now zero, so `recover` answers `NothingToRecover` and the
+    /// whole call reverts, and `record_recovery` is reachable from nowhere
+    /// else. The write-down that sweep was going to release then stays on
+    /// `recognised_losses` for the life of the Vault, freezing the floor's
+    /// share of it as permanently undeployable reserves, and stays on the
+    /// pool's concentration charge for the life of the Engine. The operator can
+    /// lower the floor or widen the global caps to work around it, which is a
+    /// parameter change standing in for a correction.
+    ///
+    /// So the sweep and the booking come apart, and this is the booking alone.
+    /// It asserts nothing. The amount is bounded by the Vault's own unaccounted
+    /// balance, exactly as it is when `recover` supplies it, and `floor_base`
+    /// is unchanged where the recovery lands against a loss and rises where it
+    /// exceeds one, exactly as it is when `recover` supplies it. What a
+    /// write-down cannot buy, this cannot buy back.
+    ///
+    /// It grants no authority that did not already exist, and the third review
+    /// is why that is worth stating rather than assuming. An admin can send
+    /// USDC to an adapter and sweep it through `recover` today, and the
+    /// headroom that buys back is exactly the headroom their own dollars just
+    /// bought. Where the cash came from was already irrelevant to the
+    /// arithmetic. This takes the adapter out of a path the adapter was not the
+    /// thing securing.
+    ///
+    /// There is no counterparty check here, for the reason `write_down` does
+    /// not have one: nothing moves through the adapter, and an adapter left
+    /// behind by a `set_vault` is precisely the case this has to keep serving,
+    /// because it is the one whose charge nothing else can release.
+    pub fn book_recovery(
+        e: Env,
+        admin: Address,
+        pool_id: Address,
+        amount: i128,
+    ) -> Result<(), EngineError> {
+        Self::require_admin(&e, &admin)?;
+        if amount <= 0 {
+            return Err(EngineError::InvalidAmount);
+        }
+        if !Self::pool_map(&e).contains_key(pool_id.clone()) {
+            return Err(EngineError::PoolNotRegistered);
+        }
+        let vault_address = Self::vault(e.clone())?;
+        let vault = VaultClient::new(&e, &vault_address);
+        if vault.admin() != admin {
+            return Err(EngineError::AdminMismatch);
+        }
+
+        vault.record_recovery(&admin, &amount);
+
+        // The same two counters `recover` moves, reduced by the same rule, so
+        // that a recovery booked this way and a recovery swept through the
+        // adapter leave the Engine in states that cannot be told apart.
+        let charged = Self::written_off_pool(e.clone(), pool_id.clone());
+        let released = if amount < charged { amount } else { charged };
+        Self::write_written_off_pool(&e, &pool_id, charged - released);
+
+        let total = Self::written_off(e.clone());
+        let applied = if amount < total { amount } else { total };
+        Self::write_written_off(&e, total - applied);
+        Self::bump_instance(&e);
+
+        Recovered {
+            pool: pool_id,
+            amount,
+            released,
+            written_off: total - applied,
+        }
+        .publish(&e);
+        Ok(())
+    }
+
     /// Hand the admin role to another address, in two steps.
     ///
     /// This contract had no rotation at all, which made the admin key a single
