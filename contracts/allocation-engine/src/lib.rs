@@ -265,6 +265,15 @@ pub enum EngineError {
     /// The address offered as this Engine's Vault does not answer the Vault
     /// interface, or answers it with a different admin.
     VaultMismatch = 419,
+    /// A pool cannot leave the registry while this Engine or its adapter still
+    /// books capital in it.
+    PoolHasExposure = 420,
+    /// A pool cannot leave the registry while a write-down is still charged
+    /// against it, because the aggregate caps are built by walking the registry
+    /// and the charge would leave the originator's and the jurisdiction's sums
+    /// with it. Freeze it with `set_pool_cap(pool, 0)` instead, or recover the
+    /// loss first.
+    PoolHasWrittenOffCharge = 421,
 }
 
 /// Whitelist entry for a pool. `originator` and `jurisdiction` are the keys the
@@ -398,6 +407,31 @@ pub struct WrittenDown {
     pub pool_exposure: i128,
     /// Short code for why, recorded on-chain next to the number.
     pub reason: Symbol,
+}
+
+/// Emitted when a registered pool's own concentration cap moves. The global
+/// caps have carried an event since they existed; this is the per-pool figure,
+/// which is the tighter of the two wherever it binds, and a limit that can
+/// change without saying so is a limit nobody can reconstruct after the fact.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PoolCapSet {
+    #[topic]
+    pub pool: Address,
+    pub cap_bps: u32,
+}
+
+/// Emitted when a pool leaves the registry. It carries the originator and the
+/// jurisdiction because those are what the entry was contributing to: the
+/// aggregate caps are built by walking the registry, so a removal moves two
+/// sums that nothing else in the event stream would explain.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PoolUnregistered {
+    #[topic]
+    pub pool: Address,
+    pub originator: Symbol,
+    pub jurisdiction: Symbol,
 }
 
 /// Emitted when stranded capital is brought back from an adapter. It is the
@@ -599,6 +633,146 @@ impl AllocationEngine {
             originator,
             jurisdiction,
             cap_bps,
+        }
+        .publish(&e);
+        Ok(())
+    }
+
+    /// Change a registered pool's own concentration cap.
+    ///
+    /// A pool's effective limit is the tighter of its own `cap_bps` and the
+    /// global `caps().pool_bps`, and until this existed only the second of
+    /// those could move. Where a pool's own figure was the binding one it was
+    /// binding for the life of the Engine, whatever happened to the pool: the
+    /// module doc said of a defaulted originator that an operator who has
+    /// decided the originator is good for it can widen the cap, and that was
+    /// true only when the global cap happened to be the one doing the work.
+    ///
+    /// The interesting direction is down rather than up. `set_pool_cap(pool, 0)`
+    /// stops new capital reaching a pool without touching a stroop of what it
+    /// already holds and without releasing a stroop of what it has been charged,
+    /// which is the delisting that works on a pool in default. `unregister_pool`
+    /// deliberately refuses that pool, because dropping it from the registry
+    /// would drop its write-off out of its originator's and its jurisdiction's
+    /// sums, and a defaulted originator getting its limit back by defaulting is
+    /// the thing the charge exists to prevent. A cap of zero freezes it in
+    /// place instead, which is the honest version of the same intent.
+    ///
+    /// Lowering below what the pool currently holds is allowed and is not an
+    /// oversight. The caps are checked when capital is deployed, so a pool over
+    /// its new cap simply receives nothing more, and refusing the call would
+    /// mean an operator watching a position deteriorate could not stop it
+    /// growing until it had already shrunk.
+    pub fn set_pool_cap(
+        e: Env,
+        admin: Address,
+        pool_id: Address,
+        cap_bps: u32,
+    ) -> Result<(), EngineError> {
+        Self::require_admin(&e, &admin)?;
+        if cap_bps as i128 > BPS {
+            return Err(EngineError::InvalidCap);
+        }
+        let mut pools = Self::pool_map(&e);
+        let mut pool = pools
+            .get(pool_id.clone())
+            .ok_or(EngineError::PoolNotRegistered)?;
+        pool.cap_bps = cap_bps;
+        pools.set(pool_id.clone(), pool);
+        e.storage().instance().set(&Cfg::Pools, &pools);
+        Self::bump_instance(&e);
+        PoolCapSet {
+            pool: pool_id,
+            cap_bps,
+        }
+        .publish(&e);
+        Ok(())
+    }
+
+    /// Take a pool out of the registry.
+    ///
+    /// The registry was a map with no way to remove an entry, and that is not
+    /// only an operational inconvenience. It is half of the third review's one
+    /// High finding: `register_pool` proves an adapter names this Engine and
+    /// this Engine's Vault, `set_vault` can falsify the second half of that for
+    /// every entry at once, and with no way to clear the registry the answer had
+    /// to be re-running the check on every call that moves capital. That fix
+    /// stands and is the right one, because a check that has to hold at the
+    /// moment of use should be run at the moment of use. This is the other half:
+    /// an entry that has gone stale can now be removed rather than defended
+    /// against forever.
+    ///
+    /// Three conditions, and the third is the one that matters.
+    ///
+    /// The Engine's exposure for the pool has to be zero, or the Engine would
+    /// forget capital that is still out. The adapter's own book has to agree,
+    /// because two books disagreeing at the moment one of them stops being read
+    /// is how a discrepancy becomes permanent.
+    ///
+    /// And the pool's written-off charge has to be zero. A write-down is charged
+    /// against the pool's cap, and through it against its originator's and its
+    /// jurisdiction's, until the cash comes back; those sums are built by walking
+    /// this registry, so an entry leaving it takes its charge out of them. A
+    /// defaulted pool could then be delisted and a fresh adapter registered under
+    /// the same originator with the whole limit available again, which is the
+    /// concentration cap being worked around rather than raised, and it is
+    /// exactly what charging the write-off was introduced to stop. So a pool in
+    /// default cannot be delisted, only frozen with `set_pool_cap(pool, 0)`, and
+    /// it becomes delistable when the loss is recovered rather than when it is
+    /// forgotten.
+    ///
+    /// There is no counterparty check, and its absence is the point rather than
+    /// an omission: the entry most worth removing is the one whose adapter no
+    /// longer names this Engine's Vault, and a check would refuse precisely that
+    /// one.
+    ///
+    /// What this does not reach is USDC sitting in the adapter that no book
+    /// knows about, because the Engine cannot see a token balance. Sweep before
+    /// delisting: `recover` needs the pool registered, and it attributes the
+    /// recovery to the pool the cash actually came from, which nothing can do
+    /// afterwards.
+    pub fn unregister_pool(
+        e: Env,
+        admin: Address,
+        pool_id: Address,
+    ) -> Result<(), EngineError> {
+        Self::require_admin(&e, &admin)?;
+        let mut pools = Self::pool_map(&e);
+        let pool = pools
+            .get(pool_id.clone())
+            .ok_or(EngineError::PoolNotRegistered)?;
+
+        if Self::get_exposure(e.clone(), pool_id.clone()) > 0 {
+            return Err(EngineError::PoolHasExposure);
+        }
+        // The adapter is asked rather than assumed. It is a read, so it answers
+        // even for an adapter this Engine no longer governs, which is the entry
+        // this call exists to remove.
+        if PoolAdapterClient::new(&e, &pool_id).get_exposure() > 0 {
+            return Err(EngineError::PoolHasExposure);
+        }
+        if Self::written_off_pool(e.clone(), pool_id.clone()) > 0 {
+            return Err(EngineError::PoolHasWrittenOffCharge);
+        }
+
+        pools.remove(pool_id.clone());
+        e.storage().instance().set(&Cfg::Pools, &pools);
+        // Both are zero or this call would have refused, so removing them
+        // changes no number. It stops the Engine paying rent on two entries
+        // nothing reads, and it means a pool registered again later starts from
+        // storage that is absent rather than storage that happens to hold zero.
+        e.storage()
+            .persistent()
+            .remove(&Store::Exposure(pool_id.clone()));
+        e.storage()
+            .persistent()
+            .remove(&Store::WrittenOffPool(pool_id.clone()));
+        Self::bump_instance(&e);
+
+        PoolUnregistered {
+            pool: pool_id,
+            originator: pool.originator,
+            jurisdiction: pool.jurisdiction,
         }
         .publish(&e);
         Ok(())

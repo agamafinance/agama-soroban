@@ -1794,3 +1794,186 @@ fn a_booked_recovery_releases_the_cap_of_whichever_pool_the_admin_names() {
         150 * USDC
     );
 }
+
+/// M2 of the third review, first half: a registered pool's own cap could never
+/// move, so wherever it was the binding one it was binding for the life of the
+/// Engine.
+#[test]
+fn a_registered_pools_own_cap_can_be_widened_and_tightened() {
+    let f = setup();
+    // Registered at POOL_CAP, 30% of 1000, so 300 is the limit and 400 is not.
+    assert_eq!(
+        f.engine.try_allocate(&f.admin, &f.pool_a, &(400 * USDC)),
+        Err(Ok(EngineError::PoolCapExceeded))
+    );
+
+    // Widened past the global cap, which then becomes the binding one: the
+    // effective limit is the tighter of the two and nothing here can loosen it.
+    f.engine.set_pool_cap(&f.admin, &f.pool_a, &9_000u32);
+    assert_eq!(f.engine.get_pool(&f.pool_a).cap_bps, 9_000);
+    assert_eq!(
+        f.engine.try_allocate(&f.admin, &f.pool_a, &(400 * USDC)),
+        Err(Ok(EngineError::PoolCapExceeded))
+    );
+    f.engine.set_caps(&f.admin, &9_000u32, &9_000u32, &9_000u32);
+    f.engine.allocate(&f.admin, &f.pool_a, &(400 * USDC));
+    assert_eq!(f.engine.get_exposure(&f.pool_a), 400 * USDC);
+
+    // And tightened below what the pool already holds, which stops it growing
+    // without touching what is out. An operator watching a position go wrong
+    // should not have to wait for it to shrink before being allowed to cap it.
+    f.engine.set_pool_cap(&f.admin, &f.pool_a, &0u32);
+    assert_eq!(
+        f.engine.try_allocate(&f.admin, &f.pool_a, &(1 * USDC)),
+        Err(Ok(EngineError::PoolCapExceeded))
+    );
+    assert_eq!(f.engine.get_exposure(&f.pool_a), 400 * USDC);
+    // Frozen, not stranded: the capital still comes home.
+    f.engine.deallocate(&f.pool_a, &(400 * USDC));
+    assert_eq!(f.engine.get_exposure(&f.pool_a), 0);
+}
+
+#[test]
+fn only_the_admin_moves_a_pool_cap_and_only_within_the_bps_range() {
+    let f = setup();
+    let stranger = Address::generate(&f.e);
+    assert_eq!(
+        f.engine.try_set_pool_cap(&stranger, &f.pool_a, &1_000u32),
+        Err(Ok(EngineError::NotAdmin))
+    );
+    assert_eq!(
+        f.engine.try_set_pool_cap(&f.admin, &f.pool_a, &10_001u32),
+        Err(Ok(EngineError::InvalidCap))
+    );
+    let unregistered = extra_private_credit_pool(&f);
+    assert_eq!(
+        f.engine.try_set_pool_cap(&f.admin, &unregistered, &1_000u32),
+        Err(Ok(EngineError::PoolNotRegistered))
+    );
+    assert_eq!(f.engine.get_pool(&f.pool_a).cap_bps, POOL_CAP);
+}
+
+/// M2's second half: the registry was a map with no way to remove an entry.
+///
+/// That is also half of the third review's High finding, which had to be closed
+/// by re-running the counterparty check on every call that moves capital,
+/// because there was no way to clear the entry that had gone stale. That fix
+/// stands. This is the other half.
+#[test]
+fn a_wound_down_pool_leaves_the_registry_and_its_aggregates() {
+    let f = setup();
+    f.engine.allocate(&f.admin, &f.pool_a, &(200 * USDC));
+    f.engine.allocate(&f.admin, &f.pool_b, &(100 * USDC));
+    // Both pools are QIRO, so the originator sum carries both.
+    assert_eq!(f.engine.charged_exposure(&f.pool_a), 200 * USDC);
+    assert_eq!(f.engine.pools().len(), 3);
+
+    // A pool still holding capital does not leave, on either book.
+    assert_eq!(
+        f.engine.try_unregister_pool(&f.admin, &f.pool_a),
+        Err(Ok(EngineError::PoolHasExposure))
+    );
+
+    f.engine.deallocate(&f.pool_a, &(200 * USDC));
+    f.engine.unregister_pool(&f.admin, &f.pool_a);
+    assert_eq!(f.engine.pools().len(), 2);
+    assert_eq!(f.engine.get_exposures().get(f.pool_a.clone()), None);
+
+    // Gone from the registry means gone from the aggregates it fed, so the
+    // originator's remaining pool has the room back.
+    assert_eq!(
+        f.engine.try_allocate(&f.admin, &f.pool_a, &(10 * USDC)),
+        Err(Ok(EngineError::PoolNotRegistered))
+    );
+    f.engine.allocate(&f.admin, &f.pool_b, &(200 * USDC));
+    assert_eq!(f.engine.get_exposure(&f.pool_b), 300 * USDC);
+}
+
+/// The condition that makes delisting safe rather than convenient: a pool in
+/// default cannot walk its write-off out of the originator's and the
+/// jurisdiction's sums by leaving the registry those sums are built from.
+#[test]
+fn a_defaulted_pool_cannot_delist_its_way_out_of_the_charge() {
+    let f = setup();
+    f.engine.allocate(&f.admin, &f.pool_a, &(250 * USDC));
+    f.engine
+        .write_down(&f.admin, &f.pool_a, &(250 * USDC), &symbol_short!("DEFAULT"));
+
+    // Live exposure is zero on both books, so the only thing standing between
+    // this pool and the exit is the charge.
+    assert_eq!(f.engine.get_exposure(&f.pool_a), 0);
+    assert_eq!(f.adapter_a.get_exposure(), 0);
+    assert_eq!(
+        f.engine.try_unregister_pool(&f.admin, &f.pool_a),
+        Err(Ok(EngineError::PoolHasWrittenOffCharge))
+    );
+
+    // The originator's sum still carries it, which is the whole point: pool B
+    // is the same originator and cannot take the defaulted pool's room.
+    assert_eq!(f.engine.charged_exposure(&f.pool_a), 250 * USDC);
+    assert_eq!(
+        f.engine.try_allocate(&f.admin, &f.pool_b, &(200 * USDC)),
+        Err(Ok(EngineError::OriginatorCapExceeded))
+    );
+
+    // What the operator gets instead is a freeze, which stops new capital
+    // without releasing a stroop of the charge.
+    f.engine.set_pool_cap(&f.admin, &f.pool_a, &0u32);
+    assert_eq!(f.engine.charged_exposure(&f.pool_a), 250 * USDC);
+
+    // And it becomes delistable when the loss is recovered rather than when it
+    // is forgotten.
+    f.engine.recover(&f.admin, &f.pool_a);
+    assert_eq!(f.engine.written_off_pool(&f.pool_a), 0);
+    f.engine.unregister_pool(&f.admin, &f.pool_a);
+    assert_eq!(f.engine.pools().len(), 2);
+}
+
+/// The entry most worth removing is the one whose adapter no longer names this
+/// Engine's Vault, so this call deliberately does not run the counterparty
+/// check that `allocate`, `deallocate` and `recover` do. A check there would
+/// refuse exactly the case it is for.
+#[test]
+fn an_orphaned_registry_entry_can_be_removed() {
+    let f = setup();
+    let other_vault = f.e.register(MockVault, ());
+    MockVaultClient::new(&f.e, &other_vault).initialize(&f.admin, &f.usdc.address);
+
+    // The Engine follows its Vault; pool A is left behind naming the old one.
+    f.engine.set_vault(&f.admin, &other_vault);
+    assert_eq!(
+        f.engine.try_allocate(&f.admin, &f.pool_a, &(10 * USDC)),
+        Err(Ok(EngineError::AdapterMismatch))
+    );
+
+    // It can be cleared out rather than defended against on every call forever.
+    f.engine.unregister_pool(&f.admin, &f.pool_a);
+    assert_eq!(f.engine.pools().len(), 2);
+    assert_eq!(
+        f.engine.try_unregister_pool(&f.admin, &f.pool_a),
+        Err(Ok(EngineError::PoolNotRegistered))
+    );
+}
+
+/// A pool that leaves and comes back starts from nothing, rather than from
+/// whatever its old persistent entries happened to hold.
+#[test]
+fn a_pool_registered_again_starts_clean() {
+    let f = setup();
+    f.engine.allocate(&f.admin, &f.pool_a, &(200 * USDC));
+    f.engine.deallocate(&f.pool_a, &(200 * USDC));
+    f.engine.unregister_pool(&f.admin, &f.pool_a);
+
+    f.engine.register_pool(
+        &f.admin,
+        &f.pool_a,
+        &symbol_short!("QIRO"),
+        &symbol_short!("US"),
+        &POOL_CAP,
+    );
+    assert_eq!(f.engine.get_exposure(&f.pool_a), 0);
+    assert_eq!(f.engine.written_off_pool(&f.pool_a), 0);
+    assert_eq!(f.engine.charged_exposure(&f.pool_a), 0);
+    f.engine.allocate(&f.admin, &f.pool_a, &(100 * USDC));
+    assert_eq!(f.engine.get_exposure(&f.pool_a), 100 * USDC);
+}
