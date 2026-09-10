@@ -1741,3 +1741,56 @@ fn an_adapter_can_never_hold_less_usdc_than_it_has_booked() {
     assert_eq!(f.engine.get_exposure(&f.pool_a), 0);
     check(&f);
 }
+
+/// `book_recovery` takes the pool as a parameter, and that is a real difference
+/// from `recover` rather than a convenience.
+///
+/// In `recover` the pool decides which adapter is swept, so the cash and the
+/// attribution come from the same place and the caller cannot separate them. In
+/// `book_recovery` the cash is already in the Vault, unattributed by
+/// construction, since being unable to say where it came from is the whole
+/// reason the call exists. So which pool gets its concentration charge back is
+/// something the admin asserts, and nothing on-chain can check it.
+///
+/// This test is here to state the size of that, because a comment claiming it
+/// is worth less than a case demonstrating it. The global loss book is right
+/// either way, and so is the Vault's, so solvency does not depend on the
+/// assertion being honest. What does depend on it is the per-pool
+/// concentration charge, which means a misattributed recovery frees a cap for a
+/// pool whose loss did not come home. It is not a privilege escalation, since
+/// `set_caps` already lets the admin widen the same limit outright, and it is
+/// not something a guard can fix, since there is nothing to check the claim
+/// against. It is a thing an auditor should be told rather than discover.
+#[test]
+fn a_booked_recovery_releases_the_cap_of_whichever_pool_the_admin_names() {
+    let f = setup();
+    f.engine.allocate(&f.admin, &f.pool_a, &(250 * USDC));
+    f.engine.allocate(&f.admin, &f.pool_c, &(150 * USDC));
+    f.engine
+        .write_down(&f.admin, &f.pool_a, &(250 * USDC), &symbol_short!("DEFAULT"));
+    f.engine
+        .write_down(&f.admin, &f.pool_c, &(150 * USDC), &symbol_short!("DEFAULT"));
+
+    // Pool C is the one that recovers: its adapter is holding the cash, and a
+    // sweep through `recover` would release C's charge and only C's.
+    assert_eq!(f.usdc.balance(&f.pool_c), 150 * USDC);
+    assert_eq!(f.usdc.balance(&f.pool_a), 250 * USDC);
+    f.adapter_c.recover_surplus(&f.admin);
+
+    // Booked against pool A instead. Nothing refuses it.
+    f.engine
+        .book_recovery(&f.admin, &f.pool_a, &(150 * USDC));
+
+    // A's cap is freed by a loss that did not come home, and C's charge stands
+    // even though C is the pool whose money arrived.
+    assert_eq!(f.engine.written_off_pool(&f.pool_a), 100 * USDC);
+    assert_eq!(f.engine.written_off_pool(&f.pool_c), 150 * USDC);
+
+    // The two books that decide solvency are unaffected: the global total falls
+    // by exactly the cash that arrived, once, and so does the Vault's.
+    assert_eq!(f.engine.written_off(), 250 * USDC);
+    assert_eq!(
+        MockVaultClient::new(&f.e, &f.vault_id).recovered(),
+        150 * USDC
+    );
+}

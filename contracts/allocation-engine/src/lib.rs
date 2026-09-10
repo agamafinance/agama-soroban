@@ -1070,6 +1070,27 @@ impl AllocationEngine {
     /// not have one: nothing moves through the adapter, and an adapter left
     /// behind by a `set_vault` is precisely the case this has to keep serving,
     /// because it is the one whose charge nothing else can release.
+    ///
+    /// What it does take, and `recover` does not, is the pool as a parameter.
+    /// In `recover` the pool decides which adapter is swept, so the cash and
+    /// the attribution come from the same place and the caller cannot separate
+    /// them. Here the cash is already in the Vault and unattributed by
+    /// construction, because being unable to say where it came from is the
+    /// whole reason this call exists. So which pool gets its concentration
+    /// charge back is something the admin asserts, and there is nothing
+    /// on-chain to check it against.
+    ///
+    /// Worth stating rather than leaving to be found. The global loss book and
+    /// the Vault's both move by exactly the cash that arrived whatever pool is
+    /// named, so solvency does not rest on the assertion being honest. The
+    /// per-pool concentration charge does: a recovery booked against the wrong
+    /// pool frees a cap for a pool whose loss did not come home. That is not a
+    /// privilege escalation, since `set_caps` already lets this same admin
+    /// widen the same limit outright, and it is not something a guard could
+    /// fix, since there is no fact here to check the claim against. It is a
+    /// disclosure. `a_booked_recovery_releases_the_cap_of_whichever_pool_the_admin_names`
+    /// is the case, so it is a property of the suite rather than a claim in a
+    /// comment.
     pub fn book_recovery(
         e: Env,
         admin: Address,
