@@ -14,7 +14,7 @@
 //! | Private credit NAV      | 7 days    | 500 bps   | 1 hour   | 0.50 to 2.00  |
 //! | Etherfuse bond price    | 48 hours  | none      | 1 hour   | 0.50 to 2.00  |
 //!
-//! Five properties matter more than the rest, and each of them is a test:
+//! Six properties matter more than the rest, and each of them is a test:
 //!
 //! 1. Only an address in the reporter set can push. The set is admin managed
 //!    and every rotation emits an event.
@@ -37,6 +37,25 @@
 //!    Each feed carries a minimum interval, measured in ledger time between
 //!    accepted values rather than in the timestamps the reporter supplies,
 //!    because a reporter chooses those and can space them however it likes.
+//! 6. A feed can require more than one reporter to agree before a value
+//!    moves state. This is the V1 to V2 path described in the architecture
+//!    document: V1 is a single disclosed reporter, one vote and it lands. V2
+//!    raises a feed's `quorum_threshold` above 1, and a value then commits
+//!    only once that many distinct reporters have submitted the same value
+//!    for the same round, a round being identified by the feed and the
+//!    reported timestamp. A reporter gets one vote per round regardless of
+//!    what it votes for. Partial agreement moves nothing: guards 2 through 5
+//!    above still apply, unchanged, to whatever value the round agrees on,
+//!    not to the individual votes that led to it.
+//!
+//!    A quorum is a defense against one compromised reporter, not against
+//!    every way a NAV can be wrong. It does nothing against a colluding
+//!    majority of the reporter set, since collusion looks identical to
+//!    honest agreement from the contract's side. And it does nothing against
+//!    reporters that are all honest and all wrong, because they all read the
+//!    same bad upstream source: three independent signatures on the same
+//!    mistake are still a mistake, agreed upon. Raising the threshold buys
+//!    independence between reporters, not correctness of what they report.
 //!
 //! The reference point lives in persistent storage, not temporary. It used to
 //! be temporary, on the reasoning that the latest NAV is replaced on every
@@ -68,6 +87,12 @@ const INSTANCE_LIFETIME: u32 = INSTANCE_BUMP - DAY_LEDGERS;
 // removes them.
 const NAV_BUMP: u32 = 90 * DAY_LEDGERS;
 const NAV_LIFETIME: u32 = NAV_BUMP - DAY_LEDGERS;
+// A round's votes live in temporary storage: an abandoned round costs nothing
+// to forget, since it never moved state to begin with. The TTL is generous
+// anyway so a quorum that is still trickling in is not silently reset while
+// it waits on the last vote.
+const ROUND_BUMP: u32 = 30 * DAY_LEDGERS;
+const ROUND_LIFETIME: u32 = ROUND_BUMP - DAY_LEDGERS;
 
 /// Feed identifiers and guard parameters the protocol runs with. They live here
 /// rather than only in a deploy script so the on-chain configuration and the
@@ -144,6 +169,12 @@ pub enum OracleError {
     NoPendingAdmin = 515,
     /// `accept_admin` was called by an address that was not the one proposed.
     NotPendingAdmin = 516,
+    /// `set_quorum_threshold` was called with a threshold of zero, which no
+    /// report could ever satisfy.
+    InvalidQuorumThreshold = 517,
+    /// This reporter already voted in this feed's current round. One vote per
+    /// reporter per round, regardless of what value it voted for.
+    AlreadyVoted = 518,
 }
 
 /// Per feed validation guards, fixed at registration time.
@@ -176,6 +207,11 @@ pub enum PushOutcome {
     Accepted,
     /// Not stored, and `nav_rejected` was emitted. The previous NAV stands.
     RejectedDeviation,
+    /// The vote was recorded but the feed's quorum threshold has not been met
+    /// yet. Nothing was stored and nothing was rejected; the round is still
+    /// open. Only reachable when a feed's threshold is above 1, since the
+    /// first vote is always quorum at the default of 1.
+    Pending,
 }
 
 /// The latest reported point for a feed.
@@ -201,6 +237,9 @@ enum Cfg {
     Feeds,
     /// Half finished admin handover: proposed, not yet accepted.
     PendingAdmin,
+    /// Per feed quorum threshold. A feed with no entry here defaults to 1,
+    /// which is single reporter behaviour: the first vote is quorum.
+    QuorumThresholds,
 }
 
 /// Persistent storage: the latest NAV of a feed. It is replaced on every
@@ -213,6 +252,14 @@ enum Cfg {
 #[contracttype]
 enum Store {
     Nav(Symbol),
+    /// Reporters that have already voted in a feed's round, keyed by the feed
+    /// and the timestamp the round is reporting for. One vote per reporter
+    /// per round, regardless of which value it voted for, so this is checked
+    /// before a vote is added to any tally.
+    RoundVoters(Symbol, u64),
+    /// Votes so far for one specific value within a round. Quorum is reached
+    /// when this count meets the feed's threshold.
+    RoundTally(Symbol, u64, i128),
 }
 
 /// Emitted when the reporter set changes, so rotations are auditable off-chain
@@ -254,6 +301,35 @@ pub struct NavUpdated {
     pub timestamp: u64,
 }
 
+/// Emitted when a feed's admin-set quorum threshold changes.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QuorumThresholdSet {
+    #[topic]
+    pub feed_id: Symbol,
+    pub threshold: u32,
+}
+
+/// Emitted when a feed's quorum threshold is met: `votes` distinct authorized
+/// reporters have now submitted the same value for the same round. Only
+/// fires for a feed whose threshold is above 1, since at the default of 1 a
+/// single vote is quorum and `nav_updated` already says everything this
+/// event would.
+///
+/// Reaching quorum is not the same as committing: this fires before the
+/// guards that gate the actual write, so it can be followed by either
+/// `nav_updated` or `nav_rejected` depending on whether the value the round
+/// agreed on still clears the deviation bound.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NavQuorumReached {
+    #[topic]
+    pub feed_id: Symbol,
+    pub nav: i128,
+    pub timestamp: u64,
+    pub votes: u32,
+}
+
 /// Emitted when a push is refused for breaking the feed's deviation bound. The
 /// point of the event is that a rejection is loud: an operator watching the
 /// stream sees the value that was refused and against which reference.
@@ -289,6 +365,20 @@ pub struct AdminChanged {
     pub admin: Address,
 }
 
+/// What one report did, once its vote has been recorded. Not a
+/// `#[contracttype]`: it never crosses the contract boundary, `push_nav` and
+/// `submit_nav` each turn it into their own public outcome.
+enum CommitOutcome {
+    /// The vote was recorded but the round has not reached quorum.
+    Pending,
+    /// Quorum was reached and the value cleared every guard: stored, and
+    /// `nav_updated` was emitted.
+    Accepted,
+    /// Quorum was reached but the value broke the deviation bound. Not
+    /// stored; the caller decides what to do with the rejection.
+    Rejected(NavRejected),
+}
+
 #[contract]
 pub struct OracleAdapter;
 
@@ -314,6 +404,9 @@ impl OracleAdapter {
         e.storage()
             .instance()
             .set(&Cfg::Feeds, &Map::<Symbol, Feed>::new(&e));
+        e.storage()
+            .instance()
+            .set(&Cfg::QuorumThresholds, &Map::<Symbol, u32>::new(&e));
         Self::bump_instance(&e);
         Ok(())
     }
@@ -358,11 +451,7 @@ impl OracleAdapter {
         min_interval_secs: u64,
     ) -> Result<(), OracleError> {
         Self::require_admin(&e, &admin)?;
-        if staleness_secs == 0
-            || deviation_bps as i128 > BPS
-            || min_nav <= 0
-            || max_nav < min_nav
-        {
+        if staleness_secs == 0 || deviation_bps as i128 > BPS || min_nav <= 0 || max_nav < min_nav {
             return Err(OracleError::InvalidFeedConfig);
         }
         let mut feeds = Self::feed_map(&e);
@@ -393,13 +482,50 @@ impl OracleAdapter {
         Ok(())
     }
 
+    /// Set a feed's quorum threshold: the number of distinct authorized
+    /// reporters that must submit the same value for the same round before
+    /// it commits. Defaults to 1 when never set, which is V1 behaviour, a
+    /// single vote is quorum. Raising it to 2 or 3 is the V2 path described
+    /// in the architecture document, and it can be raised or lowered again
+    /// later; it is an operating parameter, not a write once guard like a
+    /// feed's staleness or deviation bound.
+    pub fn set_quorum_threshold(
+        e: Env,
+        admin: Address,
+        feed_id: Symbol,
+        threshold: u32,
+    ) -> Result<(), OracleError> {
+        Self::require_admin(&e, &admin)?;
+        if !Self::feed_map(&e).contains_key(feed_id.clone()) {
+            return Err(OracleError::FeedNotRegistered);
+        }
+        if threshold == 0 {
+            return Err(OracleError::InvalidQuorumThreshold);
+        }
+        let mut thresholds = Self::quorum_map(&e);
+        thresholds.set(feed_id.clone(), threshold);
+        e.storage()
+            .instance()
+            .set(&Cfg::QuorumThresholds, &thresholds);
+        Self::bump_instance(&e);
+        QuorumThresholdSet { feed_id, threshold }.publish(&e);
+        Ok(())
+    }
+
     /// Report a new NAV for a feed, failing the transaction if anything is
     /// wrong. This is the strict path: a caller cannot ignore a rejection
     /// because there is no successful outcome to ignore.
     ///
-    /// Six things are checked, in order, and any one of them fails the call:
+    /// The report is first recorded as one vote in the feed's round for this
+    /// timestamp. Below the feed's quorum threshold nothing else happens, the
+    /// call succeeds and the round stays open. At the default threshold of 1
+    /// the first vote always meets it, so this is where V1 behaviour lives
+    /// unchanged. Once quorum is reached, six things are checked against the
+    /// value the round agreed on, in order, and any one of them fails the
+    /// call:
     ///
-    ///  - the caller is in the reporter set (and has authorized this call)
+    ///  - the caller is in the reporter set (and has authorized this call),
+    ///    and has not already voted in this round
     ///  - the NAV is strictly positive
     ///  - the NAV is inside the feed's absolute band. This one applies to the
     ///    first report as well, which is the report a deviation bound cannot
@@ -422,12 +548,9 @@ impl OracleAdapter {
         nav: i128,
         timestamp: u64,
     ) -> Result<(), OracleError> {
-        match Self::validate(&e, &reporter, &feed_id, nav, timestamp)? {
-            Some(_) => Err(OracleError::DeviationOutOfBounds),
-            None => {
-                Self::store(&e, reporter, feed_id, nav, timestamp);
-                Ok(())
-            }
+        match Self::process(&e, &reporter, &feed_id, nav, timestamp)? {
+            CommitOutcome::Pending | CommitOutcome::Accepted => Ok(()),
+            CommitOutcome::Rejected(_) => Err(OracleError::DeviationOutOfBounds),
         }
     }
 
@@ -445,10 +568,16 @@ impl OracleAdapter {
     ///    rejections in the event stream and not only in failed transactions
     ///
     /// Everything that is not a deviation breach (unauthorized caller, unknown
-    /// feed, non-positive NAV, non-monotonic or future timestamp) still fails
-    /// the call here: those are malformed reports, not disputed valuations.
-    /// A rejected submission writes nothing, so the previous NAV and its
-    /// timestamp both stay in place.
+    /// feed, non-positive NAV, non-monotonic or future timestamp, a repeat
+    /// vote from the same reporter in the same round) still fails the call
+    /// here: those are malformed reports, not disputed valuations, and none
+    /// of them count as a vote. A rejected submission writes nothing, so the
+    /// previous NAV and its timestamp both stay in place; the round's votes,
+    /// including the one that completed quorum and triggered the rejected
+    /// evaluation, are not replayed on a later call.
+    ///
+    /// Below the feed's quorum threshold this returns `Pending`: the vote was
+    /// recorded, nothing was stored, and the round is still open.
     pub fn submit_nav(
         e: Env,
         reporter: Address,
@@ -456,14 +585,12 @@ impl OracleAdapter {
         nav: i128,
         timestamp: u64,
     ) -> Result<PushOutcome, OracleError> {
-        match Self::validate(&e, &reporter, &feed_id, nav, timestamp)? {
-            Some(rejection) => {
+        match Self::process(&e, &reporter, &feed_id, nav, timestamp)? {
+            CommitOutcome::Pending => Ok(PushOutcome::Pending),
+            CommitOutcome::Accepted => Ok(PushOutcome::Accepted),
+            CommitOutcome::Rejected(rejection) => {
                 rejection.publish(&e);
                 Ok(PushOutcome::RejectedDeviation)
-            }
-            None => {
-                Self::store(&e, reporter, feed_id, nav, timestamp);
-                Ok(PushOutcome::Accepted)
             }
         }
     }
@@ -511,10 +638,7 @@ impl OracleAdapter {
         e.storage().instance().set(&Cfg::Admin, &new_admin);
         e.storage().instance().remove(&Cfg::PendingAdmin);
         Self::bump_instance(&e);
-        AdminChanged {
-            admin: new_admin,
-        }
-        .publish(&e);
+        AdminChanged { admin: new_admin }.publish(&e);
         Ok(())
     }
 
@@ -575,22 +699,43 @@ impl OracleAdapter {
             .ok_or(OracleError::FeedNotRegistered)
     }
 
+    /// A feed's quorum threshold, 1 when it has never been raised.
+    pub fn quorum_threshold(e: Env, feed_id: Symbol) -> u32 {
+        Self::threshold_for(&e, &feed_id)
+    }
+
+    /// Votes so far for a specific value within a feed's round. 0 if nobody
+    /// has voted for it, whether because the round has not started or the
+    /// value was never the one anybody cast.
+    pub fn quorum_votes(e: Env, feed_id: Symbol, timestamp: u64, nav: i128) -> u32 {
+        e.storage()
+            .temporary()
+            .get(&Store::RoundTally(feed_id, timestamp, nav))
+            .unwrap_or(0)
+    }
+
     // ---- internals ----
 
-    /// Shared validation for both report paths.
+    /// Shared handling for both report paths: record the caller's vote, and if
+    /// that vote is the one that reaches the feed's quorum threshold, evaluate
+    /// the guards that gate a commit against the value the round agreed on.
     ///
-    /// Returns `Err` for a malformed report, `Ok(Some(rejection))` for a
-    /// well-formed report that breaks the feed's deviation bound, and
-    /// `Ok(None)` for a report that should be stored. The caller decides what
-    /// a bound breach means for it, which is the only difference between
-    /// `push_nav` and `submit_nav`.
-    fn validate(
+    /// A malformed vote (unauthorized caller, unknown feed, non-positive or
+    /// out of band NAV, a future timestamp, a repeat vote from the same
+    /// reporter in this round) is rejected with `Err` before anything is
+    /// recorded, identically for both entry points. Once quorum is reached, a
+    /// non-monotonic timestamp or a too-soon report also fails with `Err`,
+    /// again identically: those are still malformed relative to the feed's
+    /// state, not a disputed valuation. Only a deviation breach becomes
+    /// `Ok(Rejected(..))`, because that is the one outcome `push_nav` and
+    /// `submit_nav` are allowed to disagree about.
+    fn process(
         e: &Env,
         reporter: &Address,
         feed_id: &Symbol,
         nav: i128,
         timestamp: u64,
-    ) -> Result<Option<NavRejected>, OracleError> {
+    ) -> Result<CommitOutcome, OracleError> {
         reporter.require_auth();
         if !Self::reporter_map(e).get(reporter.clone()).unwrap_or(false) {
             return Err(OracleError::UnauthorizedReporter);
@@ -610,6 +755,136 @@ impl OracleAdapter {
             return Err(OracleError::TimestampInFuture);
         }
 
+        let threshold = Self::threshold_for(e, feed_id);
+        let votes = Self::record_vote(e, reporter, feed_id, nav, timestamp)?;
+        if votes < threshold {
+            return Ok(CommitOutcome::Pending);
+        }
+        // A threshold of 1 is V1 behaviour: the first vote always meets it,
+        // and this event would say nothing `nav_updated` does not already
+        // say, so it only fires above the default.
+        if threshold > 1 {
+            NavQuorumReached {
+                feed_id: feed_id.clone(),
+                nav,
+                timestamp,
+                votes,
+            }
+            .publish(e);
+        }
+
+        match Self::check_commit(e, &feed, feed_id, reporter, nav, timestamp)? {
+            Some(rejection) => {
+                // A refused round is still open, and that is the whole reason
+                // its voter record has to survive.
+                //
+                // Clearing on the way out of any resolution looks symmetric
+                // and is not, because the two outcomes leave the timestamp in
+                // different places. A commit advances the feed's stored
+                // timestamp, so monotonicity closes this round behind it and
+                // the leftovers cannot be voted into. A refusal moves no state
+                // at all: the timestamp is still acceptable, the tallies every
+                // losing value collected are still standing, and the voter map
+                // is the only thing left that knows who has already spoken. Take
+                // it away and one reporter seeds a value, waits for the round to
+                // be refused on some other value, votes for its own a second
+                // time and carries a quorum of two on its own. That is not a
+                // corner of the feature, it is the feature: a threshold above 1
+                // buys independence between reporters and nothing else, and a
+                // round a single key can carry has bought none.
+                //
+                // A threshold of 1 is exempt, and it is exempt by definition
+                // rather than by exception: one vote is the entire round, so
+                // there is no second voter for the record to be protecting
+                // against, and keeping it would only change which error a
+                // repeated report gets. V1 behaviour stays exactly as it was.
+                if threshold == 1 {
+                    Self::clear_round(e, feed_id, timestamp, nav);
+                }
+                Ok(CommitOutcome::Rejected(rejection))
+            }
+            None => {
+                Self::clear_round(e, feed_id, timestamp, nav);
+                Self::store(e, reporter.clone(), feed_id.clone(), nav, timestamp);
+                Ok(CommitOutcome::Accepted)
+            }
+        }
+    }
+
+    /// Record one reporter's vote for `nav` in a feed's round for `timestamp`,
+    /// and return the number of votes `nav` now has in that round.
+    ///
+    /// A round is identified by the feed and the reported timestamp, not by
+    /// the value, since agreement on the value is the thing being counted. A
+    /// reporter gets one vote per round regardless of which value it casts,
+    /// which is what the voter set is for: it is checked, and updated,
+    /// independently of which value's tally the vote lands in.
+    fn record_vote(
+        e: &Env,
+        reporter: &Address,
+        feed_id: &Symbol,
+        nav: i128,
+        timestamp: u64,
+    ) -> Result<u32, OracleError> {
+        let voters_key = Store::RoundVoters(feed_id.clone(), timestamp);
+        let mut voters: Map<Address, bool> = e
+            .storage()
+            .temporary()
+            .get(&voters_key)
+            .unwrap_or(Map::new(e));
+        if voters.get(reporter.clone()).unwrap_or(false) {
+            return Err(OracleError::AlreadyVoted);
+        }
+        voters.set(reporter.clone(), true);
+        e.storage().temporary().set(&voters_key, &voters);
+        e.storage()
+            .temporary()
+            .extend_ttl(&voters_key, ROUND_LIFETIME, ROUND_BUMP);
+
+        let tally_key = Store::RoundTally(feed_id.clone(), timestamp, nav);
+        let votes: u32 = e.storage().temporary().get(&tally_key).unwrap_or(0) + 1;
+        e.storage().temporary().set(&tally_key, &votes);
+        e.storage()
+            .temporary()
+            .extend_ttl(&tally_key, ROUND_LIFETIME, ROUND_BUMP);
+        Ok(votes)
+    }
+
+    /// Clear a resolved round's bookkeeping: every reporter's voter mark for
+    /// this (feed, timestamp), and the tally for the value that reached
+    /// quorum. A tally for some other value that lost the round, if any, is
+    /// left to expire on its own TTL rather than hunted down: if this round's
+    /// value committed, `check_commit` refuses every later attempt at this
+    /// timestamp on monotonicity, the stray tally included; if it was
+    /// rejected, the timestamp is still open and a stray tally is just a
+    /// slower path back to the same evaluation, not a way around it.
+    fn clear_round(e: &Env, feed_id: &Symbol, timestamp: u64, nav: i128) {
+        e.storage()
+            .temporary()
+            .remove(&Store::RoundVoters(feed_id.clone(), timestamp));
+        e.storage()
+            .temporary()
+            .remove(&Store::RoundTally(feed_id.clone(), timestamp, nav));
+    }
+
+    /// Guards that only make sense once a value is the one being committed:
+    /// monotonicity, the feed's rate limit and the deviation bound. Unlike the
+    /// per-vote checks in `process`, these depend on the feed's last committed
+    /// point, so they are evaluated once, against the value a round agreed on,
+    /// rather than once per vote.
+    ///
+    /// Returns `Err` for a non-monotonic or too-soon timestamp, which fails
+    /// the call identically for `push_nav` and `submit_nav`. Returns
+    /// `Ok(Some(rejection))` for a value that breaks the deviation bound, and
+    /// `Ok(None)` for a value that should be stored.
+    fn check_commit(
+        e: &Env,
+        feed: &Feed,
+        feed_id: &Symbol,
+        reporter: &Address,
+        nav: i128,
+        timestamp: u64,
+    ) -> Result<Option<NavRejected>, OracleError> {
         let last: Option<NavPoint> = e.storage().persistent().get(&Store::Nav(feed_id.clone()));
         let Some(last) = last else {
             return Ok(None); // first report for this feed, nothing to compare to
@@ -693,6 +968,17 @@ impl OracleAdapter {
             .instance()
             .get(&Cfg::Feeds)
             .unwrap_or(Map::new(e))
+    }
+
+    fn quorum_map(e: &Env) -> Map<Symbol, u32> {
+        e.storage()
+            .instance()
+            .get(&Cfg::QuorumThresholds)
+            .unwrap_or(Map::new(e))
+    }
+
+    fn threshold_for(e: &Env, feed_id: &Symbol) -> u32 {
+        Self::quorum_map(e).get(feed_id.clone()).unwrap_or(1)
     }
 }
 
