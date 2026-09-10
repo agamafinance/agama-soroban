@@ -157,7 +157,9 @@ impl MockVault {
             .unwrap_or(0)
     }
 
-    fn usdc(e: Env) -> Address {
+    /// The real Vault publishes this and the Engine now reads it, to check an
+    /// adapter is holding the token the Vault actually custodies.
+    pub fn usdc(e: Env) -> Address {
         e.storage().instance().get(&symbol_short!("usdc")).unwrap()
     }
 }
@@ -1976,4 +1978,123 @@ fn a_pool_registered_again_starts_clean() {
     assert_eq!(f.engine.charged_exposure(&f.pool_a), 0);
     f.engine.allocate(&f.admin, &f.pool_a, &(100 * USDC));
     assert_eq!(f.engine.get_exposure(&f.pool_a), 100 * USDC);
+}
+
+/// The third edge of the wiring triangle, which nothing used to check.
+///
+/// `register_pool` proves an adapter names this Engine and this Engine's Vault,
+/// and `set_counterparties` proves from the other side that the Engine it is
+/// given governs the Vault it is given. Both are about which contracts are
+/// wired together. Neither was about the token, and an adapter stores one: a
+/// constructor argument, never validated against the Vault's, and the address
+/// every `transfer` in the adapter actually uses.
+///
+/// Left unchecked it is a one way door. `allocate` moves the Vault's real USDC
+/// in, because the Vault sends what the Vault holds. `deallocate` tries to send
+/// back the token the adapter stores, of which it holds none, and traps.
+/// `recover_surplus` measures its surplus in that same token, sees nothing
+/// above the exposure, and answers `NothingToRecover`. A write-down clears all
+/// three books and the money stays exactly where it is. That is the failure
+/// that retired three generations of the private credit adapter.
+///
+/// It is now refused at construction, which is earlier than the registry door
+/// and the right place: an adapter that can never repay the Vault it names
+/// should not reach the ledger at all.
+/// The constructor refuses, and a constructor that refuses is a deploy that
+/// never happens, so the panic is the assertion. 606 is `CounterpartyMismatch`.
+#[test]
+#[should_panic(expected = "Error(Contract, #606)")]
+fn an_adapter_cannot_be_built_against_a_vault_custodying_another_token() {
+    let f = setup();
+    let other_id = f.e.register(MockUsdc, ());
+    MockUsdcClient::new(&f.e, &other_id).initialize(
+        &f.admin,
+        &7u32,
+        &String::from_str(&f.e, "Wrong Coin"),
+        &String::from_str(&f.e, "WRONG"),
+    );
+    f.e.register(
+        PrivateCreditAdapter,
+        (
+            f.admin.clone(),
+            f.engine.address.clone(),
+            f.vault_id.clone(),
+            other_id,
+        ),
+    );
+}
+
+/// And the same wiring with the Vault's own token builds and works end to end,
+/// so the guard is a check rather than a wall.
+#[test]
+fn an_adapter_holding_the_vaults_token_is_built_and_funded_normally() {
+    let f = setup();
+    let right = extra_private_credit_pool(&f);
+    assert_eq!(
+        PrivateCreditAdapterClient::new(&f.e, &right).usdc(),
+        f.usdc.address
+    );
+    f.engine.register_pool(
+        &f.admin,
+        &right,
+        &symbol_short!("QIRO"),
+        &symbol_short!("US"),
+        &POOL_CAP,
+    );
+    f.engine.allocate(&f.admin, &right, &(100 * USDC));
+    f.engine.deallocate(&right, &(100 * USDC));
+    assert_eq!(f.engine.get_exposure(&right), 0);
+}
+
+/// The token edge has to be re-run on use for the same reason the Vault edge
+/// does, and the third review is why that is not an assumption.
+///
+/// `set_vault` moves the Engine's end of a pairing every registered adapter has
+/// already been checked against. It can move it to a Vault custodying a
+/// different asset, and then every adapter in the registry names a token that
+/// Vault does not hold. Allocating would send that Vault's money to an adapter
+/// that can never send it back.
+///
+/// The way out of this one is a new adapter rather than a repointing, and that
+/// is deliberate: the token is fixed at construction, so `set_counterparties`
+/// cannot bring a stale adapter across. An adapter is bound to its asset for
+/// life, which is what makes the asset something the other two checks can rely
+/// on rather than another thing that can drift.
+#[test]
+fn an_adapter_left_behind_by_a_vault_that_custodies_another_token_cannot_be_funded() {
+    let f = setup();
+
+    let other_id = f.e.register(MockUsdc, ());
+    let other = MockUsdcClient::new(&f.e, &other_id);
+    other.initialize(
+        &f.admin,
+        &7u32,
+        &String::from_str(&f.e, "Wrong Coin"),
+        &String::from_str(&f.e, "WRONG"),
+    );
+    let other_vault = f.e.register(MockVault, ());
+    MockVaultClient::new(&f.e, &other_vault).initialize(&f.admin, &other_id);
+    other.faucet(&other_vault, &FUNDING);
+
+    // The Engine follows its Vault to one holding a different asset.
+    f.engine.set_vault(&f.admin, &other_vault);
+
+    // Pool A is still registered and still names this Engine, and it is the
+    // token that refuses the allocation.
+    assert_eq!(
+        f.engine.try_allocate(&f.admin, &f.pool_a, &(100 * USDC)),
+        Err(Ok(EngineError::AdapterMismatch))
+    );
+    assert_eq!(other.balance(&f.pool_a), 0);
+
+    // And it cannot be brought across, because the token does not move.
+    assert!(f
+        .adapter_a
+        .try_set_counterparties(&f.admin, &f.engine.address, &other_vault)
+        .is_err());
+
+    // The entry can be cleared out instead, which is what unregister_pool is
+    // for, and a new adapter built against the asset this Vault actually holds.
+    f.engine.unregister_pool(&f.admin, &f.pool_a);
+    assert_eq!(f.engine.pools().len(), 2);
 }

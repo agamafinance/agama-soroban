@@ -90,6 +90,14 @@ pub trait AllocationEngineInterface {
     fn vault(e: Env) -> Address;
 }
 
+/// The one thing this adapter needs to ask the Vault: which token it custodies.
+/// Every transfer in this contract uses the token stored here, and a token that
+/// is not the Vault's is a one way door for anything the Vault sends.
+#[contractclient(name = "VaultTokenClient")]
+pub trait VaultTokenInterface {
+    fn usdc(e: Env) -> Address;
+}
+
 const DAY_LEDGERS: u32 = 17_280;
 const INSTANCE_BUMP: u32 = 30 * DAY_LEDGERS;
 const INSTANCE_LIFETIME: u32 = INSTANCE_BUMP - DAY_LEDGERS;
@@ -220,7 +228,7 @@ impl EtherfuseAdapter {
         usdc: Address,
     ) -> Result<(), AdapterError> {
         admin.require_auth();
-        Self::require_symmetry(&e, &engine, &vault)?;
+        Self::require_symmetry(&e, &engine, &vault, &usdc)?;
         e.storage().instance().set(&Cfg::Admin, &admin);
         e.storage().instance().set(&Cfg::Engine, &engine);
         e.storage().instance().set(&Cfg::Vault, &vault);
@@ -254,7 +262,15 @@ impl EtherfuseAdapter {
     ) -> Result<(), AdapterError> {
         Self::require_admin(&e, &admin)?;
         Self::require_empty(&e)?;
-        Self::require_symmetry(&e, &engine, &vault)?;
+        // The token is not a parameter here and never becomes one: it is fixed
+        // at construction, so a repointing has to land on a Vault that
+        // custodies the asset this adapter already transfers with.
+        let usdc: Address = e
+            .storage()
+            .instance()
+            .get(&Cfg::Usdc)
+            .ok_or(AdapterError::NotInitialized)?;
+        Self::require_symmetry(&e, &engine, &vault, &usdc)?;
         e.storage().instance().set(&Cfg::Engine, &engine);
         e.storage().instance().set(&Cfg::Vault, &vault);
         Self::bump(&e);
@@ -493,6 +509,16 @@ impl EtherfuseAdapter {
             .ok_or(AdapterError::NotInitialized)
     }
 
+    /// The token this adapter transfers with. It is a constructor argument that
+    /// nothing could read back, so nothing could check it either, and it is the
+    /// address every `transfer` in this contract uses.
+    pub fn usdc(e: Env) -> Result<Address, AdapterError> {
+        e.storage()
+            .instance()
+            .get(&Cfg::Usdc)
+            .ok_or(AdapterError::NotInitialized)
+    }
+
     pub fn vault(e: Env) -> Result<Address, AdapterError> {
         e.storage()
             .instance()
@@ -552,9 +578,28 @@ impl EtherfuseAdapter {
     /// realistic failure here is a mis-wiring rather than an attack, and both
     /// callers are admin gated either way; it is not worth reading as proof that
     /// the counterparty is what it says it is.
-    fn require_symmetry(e: &Env, engine: &Address, vault: &Address) -> Result<(), AdapterError> {
+    fn require_symmetry(
+        e: &Env,
+        engine: &Address,
+        vault: &Address,
+        usdc: &Address,
+    ) -> Result<(), AdapterError> {
         match EngineClient::new(e, engine).try_vault() {
-            Ok(Ok(governed)) if governed == *vault => Ok(()),
+            Ok(Ok(governed)) if governed == *vault => {}
+            _ => return Err(AdapterError::CounterpartyMismatch),
+        }
+        // The third edge of the same triangle, and the one that used to be
+        // missing. Both checks above are about which contracts are wired
+        // together; this one is about the asset, and the asset is what every
+        // transfer here actually moves. An adapter storing a token that is not
+        // the Vault's is a one way door: the Vault sends what the Vault holds,
+        // so real USDC arrives, and `deallocate` then tries to send back the
+        // token this contract stores, of which it holds none, and traps.
+        // `recover_surplus` measures its surplus in that same token and sees
+        // nothing above the exposure. The books can be cleared with a
+        // write-down and the money stays exactly where it is.
+        match VaultTokenClient::new(e, vault).try_usdc() {
+            Ok(Ok(custodied)) if custodied == *usdc => Ok(()),
             _ => Err(AdapterError::CounterpartyMismatch),
         }
     }
