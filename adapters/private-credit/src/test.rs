@@ -24,6 +24,31 @@ impl MockEngine {
 }
 
 
+/// Stand-in for the Vault. It custodies nothing and enforces nothing; the only
+/// thing the adapter asks it is which token it holds, because an adapter wired
+/// to a Vault that custodies a different asset is a one way door for everything
+/// that Vault sends it.
+#[contract]
+pub struct MockVault;
+
+#[contractimpl]
+impl MockVault {
+    pub fn initialize(e: Env, usdc: Address) {
+        e.storage().instance().set(&symbol_short!("usdc"), &usdc);
+    }
+    pub fn usdc(e: Env) -> Address {
+        e.storage().instance().get(&symbol_short!("usdc")).unwrap()
+    }
+}
+
+/// A Vault stand-in custodying `usdc`, which is what the adapter checks itself
+/// against at construction and at every repointing.
+fn mock_vault(e: &Env, usdc: &Address) -> Address {
+    let id = e.register(MockVault, ());
+    MockVaultClient::new(e, &id).initialize(usdc);
+    id
+}
+
 struct Fix {
     e: Env,
     usdc: MockUsdcClient<'static>,
@@ -33,16 +58,17 @@ struct Fix {
     admin: Address,
 }
 
-/// The Vault is a plain address here: this crate is testing the adapter's own
-/// guards, and the Engine to adapter wiring is covered end to end in the
-/// allocation-engine tests. The Engine is the smallest contract that can answer
-/// the one question the adapter asks of it.
+/// Both counterparties are the smallest contracts that can answer what the
+/// adapter asks of them: the Engine which Vault it governs, and the Vault which
+/// token it custodies. The Vault used to be a plain generated address, which
+/// stopped being enough once the adapter started checking that the asset it
+/// transfers with is the asset that Vault holds. The full Engine to adapter
+/// wiring is still covered end to end in the allocation-engine tests.
 fn setup() -> Fix {
     let e = Env::default();
     e.mock_all_auths();
 
     let admin = Address::generate(&e);
-    let vault = Address::generate(&e);
 
     let usdc_id = e.register(MockUsdc, ());
     let usdc = MockUsdcClient::new(&e, &usdc_id);
@@ -52,6 +78,7 @@ fn setup() -> Fix {
         &String::from_str(&e, "USD Coin"),
         &String::from_str(&e, "USDC"),
     );
+    let vault = mock_vault(&e, &usdc_id);
 
     // The constructor interrogates the Engine, so the Engine has to be a
     // contract that answers `vault()` with the Vault this adapter is given.
@@ -172,7 +199,7 @@ fn the_counterparties_move_only_together_and_only_while_the_adapter_is_empty() {
     // situation the setter exists for: both addresses written at
     // initialization have been superseded, and an adapter is far too cheap a
     // contract to redeploy over two words of storage.
-    let new_vault = Address::generate(&f.e);
+    let new_vault = mock_vault(&f.e, &f.usdc.address);
     let new_engine = f.e.register(MockEngine, ());
     MockEngineClient::new(&f.e, &new_engine).initialize(&new_vault);
 
@@ -206,7 +233,7 @@ fn the_counterparties_move_only_together_and_only_while_the_adapter_is_empty() {
     // against its caps, and only this Engine can unwind it.
     f.usdc.faucet(&f.adapter_id, &(500 * USDC));
     f.adapter.allocate(&(500 * USDC));
-    let other_vault = Address::generate(&f.e);
+    let other_vault = mock_vault(&f.e, &f.usdc.address);
     let other_engine = f.e.register(MockEngine, ());
     MockEngineClient::new(&f.e, &other_engine).initialize(&other_vault);
     assert_eq!(
@@ -388,7 +415,7 @@ fn the_recovery_has_no_destination_for_the_admin_to_choose() {
 
     // And with the balance clear the adapter can be repointed again, which is
     // the repair path the stranded cash used to close.
-    let new_vault = Address::generate(&f.e);
+    let new_vault = mock_vault(&f.e, &f.usdc.address);
     let new_engine = f.e.register(MockEngine, ());
     MockEngineClient::new(&f.e, &new_engine).initialize(&new_vault);
     f.adapter

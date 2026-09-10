@@ -11,7 +11,7 @@
     "agusd": "CCXEP6QAAYEMFMV2JGBULD2NS6AQB6KQSBHLPPBJSDBCN6HOYIHNQ6H3",
     "staking": "CDFKRDCD7U4YU4DM2DJ4C76KQHB3B6UTYPH64HVUZLGEIITFVYCHYLEZ",
     "vault": "CBNAGG47MEXJQ3KQYXU75VLU4QC5CAEZ6VHY43MSOWHUZWVREPY2BUSB",
-    "allocationEngine": "CCSI33BM4HILB5UGTAZPAW6F7EGF57YG2HEYABNASMCQ4YXKPOFHVJCW",
+    "allocationEngine": "CCSZ3QEV3LPZ3CQCHUADR4CLYGO3GHKDS26BKSL2XMV2XPDW3DCAVIMQ",
     "oracleAdapter": "CBH7NW5LQX5MIELSF5T5EPGFADIHDZMAGNPNJE5NP22FNNVOKSEVFB3N",
     "agusdCore": "CCUGWQ5DRO66BASGU5UZIX6YWIWJ6GKQOBAABT2246OE5WZOI6JFHA7V"
   },
@@ -26,8 +26,8 @@
   "usdcIssuer": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
   "usdcReal": true,
   "poolAdapters": {
-    "private-credit": "CA24YZ2NP2X5NRL3VPUU3APCHNIF4HA765RXTMDIBYGKMEKRXEEJ4MSR",
-    "etherfuse": "CAYOGJ35O5LIULVSGIWIGGMUQS7SDXFF7BLFQK63X62WPLBTMD5PV2NF"
+    "private-credit": "CAQQLSSXJJKO6YTH54AIXU7YPFOI7HTPTU2OOQ4MKBF2BYJAONT4VEDF",
+    "etherfuse": "CBLYG64BCFJHOUQW4EEYEJTCXS7VEVXGEH2B3GEQ26JIJKMVN46G6GCF"
   },
   "engineConfig": {
     "poolCapBps": 4000,
@@ -453,6 +453,30 @@
       "address": "CBDEWCRBSAL3DIVPVQCCBKRMLRCMGKALC6IZ4SOJTWKGBAVEVAA27V4S",
       "supersededBy": "allocationEngine",
       "reason": "Replaced by scripts/rewire-engine-m2.sh, for M2 of the third adversarial review. It has no set_pool_cap and no unregister_pool, so a registered pool's own cap could never move and the registry was a map with no way to remove an entry. A pool whose own figure was the binding one was capped at it for the life of the contract, and because the aggregate caps are built by walking the registry, a defaulted pool consumed its originator's and its jurisdiction's limits with no lever over either. The charging rule is not the finding and did not change: the replacement adds set_pool_cap, whose useful direction is down, since a cap of zero freezes a pool without releasing a stroop of its charge, and unregister_pool, which refuses any pool that still has exposure on either book or a write-off charged against it, so a pool in default is freezable but not delistable and becomes delistable when the loss is recovered rather than when it is forgotten. Nothing else was redeployed."
+    },
+    {
+      "contract": "allocationEngine",
+      "generation": 12,
+      "label": "Allocation Engine, twelfth deployment",
+      "address": "CCSI33BM4HILB5UGTAZPAW6F7EGF57YG2HEYABNASMCQ4YXKPOFHVJCW",
+      "supersededBy": "allocationEngine",
+      "reason": "Replaced by scripts/rewire-token-edge.sh. register_pool proved an adapter named this Engine and this Engine's Vault, and set_counterparties proved from the other side that the Engine governs the Vault, and neither was about the asset. An adapter stores a token, it was a constructor argument nothing validated against the Vault, and it is the address every transfer in the adapter uses. An adapter with the right pointers and the wrong token is a one way door: settle_allocation sends what the Vault holds so real USDC arrives, deallocate sends back the token the adapter stores and traps, recover_surplus measures its surplus in that token and reports nothing to recover, and a write-down clears all three books while the money stays. Both sides check it now, the adapter at construction and the Engine on every call that moves capital."
+    },
+    {
+      "contract": "poolAdapters.private-credit",
+      "generation": 8,
+      "label": "Private credit adapter, eighth deployment",
+      "address": "CA24YZ2NP2X5NRL3VPUU3APCHNIF4HA765RXTMDIBYGKMEKRXEEJ4MSR",
+      "supersededBy": "poolAdapters.private-credit",
+      "reason": "Replaced by scripts/rewire-token-edge.sh. register_pool proved an adapter named this Engine and this Engine's Vault, and set_counterparties proved from the other side that the Engine governs the Vault, and neither was about the asset. An adapter stores a token, it was a constructor argument nothing validated against the Vault, and it is the address every transfer in the adapter uses. An adapter with the right pointers and the wrong token is a one way door: settle_allocation sends what the Vault holds so real USDC arrives, deallocate sends back the token the adapter stores and traps, recover_surplus measures its surplus in that token and reports nothing to recover, and a write-down clears all three books while the money stays. Both sides check it now, the adapter at construction and the Engine on every call that moves capital."
+    },
+    {
+      "contract": "poolAdapters.etherfuse",
+      "generation": 5,
+      "label": "Etherfuse adapter, fifth deployment",
+      "address": "CAYOGJ35O5LIULVSGIWIGGMUQS7SDXFF7BLFQK63X62WPLBTMD5PV2NF",
+      "supersededBy": "poolAdapters.etherfuse",
+      "reason": "Replaced by scripts/rewire-token-edge.sh. register_pool proved an adapter named this Engine and this Engine's Vault, and set_counterparties proved from the other side that the Engine governs the Vault, and neither was about the asset. An adapter stores a token, it was a constructor argument nothing validated against the Vault, and it is the address every transfer in the adapter uses. An adapter with the right pointers and the wrong token is a one way door: settle_allocation sends what the Vault holds so real USDC arrives, deallocate sends back the token the adapter stores and traps, recover_surplus measures its surplus in that token and reports nothing to recover, and a write-down clears all three books while the money stays. Both sides check it now, the adapter at construction and the Engine on every call that moves capital."
     }
   ],
   "oracleFeedGuards": "The band bounds every report including the first, which a deviation bound cannot reach because a bound on a move needs something to move from. The minimum interval is measured in ledger time between accepted values, not in the timestamps the reporter supplies, because the reporter chooses those. The reference point is persistent, so it cannot expire out from under the checks that read it.",
@@ -509,5 +533,6 @@
       "declaredOn": "2026-09-10",
       "reason": "The source Vault interrogates its oracle in set_oracle and exposes oracle() and oracle_feed(); the deployed one does neither. It is not redeployed for this on its own because agusd-core::set_minter refuses once mints > 0, so the live agUSD's minter pointer is frozen at the current Vault and a replacement Vault would need a replacement agUSD, which needs the outstanding agUSD redeemed and sagUSD repointed: the six-contract cascade this repository already has a history of. The gap is a validation guard and two views on get_nav(), which nothing on-chain consumes, so it ships with the next Vault generation rather than causing one."
     }
-  ]
+  ],
+  "adapterTokenEdge": "An adapter is bound to its asset for life. The token is a constructor argument, it is checked at construction against the token the Vault it names custodies, and set_counterparties never takes it as a parameter, so a repointing has to land on a Vault holding the same asset. That is what makes the asset something the other two checks can rely on rather than another thing that can drift. The Engine re-runs the comparison on every call that moves capital, for the reason it re-runs the Vault edge: set_vault can point the Engine at a Vault custodying a different asset, and every adapter already registered then names a token that Vault does not hold. The way out of that one is a new adapter rather than a repointing, which is the cost of the token being immutable and is the right side to err on."
 }
