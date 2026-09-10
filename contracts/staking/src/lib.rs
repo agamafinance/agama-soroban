@@ -103,6 +103,20 @@ use soroban_sdk::{
 };
 use token as tok;
 
+/// A pending unstake is the only record that says a departed staker is still
+/// owed anything: the shares are burned and the assets are out of `nav`, so if
+/// the record archives the money belongs to nobody and sits here. It is given
+/// the same horizon the Vault gives a withdrawal claim, and for the same
+/// reason, because it is the same kind of thing.
+///
+/// Written with `set` alone it got 4095 ledgers, under six hours, which is a
+/// strange amount of time to give somebody a cooldown has just told to come
+/// back later.
+const DAY_LEDGERS: u32 = 17_280;
+const PENDING_BUMP: u32 = 90 * DAY_LEDGERS;
+const PENDING_LIFETIME: u32 = PENDING_BUMP - DAY_LEDGERS;
+
+
 const ONE: i128 = 10_000_000; // 1.0 at 7 decimals, the share-price scale
 
 #[contracterror]
@@ -337,8 +351,38 @@ impl Staking {
             .unwrap_or(Pending { assets: 0, claimable_at: 0 });
         p.assets += assets;
         p.claimable_at = e.ledger().timestamp() + cooldown;
-        e.storage().persistent().set(&key, &p);
+        Self::write_pending(&e, &from, &p);
         Ok(assets)
+    }
+
+    /// Postpone the archival of a pending unstake. Callable by anyone.
+    ///
+    /// The record is written once, when the unstake is requested, and nothing
+    /// writes to it again until it is claimed. So nothing extends it either,
+    /// and a cooldown is by construction a period the staker has been told to
+    /// go away for. The Vault has `bump_claim` for the identical situation and
+    /// this contract had nothing, which meant the only way to refresh a pending
+    /// unstake was to request another one, using shares that have already been
+    /// burned.
+    ///
+    /// Permissionless for the reason `bump_claim` is: it cannot shorten a TTL,
+    /// it cannot alter what is owed or who it is owed to, and the caller pays
+    /// the rent. There is nothing here for a stranger to gain and nothing for
+    /// them to damage, and requiring a signature would mean the one person who
+    /// might have lost their key is the only one who can keep their claim
+    /// alive.
+    pub fn bump_pending(e: Env, addr: Address) -> Result<(), StakingError> {
+        let key = Store::Pending(addr.clone());
+        let p: Pending = e
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(StakingError::NothingPending)?;
+        if p.assets <= 0 {
+            return Err(StakingError::NothingPending);
+        }
+        Self::write_pending(&e, &addr, &p);
+        Ok(())
     }
 
     /// Claim agUSD from a matured unstake request.
@@ -544,6 +588,16 @@ impl Staking {
     }
 
     // ---- internals ----
+
+    /// One place that writes a pending record, so there is one place that can
+    /// forget to extend it.
+    fn write_pending(e: &Env, addr: &Address, p: &Pending) {
+        let key = Store::Pending(addr.clone());
+        e.storage().persistent().set(&key, p);
+        e.storage()
+            .persistent()
+            .extend_ttl(&key, PENDING_LIFETIME, PENDING_BUMP);
+    }
 
     fn require_admin(e: &Env, admin: &Address) -> Result<(), StakingError> {
         let stored: Address = e

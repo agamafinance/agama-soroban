@@ -2,6 +2,7 @@
 use super::*;
 use agusd::{AgUsd, AgUsdClient};
 use mock_usdc::{MockUsdc, MockUsdcClient};
+use soroban_sdk::testutils::storage::Persistent as _;
 use soroban_sdk::{
     testutils::{Address as _, Ledger as _, MockAuth, MockAuthInvoke},
     vec, Address, Env, IntoVal, String,
@@ -481,5 +482,80 @@ fn what_this_contract_holds_is_always_navsized_plus_what_it_owes() {
         held(&f),
         f.vault.nav() + owed(&f, &alice) + owed(&f, &bob) + 10_0000000,
         "the donation is the whole of the difference"
+    );
+}
+
+/// A pending unstake is the only record that says a departed staker is still
+/// owed anything, and it was given under six hours to say it in.
+///
+/// `request_unstake` burns the shares and takes the assets out of `nav`, so the
+/// record is the whole of the claim: if it archives the money belongs to nobody
+/// and sits in this contract. Written with `set` alone it got 4095 ledgers,
+/// about five and three quarter hours at five seconds a ledger, while the Vault
+/// gives a withdrawal claim ninety days and lets anybody push that out again.
+///
+/// The second adversarial review is why the Vault does that: an archived claim
+/// record takes the calls that read it with it, and the queue stops until
+/// somebody pays for a `RestoreFootprint`. This contract holds the same shape of
+/// record and had neither half of that fix. A cooldown makes it worse rather
+/// than better, because a cooldown is a period the staker is told to go away
+/// for.
+///
+/// Read straight off the ledger entry, because the property is the remaining
+/// TTL and nothing the contract returns reports it.
+#[test]
+fn a_pending_unstake_is_written_with_a_horizon_and_can_be_pushed_out() {
+    let f = setup();
+    let alice = Address::generate(&f.e);
+    fund_agusd(&f, &alice, 1_000_0000000);
+    f.vault.stake(&alice, &500_0000000);
+    f.vault.request_unstake(&alice, &200_0000000);
+    let v = f.vault.address.clone();
+    let ttl = |f: &Fix| {
+        f.e.as_contract(&v, || {
+            f.e.storage()
+                .persistent()
+                .get_ttl(&Store::Pending(alice.clone()))
+        })
+    };
+
+    assert_eq!(
+        ttl(&f),
+        PENDING_BUMP,
+        "the record has to be written with a horizon, not with whatever set gives it"
+    );
+
+    // Nobody writes to a pending record between the request and the claim, so
+    // nothing extends it and it ages by exactly the ledgers that pass.
+    f.e.ledger().with_mut(|l| l.sequence_number += 200_000);
+    let waiting = ttl(&f);
+    assert_eq!(waiting, PENDING_BUMP - 200_000);
+
+    // And anybody can push it back out. The caller is not the staker, on
+    // purpose: requiring the owner's signature would mean the one person who
+    // might have lost their key is the only one who can keep their claim alive.
+    f.vault.bump_pending(&alice);
+    assert_eq!(ttl(&f), PENDING_BUMP);
+
+    // It cannot invent a claim, and it cannot alter one.
+    let bob = Address::generate(&f.e);
+    assert_eq!(
+        f.vault.try_bump_pending(&bob),
+        Err(Ok(StakingError::NothingPending))
+    );
+    assert_eq!(f.vault.pending(&alice).assets, 200_0000000);
+
+    // A second request restarts the cooldown and refreshes the horizon with it,
+    // because it goes through the same writer.
+    f.e.ledger().with_mut(|l| l.sequence_number += 100_000);
+    f.vault.request_unstake(&alice, &100_0000000);
+    assert_eq!(ttl(&f), PENDING_BUMP);
+
+    // And once the record is claimed there is nothing left to bump.
+    f.e.ledger().set_timestamp(1_000 + COOLDOWN + 1);
+    f.vault.claim(&alice);
+    assert_eq!(
+        f.vault.try_bump_pending(&alice),
+        Err(Ok(StakingError::NothingPending))
     );
 }
