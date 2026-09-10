@@ -81,7 +81,7 @@ Network: **Stellar Testnet** · RPC: `https://soroban-testnet.stellar.org`
 | agUSD | [`CCUGWQ5D...JFHA7V`](https://stellar.expert/explorer/testnet/contract/CCUGWQ5DRO66BASGU5UZIX6YWIWJ6GKQOBAABT2246OE5WZOI6JFHA7V) |
 | sagUSD | [`CDFKRDCD...CHYLEZ`](https://stellar.expert/explorer/testnet/contract/CDFKRDCD7U4YU4DM2DJ4C76KQHB3B6UTYPH64HVUZLGEIITFVYCHYLEZ) |
 | Vault Contract | [`CBNAGG47...Y2BUSB`](https://stellar.expert/explorer/testnet/contract/CBNAGG47MEXJQ3KQYXU75VLU4QC5CAEZ6VHY43MSOWHUZWVREPY2BUSB) |
-| Allocation Engine | [`CAPMQI4U...5MQYH`](https://stellar.expert/explorer/testnet/contract/CAPMQI4UWL3KJ2CCN252EYCRL3XIBHMY3ZTCKSXYYOLBY455LVTXMQYH) |
+| Allocation Engine | [`CBDEWCRB...A27V4S`](https://stellar.expert/explorer/testnet/contract/CBDEWCRBSAL3DIVPVQCCBKRMLRCMGKALC6IZ4SOJTWKGBAVEVAA27V4S) |
 | Oracle Adapter | [`CCTAZFQ3...INL6SX`](https://stellar.expert/explorer/testnet/contract/CCTAZFQ35P5KAAWTD2MLTYGEETKVF3N5ZR6MM6SVPQ22M2TKALINL6SX) |
 
 ### Pool Adapters
@@ -102,21 +102,32 @@ contract differed from the source it was supposed to be, and a setter cannot
 install code. The Oracle Adapter and the Etherfuse adapter had been reused in
 place through the previous two deployments and could not be this time.
 
-The Allocation Engine has moved twice more on its own since, and both of those
-were rewirings rather than redeployments of the stack: `scripts/rewire-engine.sh`
-and then `scripts/rewire-engine-review3.sh` deployed the replacement, the Vault
-took it through `set_engine` and both adapters followed through
-`set_counterparties`, with nothing else touched either time. Those two setters
+The Allocation Engine has moved three times more on its own since, and all
+three were rewirings rather than redeployments of the stack:
+`scripts/rewire-engine.sh`, then `scripts/rewire-engine-review3.sh`, then
+`scripts/rewire-engine-m1.sh` deployed the replacement, the Vault took it
+through `set_engine` and both adapters followed through `set_counterparties`,
+with nothing else touched any of the three times. Those two setters
 were added by the first review on the argument that a pointer with no way back
 had already cost this protocol six contracts, and this is what they were for: a
 change to one contract absorbed by the rest without anything else being
 redeployed.
 
-The second of those rewirings had an order the first did not need.
-`register_pool` now runs the same adapter check `allocate` runs, so the adapters
-are repointed **before** the pools are registered rather than after. Registering
-first and repointing second would leave the registry in exactly the state the
-third review's fix exists to refuse.
+The second of those rewirings had an order the first did not need, and the
+third kept it. `register_pool` now runs the same adapter check `allocate` runs,
+so the adapters are repointed **before** the pools are registered rather than
+after. Registering first and repointing second would leave the registry in
+exactly the state the third review's fix exists to refuse.
+
+The third rewiring closed M1 of the same review, and it is the one whose proof
+runs against the contract it is replacing. An adapter's `recover_surplus` can be
+taken by the adapter's own admin as well as by the Engine, and taken that way the
+cash reaches the Vault with no book moving, which leaves the write-down it was
+going to release frozen on `recognised_losses` and on the pool's cap with no call
+anywhere that can clear it. `scripts/rewire-engine-m1.sh` puts the deployment
+into that state on the outgoing Engine first, shows `recover` refusing, then
+deploys the replacement and clears it with `book_recovery`, and ends with the
+Vault holding exactly what it held at the start.
 
 ### Superseded Contracts
 
