@@ -207,7 +207,7 @@ fn check_invariants(state: &mut FuzzState) -> PResult {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
+    #![proptest_config(ProptestConfig::with_cases(64))]
 
     #[test]
     fn staking_accounting_invariants_hold(ops in proptest::collection::vec(op_strategy(), 1..40)) {

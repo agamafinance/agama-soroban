@@ -8,7 +8,7 @@ use mock_usdc::{MockUsdc, MockUsdcClient};
 use private_credit::{PrivateCreditAdapter, PrivateCreditAdapterClient};
 use soroban_sdk::testutils::{Address as _, MockAuth, MockAuthInvoke};
 use soroban_sdk::{
-    contract, contractimpl, symbol_short, token::TokenClient, IntoVal, InvokeError, String,
+    contract, contractimpl, symbol_short, token::TokenClient, IntoVal, String,
 };
 
 const USDC: i128 = 10_000_000; // 1 USDC at 7 decimals

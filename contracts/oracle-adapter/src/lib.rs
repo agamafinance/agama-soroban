@@ -983,3 +983,5 @@ impl OracleAdapter {
 }
 
 mod test;
+#[cfg(test)]
+mod fuzz;
