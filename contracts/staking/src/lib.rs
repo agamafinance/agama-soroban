@@ -200,6 +200,68 @@ pub struct Allocation {
 /// is the first half of a two step transfer, and it is in the event stream so
 /// that a pending handover is visible to anyone watching rather than only to
 /// whoever thinks to read the state.
+/// Emitted when agUSD is staked.
+///
+/// It carries `nav` and `supply` as they stand after the call, not because a
+/// reader could not fetch them but because it could not fetch them *as they
+/// were*. The share price is `nav / supply`, and an indexer building a price
+/// history from the event stream has no way back to a past pair. Carrying both
+/// makes every price in the history a fact from the ledger rather than a sample
+/// somebody happened to take.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Staked {
+    #[topic]
+    pub staker: Address,
+    /// agUSD in.
+    pub assets: i128,
+    /// sagUSD minted for it.
+    pub shares: i128,
+    pub nav: i128,
+    pub supply: i128,
+}
+
+/// Emitted when an unstake is requested, which is where the shares are burned
+/// and the assets leave the share price. The claim is payable at
+/// `claimable_at`, and a second request before then restarts the cooldown on
+/// the whole pending balance, which is why the field is absolute rather than a
+/// duration.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnstakeRequested {
+    #[topic]
+    pub staker: Address,
+    pub shares: i128,
+    /// agUSD owed, priced at the moment of the request and fixed from then on.
+    pub assets: i128,
+    pub claimable_at: u64,
+    pub nav: i128,
+    pub supply: i128,
+}
+
+/// Emitted when a matured unstake is paid out. The shares were burned at
+/// request time, so nothing about the share price moves here and neither `nav`
+/// nor `supply` is carried: this is the cash leaving, and the accounting for it
+/// already happened.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnstakeClaimed {
+    #[topic]
+    pub staker: Address,
+    pub assets: i128,
+}
+
+/// Emitted when yield is distributed. This is the only call that raises the
+/// share price, so without it in the stream a price history has gaps it cannot
+/// explain: the number moves and nothing says why.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct YieldDistributed {
+    pub amount: i128,
+    pub nav: i128,
+    pub supply: i128,
+}
+
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AdminProposed {
@@ -323,6 +385,14 @@ impl Staking {
         e.storage()
             .instance()
             .set(&Cfg::Stakes, &(Self::stakes(e.clone()) + 1));
+        Staked {
+            staker: from,
+            assets: amount,
+            shares,
+            nav: Self::nav(e.clone()),
+            supply: tok::total_supply(&e),
+        }
+        .publish(&e);
         Ok(shares)
     }
 
@@ -352,6 +422,15 @@ impl Staking {
         p.assets += assets;
         p.claimable_at = e.ledger().timestamp() + cooldown;
         Self::write_pending(&e, &from, &p);
+        UnstakeRequested {
+            staker: from,
+            shares,
+            assets,
+            claimable_at: p.claimable_at,
+            nav: Self::nav(e.clone()),
+            supply: tok::total_supply(&e),
+        }
+        .publish(&e);
         Ok(assets)
     }
 
@@ -407,6 +486,11 @@ impl Staking {
             .ok_or(StakingError::NotInitialized)?;
         TokenClient::new(&e, &agusd).transfer(&e.current_contract_address(), &from, &p.assets);
         e.storage().persistent().remove(&key);
+        UnstakeClaimed {
+            staker: from,
+            assets: p.assets,
+        }
+        .publish(&e);
         Ok(p.assets)
     }
 
@@ -431,6 +515,12 @@ impl Staking {
         TokenClient::new(&e, &agusd).transfer(&admin, &e.current_contract_address(), &amount);
         let nav = Self::nav(e.clone());
         e.storage().instance().set(&Cfg::Nav, &(nav + amount));
+        YieldDistributed {
+            amount,
+            nav: nav + amount,
+            supply: tok::total_supply(&e),
+        }
+        .publish(&e);
         Ok(())
     }
 

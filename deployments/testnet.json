@@ -9,7 +9,7 @@
   "contracts": {
     "usdc": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
     "agusd": "CCXEP6QAAYEMFMV2JGBULD2NS6AQB6KQSBHLPPBJSDBCN6HOYIHNQ6H3",
-    "staking": "CAXVZRR6GQW6FBRZRWSBRWBIYPFPCMFEDFF2BXTDAHE45NB4RYYAFQO4",
+    "staking": "CBXEB4DNLKIC6ZV37TST7VSQQJVXLWVXDCL3CRTAH6JG4XYZZSVMBMCV",
     "vault": "CBNAGG47MEXJQ3KQYXU75VLU4QC5CAEZ6VHY43MSOWHUZWVREPY2BUSB",
     "allocationEngine": "CAJPGOOYVWYJLUNNPQM645L27KUTYGLM2BTHWT2OVRUNJTVTGZCWSBSG",
     "oracleAdapter": "CBH7NW5LQX5MIELSF5T5EPGFADIHDZMAGNPNJE5NP22FNNVOKSEVFB3N",
@@ -501,6 +501,14 @@
       "address": "CAK7NGMFYPAJKFY74TOQSCIJADCDCCMAOKEGFHI2O7BZBCQQTIAFCSSL",
       "supersededBy": "vault",
       "reason": "Replaced by scripts/deploy-mediums.sh, which closes the Medium findings of the second adversarial review. Every contract in this generation wires itself through an initialize() that runs in its own transaction after the deploy, which is a public window in which the same call naming a different admin can land first, and which took its counterparties on trust while the setters that repair those same pointers interrogated them. A __constructor replaces it in all seven contracts, so the bytecode of every one of them differs from the source and none of them could be reused. This Vault also has no record_recovery, so capital written off and later recovered has no way back onto its books, and no bump_claim, so the keeper the architecture document describes has nothing to call and a head claim that outlives its 90 day TTL stops the whole withdrawal queue until somebody pays for a RestoreFootprint."
+    },
+    {
+      "contract": "staking",
+      "generation": 9,
+      "label": "sagUSD staking, ninth deployment",
+      "address": "CAXVZRR6GQW6FBRZRWSBRWBIYPFPCMFEDFF2BXTDAHE45NB4RYYAFQO4",
+      "supersededBy": "staking",
+      "reason": "Replaced by scripts/redeploy-staking-events.sh. Its four asset moving entry points, stake, request_unstake, claim and distribute_yield, emitted nothing, so the only events this contract produced were administrative. Share supply was visible through the SEP-41 mint and burn events the token layer emits, and nav was not visible at all, which means the share price history the grant funds an indexer to expose could not be built from the event stream: it could only be sampled by polling exchange_rate(), which has no past. The replacement emits all four, carrying nav and supply as they stand after the call so that every price in the history is a fact from the ledger. It was empty at the time, so it stranded nobody, and nothing on-chain names this contract."
     }
   ],
   "oracleFeedGuards": "The band bounds every report including the first, which a deviation bound cannot reach because a bound on a move needs something to move from. The minimum interval is measured in ledger time between accepted values, not in the timestamps the reporter supplies, because the reporter chooses those. The reference point is persistent, so it cannot expire out from under the checks that read it.",
