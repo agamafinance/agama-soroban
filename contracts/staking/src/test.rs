@@ -3,9 +3,11 @@ use super::*;
 use agusd::{AgUsd, AgUsdClient};
 use mock_usdc::{MockUsdc, MockUsdcClient};
 use soroban_sdk::testutils::storage::Persistent as _;
+use soroban_sdk::testutils::Events as _;
 use soroban_sdk::{
+    symbol_short,
     testutils::{Address as _, Ledger as _, MockAuth, MockAuthInvoke},
-    vec, Address, Env, IntoVal, String,
+    vec, Address, Env, IntoVal, String, Symbol, TryFromVal,
 };
 
 const COOLDOWN: u64 = 300; // 5 min
@@ -558,4 +560,78 @@ fn a_pending_unstake_is_written_with_a_horizon_and_can_be_pushed_out() {
         f.vault.try_bump_pending(&alice),
         Err(Ok(StakingError::NothingPending))
     );
+}
+
+/// A share price history has to be buildable from the event stream alone.
+///
+/// Tranche 1 of the grant funds an indexer exposing NAV and share price
+/// history. The share price is `nav / supply`. Supply was already in the stream,
+/// through the SEP-41 mint and burn events the token layer emits. `nav` was not
+/// in it at all, and neither was a single one of the four calls that move it, so
+/// the history could not be built from events: it could only be sampled by
+/// polling `exchange_rate()`, which has no past. A number that moves with
+/// nothing in the log to explain it is the thing an indexer cannot reconcile.
+///
+/// So the events carry `nav` and `supply` as they stand after the call. Not
+/// because a reader cannot fetch them, but because it cannot fetch them *as they
+/// were*.
+#[test]
+fn the_share_price_at_every_step_is_reconstructible_from_events() {
+    let f = setup();
+    let alice = Address::generate(&f.e);
+    fund_agusd(&f, &alice, 1_000_0000000);
+    fund_agusd(&f, &f.admin, 500_0000000);
+
+    // Replay the stream the way an indexer would: take the last (nav, supply)
+    // any event reported and compute the price from it.
+    let price_from_events = |f: &Fix| -> Option<i128> {
+        let mut latest: Option<(i128, i128)> = None;
+        for (_, topics, data) in f.e.events().all().iter() {
+            let name: Option<Symbol> = topics.get(0).and_then(|t| Symbol::try_from_val(&f.e, &t).ok());
+            let Some(name) = name else { continue };
+            if name != Symbol::new(&f.e, "staked")
+                && name != Symbol::new(&f.e, "unstake_requested")
+                && name != Symbol::new(&f.e, "yield_distributed")
+            {
+                continue;
+            }
+            if let Ok(m) = soroban_sdk::Map::<Symbol, i128>::try_from_val(&f.e, &data) {
+                if let (Some(nav), Some(supply)) = (
+                    m.get(symbol_short!("nav")),
+                    m.get(symbol_short!("supply")),
+                ) {
+                    latest = Some((nav, supply));
+                }
+            }
+        }
+        latest.map(|(nav, supply)| if supply == 0 { 10_000_000 } else { nav * 10_000_000 / supply })
+    };
+
+    f.vault.stake(&alice, &400_0000000);
+    assert_eq!(price_from_events(&f), Some(f.vault.exchange_rate()));
+
+    f.vault.distribute_yield(&100_0000000);
+    assert_eq!(
+        price_from_events(&f),
+        Some(f.vault.exchange_rate()),
+        "a yield distribution moved the price and the stream did not say so"
+    );
+
+    f.vault.request_unstake(&alice, &100_0000000);
+    assert_eq!(price_from_events(&f), Some(f.vault.exchange_rate()));
+
+    // And the payout itself is in the stream too, so the cash leaving is
+    // reconcilable even though it moves no price.
+    f.e.ledger().set_timestamp(1_000 + COOLDOWN + 1);
+    let paid = f.vault.claim(&alice);
+    let claimed: Option<i128> = f.e.events().all().iter().rev().find_map(|(_, topics, data)| {
+        let name: Symbol = Symbol::try_from_val(&f.e, &topics.get(0)?).ok()?;
+        if name != Symbol::new(&f.e, "unstake_claimed") {
+            return None;
+        }
+        soroban_sdk::Map::<Symbol, i128>::try_from_val(&f.e, &data)
+            .ok()?
+            .get(symbol_short!("assets"))
+    });
+    assert_eq!(claimed, Some(paid), "the payout is not in the event stream");
 }
