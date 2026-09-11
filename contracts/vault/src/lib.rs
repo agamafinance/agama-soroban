@@ -217,6 +217,10 @@ pub trait ShareToken {
     fn mint(e: Env, to: Address, amount: i128);
     fn burn(e: Env, from: Address, amount: i128);
     fn balance(e: Env, id: Address) -> i128;
+    /// Checked against the Vault's USDC, because `deposit` mints one stroop of
+    /// agUSD for one stroop of USDC and that is a peg only while the two count
+    /// stroops the same way.
+    fn decimals(e: Env) -> u32;
     /// The only address the token will create supply for. `set_agusd` reads it,
     /// because a Vault that points at a token which does not name it back is a
     /// Vault whose `deposit` cannot mint, and that is not a hypothetical: it is
@@ -310,6 +314,9 @@ pub enum VaultError {
     /// The address offered as this Vault's oracle does not answer the oracle
     /// interface, or answers it without knowing the feed it was offered with.
     OracleMismatch = 326,
+    /// The agUSD offered counts stroops differently from the USDC this Vault
+    /// custodies, so minting one for one would not be a peg.
+    DecimalMismatch = 327,
 }
 
 /// A queued withdrawal. The agUSD is burned at request time, so this record is
@@ -565,9 +572,32 @@ impl Vault {
         if Self::deposits(e.clone()) > 0 {
             return Err(VaultError::DepositsExist);
         }
-        match AgUsdClient::new(&e, &agusd_token).try_minter() {
+        let token = AgUsdClient::new(&e, &agusd_token);
+        match token.try_minter() {
             Ok(Ok(minter)) if minter == e.current_contract_address() => {}
             _ => return Err(VaultError::AgUsdMismatch),
+        }
+        // And it has to count stroops the way the USDC does.
+        //
+        // `deposit` mints `amount` of agUSD for `amount` of USDC, raw stroop
+        // for raw stroop. That is a one for one peg only while the two tokens
+        // agree on what a stroop is worth. Point this Vault at an agUSD with
+        // six decimals against USDC's seven and every deposit mints ten agUSD
+        // per dollar, and the protocol will not notice: the stroop accounting
+        // stays self consistent, a withdrawal burns the same stroops it minted,
+        // and the redemption round trips exactly. What breaks is everything
+        // outside. "agUSD is a synthetic dollar, peg 1:1" stops being true, and
+        // an AMM pool, an oracle or a lending market that values a unit of it at
+        // a dollar is wrong by a factor of ten with nothing on-chain
+        // contradicting it.
+        //
+        // Both are seven today. This is the check that says so rather than the
+        // assumption that they always will be, and it is asked of the same
+        // client the minter check already interrogates.
+        let usdc_decimals = TokenClient::new(&e, &Self::usdc(e.clone())?).decimals();
+        match token.try_decimals() {
+            Ok(Ok(d)) if d == usdc_decimals => {}
+            _ => return Err(VaultError::DecimalMismatch),
         }
         e.storage().instance().set(&Cfg::AgUsd, &agusd_token);
         Self::bump_instance(&e);

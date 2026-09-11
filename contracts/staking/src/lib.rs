@@ -149,6 +149,9 @@ pub enum StakingError {
     NothingPending = 809,
     /// `claim` before the cooldown on the pending balance has run out.
     StillInCooldown = 810,
+    /// The agUSD offered counts stroops differently from the sagUSD this
+    /// contract issues, so the exchange rate would not start at one.
+    DecimalMismatch = 811,
 }
 
 /// Emitted when the staked asset is repointed. It can only happen before the
@@ -350,6 +353,21 @@ impl Staking {
             .ok_or(StakingError::NotInitialized)?;
         if TokenClient::new(&e, &current).balance(&e.current_contract_address()) != 0 {
             return Err(StakingError::CustodyTaken);
+        }
+        // And it has to count stroops the way sagUSD does.
+        //
+        // The first staker gets shares one for one, raw stroop for raw stroop,
+        // and every share price after that is measured from there. Accept an
+        // agUSD with different decimals and the exchange rate this contract
+        // reports as 1.0 is not one to one in value, and nothing downstream can
+        // tell, because the internal arithmetic stays perfectly consistent in
+        // stroops. It is the same check the Vault makes on the token it mints,
+        // for the same reason: an integer ratio is only a price while both
+        // sides agree what the integers mean.
+        let mine = tok::decimals(&e);
+        match TokenClient::new(&e, &agusd).try_decimals() {
+            Ok(Ok(d)) if d == mine => {}
+            _ => return Err(StakingError::DecimalMismatch),
         }
         e.storage().instance().set(&Cfg::AgUsd, &agusd);
         tok::bump_instance(&e);

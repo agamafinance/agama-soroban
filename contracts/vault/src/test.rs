@@ -1221,6 +1221,14 @@ pub struct UndeliverableToken;
 
 #[contractimpl]
 impl UndeliverableToken {
+    /// Every real token answers this, and the Vault now asks it: `deposit`
+    /// mints one stroop of agUSD for one stroop of USDC, which is a peg only
+    /// while the two count stroops the same way. Seven, to match the agUSD
+    /// stand-in this fixture wires in.
+    pub fn decimals(_e: Env) -> u32 {
+        7
+    }
+
     pub fn faucet(e: Env, to: Address, amount: i128) {
         let held: i128 = e
             .storage()
@@ -2000,4 +2008,50 @@ fn the_wrong_feed_on_the_right_oracle_is_an_operators_assertion() {
     // What has changed is that an operator can see it, in one call, without
     // having to recognise the number.
     assert_eq!(f.vault.oracle_feed(), oracle_adapter::FEED_EF_BOND);
+}
+
+/// `deposit` mints one stroop of agUSD for one stroop of USDC, and that is a
+/// peg only while the two tokens count stroops the same way.
+///
+/// Point this Vault at an agUSD with six decimals against USDC's seven and
+/// every deposit mints ten agUSD per dollar, and nothing inside the protocol
+/// notices: the stroop accounting stays self consistent, a withdrawal burns the
+/// same stroops it minted, and the round trip is exact. What breaks is
+/// everything outside. "agUSD is a synthetic dollar, peg 1:1" stops being true,
+/// and an AMM pool, an oracle or a lending market valuing a unit at a dollar is
+/// wrong by a factor of ten with nothing on-chain contradicting it.
+///
+/// Both are seven today. This is the check that says so.
+#[test]
+fn the_agusd_pointer_refuses_a_token_that_counts_stroops_differently() {
+    let f = setup();
+    let bare_id = f.e.register(Vault, (f.admin.clone(), f.usdc.address.clone()));
+    let bare = VaultClient::new(&f.e, &bare_id);
+
+    // Names this Vault as its minter, so the check that already existed passes.
+    // One decimal short, so the new one does not.
+    let wrong = f.e.register(MockUsdc, ());
+    MockUsdcClient::new(&f.e, &wrong).initialize(
+        &bare_id,
+        &6u32,
+        &String::from_str(&f.e, "Agama USD"),
+        &String::from_str(&f.e, "agUSD"),
+    );
+    assert_eq!(MockUsdcClient::new(&f.e, &wrong).minter(), bare_id);
+    assert_eq!(
+        bare.try_set_agusd(&f.admin, &wrong),
+        Err(Ok(VaultError::DecimalMismatch))
+    );
+
+    // The same token at seven decimals is accepted, so this is a check on
+    // alignment rather than a wall.
+    let right = f.e.register(MockUsdc, ());
+    MockUsdcClient::new(&f.e, &right).initialize(
+        &bare_id,
+        &7u32,
+        &String::from_str(&f.e, "Agama USD"),
+        &String::from_str(&f.e, "agUSD"),
+    );
+    bare.set_agusd(&f.admin, &right);
+    assert_eq!(bare.agusd(), right);
 }
