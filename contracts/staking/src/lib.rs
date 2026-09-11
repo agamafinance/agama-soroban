@@ -614,3 +614,4 @@ impl Staking {
 }
 
 mod test;
+mod fuzz;

@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc fde1761f5f97874e7dc165bf512c2d49fe2f575fe8396462a24e9fff4de3fac0 # shrinks to ops = [Donate { amount: 9286152974 }, Allocate { pool: 0, amount: 9999999 }]
