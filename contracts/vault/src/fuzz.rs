@@ -104,7 +104,6 @@ enum Op {
     WriteDown { pool: usize, amount: i128 },
     Recover { pool: usize },
     Donate { amount: i128 },
-    BookRecovery { pool: usize, amount: i128 },
     SetPaused(bool),
 }
 
@@ -138,8 +137,6 @@ fn op_strategy() -> impl Strategy<Value = Op> {
             .prop_map(|(pool, amount)| Op::WriteDown { pool, amount }),
         2 => (0usize..2usize).prop_map(|pool| Op::Recover { pool }),
         2 => amount_strategy().prop_map(|amount| Op::Donate { amount }),
-        2 => (0usize..2, amount_strategy())
-            .prop_map(|(pool, amount)| Op::BookRecovery { pool, amount }),
         1 => any::<bool>().prop_map(Op::SetPaused),
     ]
 }
@@ -353,12 +350,6 @@ fn apply(state: &mut FuzzState, op: &Op) -> PResult {
                 }
             }
         }
-        Op::BookRecovery { pool, amount } => {
-            let pool_id = state.pool_id(*pool);
-            let _ = state
-                .engine
-                .try_book_recovery(&state.admin, &pool_id, amount);
-        }
         Op::SetPaused(paused) => {
             let _ = state.vault.try_set_paused(&state.admin, paused);
         }
@@ -394,8 +385,6 @@ fn check_floor_base(state: &FuzzState, op: &Op, before: i128) -> PResult {
                 op
             );
         }
-        // Not checked: see `book_recovery_can_lower_floor_base` below.
-        Op::BookRecovery { .. } => {}
         Op::Deposit { .. } | Op::RequestWithdrawal { .. } | Op::Donate { .. } => {}
     }
     Ok(())
@@ -495,64 +484,50 @@ proptest! {
     }
 }
 
-/// `book_recovery` can lower `floor_base`, contradicting its own module docs:
-/// "`floor_base` is unchanged where the recovery lands against a loss and
-/// rises where it exceeds one, exactly as it is when `recover` supplies it.
-/// What a write-down cannot buy, this cannot buy back."
+/// The finding that removed `Engine::book_recovery`, kept as the record of it.
 ///
-/// The fuzzer above found the shape of this inside twenty lines of random
-/// operations. What follows is the same finding written out with round
-/// numbers so the mechanism is legible without reading a shrunk trace.
+/// The fuzzer's shrunk counterexample was a donation straight to the Vault, an
+/// allocation, a write-down and a `book_recovery`, after which `floor_base` had
+/// fallen. The mechanism: `idle_reserves` reads the real token balance, so cash
+/// that arrives without the books being told raises the base the moment it
+/// lands. `book_recovery` then booked that same cash and lowered
+/// `recognised_losses` by up to the same amount with no further cash moving.
+/// Both terms are in the base, so the dollar was counted on arrival and spent
+/// again on booking, and the base ended lower than it stood in between.
 ///
-/// `recover` and `book_recovery` are documented as behaving identically with
-/// respect to `floor_base`, and for `recover` that claim is true: the cash it
-/// books was sitting in an adapter, which nothing in `floor_base` reads, so
-/// the moment it lands in the Vault is the first moment it is counted, and
-/// `free_reserves` rises there by exactly what `recognised_losses` falls by,
-/// or more.
+/// `recover` does not have the problem, and the difference is where the cash
+/// sits when it is booked. In an adapter it is outside the base until the sweep
+/// brings it in, so the rise and the fall happen in the same call and cancel.
+/// The comment written on `book_recovery` claimed the two were equivalent,
+/// because an admin could send USDC to an adapter and sweep it through
+/// `recover` for the same effect. The round trip is not equivalent, and that
+/// sentence is what this counterexample refutes.
 ///
-/// `book_recovery` books cash that is already inside the Vault's own idle
-/// balance instead. `Vault::idle_reserves` reads the real token balance
-/// directly and does not care whether `record_repayment` or `record_recovery`
-/// has ever been told about it, so a stray transfer straight to the Vault (a
-/// misdirected repayment, an over-payment, an operator's mistake) raises
-/// `floor_base` once, the moment it arrives, whether or not anyone ever calls
-/// `book_recovery` on it. Calling `book_recovery` afterwards, against any
-/// registered pool, including one with no write-down against it at all, then
-/// lowers `recognised_losses` by up to that same amount with no further cash
-/// moving. The two effects do not cancel: the first already happened when the
-/// cash landed, and the second spends the same dollar again, so `floor_base`
-/// ends up lower than it stood right after the transfer arrived. That is a
-/// real reduction in the reserve floor's base and, through it, in how much
-/// idle USDC `allocate` is required to leave behind.
+/// Fixing it properly means measuring the base on `booked_reserves` rather than
+/// the raw balance, which then requires `settle_allocation` to measure the same
+/// way or the two disagree and an allocation stops being neutral on the base,
+/// which then makes cash nobody deposited undeployable. That is a redesign of
+/// the reserve floor's basis and it is written up as a proposal in
+/// `docs/reviews/floor-base-on-accounted-cash.md` rather than taken at speed on
+/// top of the bug it is fixing.
 ///
-/// The module comment on `book_recovery` reasons that the call is safe
-/// because "the global loss book and the Vault's both move by exactly the
-/// cash that arrived", which is the `recover` reasoning, applied to a call
-/// where the cash did not just arrive in this transaction. This test is the
-/// counterexample to that sentence for `floor_base`. The comment's separate
-/// point, that a recovery can be booked against the wrong pool and so free a
-/// concentration charge that pool never earned back, is already disclosed
-/// there and is not what this test is about.
+/// So `book_recovery` is gone and M1 of the third review is open again, which
+/// is where that review left it, for the reason it gave: "That is new authority
+/// over `recognised_losses` and a product decision, which is why it is recorded
+/// rather than written."
 #[test]
-fn book_recovery_can_lower_floor_base() {
+fn there_is_no_way_to_book_a_recovery_against_cash_already_in_the_vault() {
     let state = setup();
-
-    // A stray transfer straight to the Vault. Nothing about the mechanism
-    // requires this to be adversarial: an over-payment or a repayment sent to
-    // the wrong address lands exactly the same way.
     let donor = Address::generate(&state.e);
     state.usdc.faucet(&donor, &(1_000 * USDC));
-    let usdc_token = soroban_sdk::token::TokenClient::new(&state.e, &state.usdc_id);
-    usdc_token.transfer(&donor, &state.vault_id, &(1_000 * USDC));
+    soroban_sdk::token::TokenClient::new(&state.e, &state.usdc_id)
+        .transfer(&donor, &state.vault_id, &(1_000 * USDC));
 
-    let floor_base_after_donation = state.vault.floor_base();
-    assert_eq!(floor_base_after_donation, 1_000 * USDC);
+    // The donation raises the base, because the base reads the real balance.
+    // On its own that is conservative: more cash, more floor.
+    let base = state.vault.floor_base();
+    assert_eq!(base, 1_000 * USDC);
 
-    // An unrelated pool default, recognised honestly through the Engine.
-    // allocate and write_down are floor_base neutral, which this suite checks
-    // on every case above; confirmed again here so the final assertion
-    // isolates book_recovery as the only remaining suspect.
     state
         .engine
         .allocate(&state.admin, &state.ef_pool_id, &(500 * USDC));
@@ -562,21 +537,12 @@ fn book_recovery_can_lower_floor_base() {
         &(500 * USDC),
         &symbol_short!("FUZZ"),
     );
-    assert_eq!(state.vault.floor_base(), floor_base_after_donation);
+    assert_eq!(state.vault.floor_base(), base);
 
-    // Book the stray transfer as a recovery against a different pool, one
-    // that was never written down at all.
-    state
-        .engine
-        .book_recovery(&state.admin, &state.pc_pool_id, &(500 * USDC));
-
-    let floor_base_after_book_recovery = state.vault.floor_base();
-    assert!(
-        floor_base_after_book_recovery >= floor_base_after_donation,
-        "floor_base fell from {} to {} after book_recovery, even though no \
-         cash moved and the recovery was booked against a pool with no \
-         write-down against it",
-        floor_base_after_donation,
-        floor_base_after_book_recovery
-    );
+    // And nothing can spend that same dollar a second time. The Vault's
+    // `record_recovery` is reachable only from `Engine::recover`, which is
+    // bounded by what an adapter holds above its booked exposure, so the cash
+    // it books is cash the base was not already counting.
+    assert_eq!(state.vault.recognised_losses(), 500 * USDC);
+    assert_eq!(state.vault.floor_base(), base);
 }
