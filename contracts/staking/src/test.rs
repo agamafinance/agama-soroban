@@ -635,3 +635,42 @@ fn the_share_price_at_every_step_is_reconstructible_from_events() {
     });
     assert_eq!(claimed, Some(paid), "the payout is not in the event stream");
 }
+
+/// The first staker gets shares one for one, raw stroop for raw stroop, and
+/// every share price after that is measured from there.
+///
+/// Accept an agUSD that counts stroops differently from sagUSD and the exchange
+/// rate this contract reports as 1.0 is not one to one in value, and nothing
+/// downstream can tell, because the internal arithmetic stays perfectly
+/// consistent in stroops. It is the same check the Vault makes on the token it
+/// mints, for the same reason: an integer ratio is only a price while both sides
+/// agree what the integers mean.
+#[test]
+fn the_agusd_pointer_refuses_a_token_that_counts_stroops_differently() {
+    let f = setup();
+
+    let wrong = f.e.register(MockUsdc, ());
+    MockUsdcClient::new(&f.e, &wrong).initialize(
+        &f.admin,
+        &6u32,
+        &String::from_str(&f.e, "Agama USD"),
+        &String::from_str(&f.e, "agUSD"),
+    );
+    assert_eq!(
+        f.vault.try_set_agusd(&f.admin, &wrong),
+        Err(Ok(StakingError::DecimalMismatch))
+    );
+    assert_eq!(f.vault.agusd(), f.ag.address);
+
+    // Seven decimals is accepted, so this is a check on alignment rather than a
+    // wall across repointing.
+    let right = f.e.register(MockUsdc, ());
+    MockUsdcClient::new(&f.e, &right).initialize(
+        &f.admin,
+        &7u32,
+        &String::from_str(&f.e, "Agama USD"),
+        &String::from_str(&f.e, "agUSD"),
+    );
+    f.vault.set_agusd(&f.admin, &right);
+    assert_eq!(f.vault.agusd(), right);
+}
