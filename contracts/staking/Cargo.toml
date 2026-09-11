@@ -16,3 +16,4 @@ token = { workspace = true }
 soroban-sdk = { workspace = true, features = ["testutils"] }
 mock_usdc = { path = "../mock_usdc" }
 agusd = { path = "../agusd" }
+proptest = { workspace = true }

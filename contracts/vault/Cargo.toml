@@ -17,3 +17,5 @@ mock_usdc = { path = "../mock_usdc" }
 allocation-engine = { path = "../allocation-engine" }
 oracle-adapter = { path = "../oracle-adapter" }
 private-credit = { path = "../../adapters/private-credit" }
+etherfuse = { path = "../../adapters/etherfuse" }
+proptest = { workspace = true }

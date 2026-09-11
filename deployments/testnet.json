@@ -11,7 +11,7 @@
     "agusd": "CCXEP6QAAYEMFMV2JGBULD2NS6AQB6KQSBHLPPBJSDBCN6HOYIHNQ6H3",
     "staking": "CAXVZRR6GQW6FBRZRWSBRWBIYPFPCMFEDFF2BXTDAHE45NB4RYYAFQO4",
     "vault": "CBNAGG47MEXJQ3KQYXU75VLU4QC5CAEZ6VHY43MSOWHUZWVREPY2BUSB",
-    "allocationEngine": "CCSZ3QEV3LPZ3CQCHUADR4CLYGO3GHKDS26BKSL2XMV2XPDW3DCAVIMQ",
+    "allocationEngine": "CAJPGOOYVWYJLUNNPQM645L27KUTYGLM2BTHWT2OVRUNJTVTGZCWSBSG",
     "oracleAdapter": "CBH7NW5LQX5MIELSF5T5EPGFADIHDZMAGNPNJE5NP22FNNVOKSEVFB3N",
     "agusdCore": "CCUGWQ5DRO66BASGU5UZIX6YWIWJ6GKQOBAABT2246OE5WZOI6JFHA7V"
   },
@@ -87,68 +87,12 @@
       "label": "agUSD (`contracts/agusd`), first deployment"
     },
     {
-      "contract": "vault",
-      "generation": 1,
-      "address": "CAVKHGBQUEPVTWHFJGU42ZVZA6VZSM6RZXFHCUXTT72JFRWNPF5OFJW3",
-      "supersededBy": "vault",
-      "reason": "Initialized against the first generation agUSD with no setter for the token address and no upgrade entry point, so its deposit() could never mint. The first Allocation Engine was pointed at it and could not be repointed either, which is what stranded the Vault that replaced it.",
-      "label": "Vault Contract, first deployment"
-    },
-    {
-      "contract": "vault",
-      "generation": 2,
-      "address": "CDQP7L5RZ6AM4J2PZETMG7TC4M3CDTVQ6QAMYPLG43Z6GAOCB4TR3KS4",
-      "supersededBy": "vault",
-      "reason": "Initialized with the generation 1 Allocation Engine as its allocation counterparty, and settle_allocation authorizes that address and no other. The Engine it names governs a different Vault, so this one can take deposits and pay its withdrawal queue but can never release capital to a pool: 100% idle for the life of the contract. It carries set_agusd but not set_engine, so the pointer that matters could not be corrected.",
-      "label": "Vault Contract, second deployment"
-    },
-    {
       "contract": "agusdCore",
       "generation": 1,
       "address": "CCFICOHAC4V6M5CDI62O5SWCZR43XG6JXNYFBZ4HAVQJBUCR4V6H54WV",
       "supersededBy": "agusdCore",
       "reason": "Names the generation 2 Vault as its only minter and has no set_minter, so issuance could not follow the Vault to its replacement. Superseded with a zero supply: every unit it issued was redeemed for USDC through the Vault before the handover, so it strands no holders.",
       "label": "agUSD (`contracts/agusd-core`), first deployment"
-    },
-    {
-      "contract": "allocationEngine",
-      "generation": 1,
-      "address": "CANDJEHBZUPGBWQMWM567Z3NQR4AHJKJSMWB4LTXPT6SC7GSRKSL2SGS",
-      "supersededBy": "allocationEngine",
-      "reason": "Stores the Vault it governs at initialize() with no setter, and the Vault it names was superseded, so every cap it enforced was measured against a balance sheet nobody was depositing into any more. This is the contract the whole incident is named after.",
-      "label": "Allocation Engine, first deployment"
-    },
-    {
-      "contract": "poolAdapters.private-credit",
-      "generation": 1,
-      "address": "CCDZRKZDCWJWTFMLVJFW4LRALZEWRDKWOOD727EDO3EFFKLNDKCXT3VZ",
-      "supersededBy": "poolAdapters.private-credit",
-      "reason": "Stores both the Engine and the Vault at initialize() with no setters, and both of the addresses it stores were superseded.",
-      "label": "Private credit adapter, first deployment"
-    },
-    {
-      "contract": "poolAdapters.etherfuse",
-      "generation": 1,
-      "address": "CBS3OGCVYMI3XQN2ORZZNE2WKGYK24VSTVDUB3QS5HCZHBQQFWKFLYKK",
-      "supersededBy": "poolAdapters.etherfuse",
-      "reason": "Stores both the Engine and the Vault at initialize() with no setters, and both of the addresses it stores were superseded.",
-      "label": "Etherfuse adapter, first deployment"
-    },
-    {
-      "contract": "staking",
-      "generation": 1,
-      "address": "CABPYD4U5FAYLBEBMY2MVGVF7BILXTNPWGLOPIXCMUK3QQGIAE2XTALX",
-      "supersededBy": "staking",
-      "reason": "Accepts the generation 1 agUSD, stores it at initialize() with no setter, and has no re-initialization guard. A holder of the agUSD the protocol now issues could not stake at all, and the refusal read as an insufficient balance rather than as a wiring mistake. It is left running rather than drained: it still holds 49.19 agUSD of staked position against 48.39 sagUSD shares, on the token it accepts, so its existing stakers are unaffected by the handover.",
-      "label": "sagUSD staking, first deployment"
-    },
-    {
-      "contract": "vault",
-      "generation": 3,
-      "label": "Vault Contract, third deployment",
-      "address": "CAU54R4PIHZXGCRZMJJCCIOFNMVXZHZF6BBNNSGWJT6A4UZ32MA33AFY",
-      "supersededBy": "vault",
-      "reason": "Replaced by scripts/deploy-rewire.sh. This Vault Contract carried the counterparty setters but the guards on them were too loose: Vault.set_engine accepted any address, including an ordinary account, which made the pointer that releases the Vault's reserves a one call instruction to hand them over, and the adapters could be repointed at a Vault their own Engine did not govern, which would have misdirected repayments one allocation later. Deployed and replaced the same day, before it held anything but the deploying admin's own working capital."
     },
     {
       "contract": "agusdCore",
@@ -159,108 +103,12 @@
       "reason": "Replaced by scripts/deploy-rewire.sh. This agUSD carried the counterparty setters but the guards on them were too loose: Vault.set_engine accepted any address, including an ordinary account, which made the pointer that releases the Vault's reserves a one call instruction to hand them over, and the adapters could be repointed at a Vault their own Engine did not govern, which would have misdirected repayments one allocation later. Deployed and replaced the same day, before it held anything but the deploying admin's own working capital."
     },
     {
-      "contract": "allocationEngine",
-      "generation": 2,
-      "label": "Allocation Engine, second deployment",
-      "address": "CBCLMUK4R2CW3YVCX3OQ3GMGAXUNKA6JQWXH2AG3JW7U35FBNFHEAMKE",
-      "supersededBy": "allocationEngine",
-      "reason": "Replaced by scripts/deploy-rewire.sh. This Allocation Engine carried the counterparty setters but the guards on them were too loose: Vault.set_engine accepted any address, including an ordinary account, which made the pointer that releases the Vault's reserves a one call instruction to hand them over, and the adapters could be repointed at a Vault their own Engine did not govern, which would have misdirected repayments one allocation later. Deployed and replaced the same day, before it held anything but the deploying admin's own working capital."
-    },
-    {
-      "contract": "poolAdapters.private-credit",
-      "generation": 2,
-      "label": "Private credit adapter, second deployment",
-      "address": "CDKLN4NBLLHYUOQEDLSKWM6BI7HSN4NL3W5B2MB4DUAPJG4IKA2RSMEV",
-      "supersededBy": "poolAdapters.private-credit",
-      "reason": "Replaced by scripts/deploy-rewire.sh. This private credit adapter carried the counterparty setters but the guards on them were too loose: Vault.set_engine accepted any address, including an ordinary account, which made the pointer that releases the Vault's reserves a one call instruction to hand them over, and the adapters could be repointed at a Vault their own Engine did not govern, which would have misdirected repayments one allocation later. Deployed and replaced the same day, before it held anything but the deploying admin's own working capital."
-    },
-    {
-      "contract": "poolAdapters.etherfuse",
-      "generation": 2,
-      "label": "Etherfuse adapter, second deployment",
-      "address": "CCFYYCIHEKQLFN5TZKGFBW3GAH6SBXA7YEWMETTR62TWPEC43X2H6KGO",
-      "supersededBy": "poolAdapters.etherfuse",
-      "reason": "Replaced by scripts/deploy-rewire.sh. This Etherfuse adapter carried the counterparty setters but the guards on them were too loose: Vault.set_engine accepted any address, including an ordinary account, which made the pointer that releases the Vault's reserves a one call instruction to hand them over, and the adapters could be repointed at a Vault their own Engine did not govern, which would have misdirected repayments one allocation later. Deployed and replaced the same day, before it held anything but the deploying admin's own working capital."
-    },
-    {
-      "contract": "staking",
-      "generation": 2,
-      "label": "sagUSD staking, second deployment",
-      "address": "CDY3ED6T72VJDX5RCMQOZNCV5XKJBHQVAYPNOXTWB66RNBVOS5BTC345",
-      "supersededBy": "staking",
-      "reason": "Replaced by scripts/deploy-rewire.sh. This sagUSD staking carried the counterparty setters but the guards on them were too loose: Vault.set_engine accepted any address, including an ordinary account, which made the pointer that releases the Vault's reserves a one call instruction to hand them over, and the adapters could be repointed at a Vault their own Engine did not govern, which would have misdirected repayments one allocation later. Deployed and replaced the same day, before it held anything but the deploying admin's own working capital."
-    },
-    {
-      "contract": "staking",
-      "generation": 3,
-      "label": "sagUSD staking, third deployment",
-      "address": "CBMEW3QALCS6FFJMK5FR7LVKUWX3MPIP26LQQQAFYMQFYVG6VUWFTHZF",
-      "supersededBy": "staking",
-      "reason": "Replaced by scripts/deploy-sagusd.sh. Exposes accrue_yield and share_price, the names this contract shipped with, rather than distribute_yield and exchange_rate, the names Agama committed to in its answer to the SCF panel and that DeFindex compatibility is a funded deliverable for. A wallet looking for the committed convention did not find it on this contract. Superseded holding nothing: NAV and share supply were both zero at handover, so it strands no staker."
-    },
-    {
-      "contract": "vault",
-      "generation": 4,
-      "label": "Vault Contract, fourth deployment",
-      "address": "CCGPF36PDG2WBBK6ZROLMNMHD67UV4MNG6PHQCN2PXWLLRBXCYF5KVRR",
-      "supersededBy": "vault",
-      "reason": "Replaced by scripts/deploy-hardening.sh. This Vault Contract predates the fixes from the adversarial security review: the Vault delegated the reserve floor entirely to whatever Allocation Engine it pointed at, so a contract that answered vault() correctly could empty it; queued withdrawals were counted as free liquidity by the floor and the caps, so capital could be deployed against money already owed; a stalled head claim froze the withdrawal queue for everyone behind it; a credit loss could not be recognised on-chain at all; sagUSD carried report_nav, a bare setter on the denominator of its own share price; and no contract had admin rotation."
-    },
-    {
       "contract": "agusdCore",
       "generation": 3,
       "label": "agUSD, third deployment",
       "address": "CCW763RTVRDQTEEQ42XCAARSJ42AKWRB2DDM62QV4XVUJFCDAWU4ALZL",
       "supersededBy": "agusdCore",
       "reason": "Replaced by scripts/deploy-hardening.sh. This agUSD predates the fixes from the adversarial security review: the Vault delegated the reserve floor entirely to whatever Allocation Engine it pointed at, so a contract that answered vault() correctly could empty it; queued withdrawals were counted as free liquidity by the floor and the caps, so capital could be deployed against money already owed; a stalled head claim froze the withdrawal queue for everyone behind it; a credit loss could not be recognised on-chain at all; sagUSD carried report_nav, a bare setter on the denominator of its own share price; and no contract had admin rotation."
-    },
-    {
-      "contract": "allocationEngine",
-      "generation": 3,
-      "label": "Allocation Engine, third deployment",
-      "address": "CAFJKWLUGUSYEC7L5ZBNFIFEPSO5MLI7SKDMVVJCGC6Z2TGVP5SZ5HUX",
-      "supersededBy": "allocationEngine",
-      "reason": "Replaced by scripts/deploy-hardening.sh. This Allocation Engine predates the fixes from the adversarial security review: the Vault delegated the reserve floor entirely to whatever Allocation Engine it pointed at, so a contract that answered vault() correctly could empty it; queued withdrawals were counted as free liquidity by the floor and the caps, so capital could be deployed against money already owed; a stalled head claim froze the withdrawal queue for everyone behind it; a credit loss could not be recognised on-chain at all; sagUSD carried report_nav, a bare setter on the denominator of its own share price; and no contract had admin rotation."
-    },
-    {
-      "contract": "oracleAdapter",
-      "generation": 1,
-      "label": "Oracle Adapter, first deployment",
-      "address": "CDV5BC4XCNT5ASOZNFXBQXRGKVXGKHLRVK5EDX6XP5J6EBIZWSXCSV7G",
-      "supersededBy": "oracleAdapter",
-      "reason": "Replaced by scripts/deploy-hardening.sh. This Oracle Adapter predates the fixes from the adversarial security review: the Vault delegated the reserve floor entirely to whatever Allocation Engine it pointed at, so a contract that answered vault() correctly could empty it; queued withdrawals were counted as free liquidity by the floor and the caps, so capital could be deployed against money already owed; a stalled head claim froze the withdrawal queue for everyone behind it; a credit loss could not be recognised on-chain at all; sagUSD carried report_nav, a bare setter on the denominator of its own share price; and no contract had admin rotation."
-    },
-    {
-      "contract": "poolAdapters.private-credit",
-      "generation": 3,
-      "label": "Private credit adapter, third deployment",
-      "address": "CBAPY7KRVIG3FPGSP3VKXXA6SCDKZUWBSFDWISRJXR5V7PYPVQZGFTOZ",
-      "supersededBy": "poolAdapters.private-credit",
-      "reason": "Replaced by scripts/deploy-hardening.sh. This private credit adapter predates the fixes from the adversarial security review: the Vault delegated the reserve floor entirely to whatever Allocation Engine it pointed at, so a contract that answered vault() correctly could empty it; queued withdrawals were counted as free liquidity by the floor and the caps, so capital could be deployed against money already owed; a stalled head claim froze the withdrawal queue for everyone behind it; a credit loss could not be recognised on-chain at all; sagUSD carried report_nav, a bare setter on the denominator of its own share price; and no contract had admin rotation."
-    },
-    {
-      "contract": "poolAdapters.etherfuse",
-      "generation": 3,
-      "label": "Etherfuse adapter, third deployment",
-      "address": "CBA3GQLHCEOCCZIDVFZ74AG4FUCEO2SN7AMGY4RSAMN4DTHW2WAH7EWI",
-      "supersededBy": "poolAdapters.etherfuse",
-      "reason": "Replaced by scripts/deploy-hardening.sh. This Etherfuse adapter predates the fixes from the adversarial security review: the Vault delegated the reserve floor entirely to whatever Allocation Engine it pointed at, so a contract that answered vault() correctly could empty it; queued withdrawals were counted as free liquidity by the floor and the caps, so capital could be deployed against money already owed; a stalled head claim froze the withdrawal queue for everyone behind it; a credit loss could not be recognised on-chain at all; sagUSD carried report_nav, a bare setter on the denominator of its own share price; and no contract had admin rotation."
-    },
-    {
-      "contract": "staking",
-      "generation": 4,
-      "label": "sagUSD staking, fourth deployment",
-      "address": "CCBEDKRQHKAP2W3NC4UIYC4WZSMJVYRXN6EQERHFII45M3PD4JL6HFO2",
-      "supersededBy": "staking",
-      "reason": "Replaced by scripts/deploy-hardening.sh. This sagUSD staking predates the fixes from the adversarial security review: the Vault delegated the reserve floor entirely to whatever Allocation Engine it pointed at, so a contract that answered vault() correctly could empty it; queued withdrawals were counted as free liquidity by the floor and the caps, so capital could be deployed against money already owed; a stalled head claim froze the withdrawal queue for everyone behind it; a credit loss could not be recognised on-chain at all; sagUSD carried report_nav, a bare setter on the denominator of its own share price; and no contract had admin rotation."
-    },
-    {
-      "contract": "vault",
-      "generation": 5,
-      "label": "Vault Contract, fifth deployment",
-      "address": "CCW5EQCVHXA2PTXN4Y4QMO4O4YMG6BRMB7M2PYASILFI53BL3CKDSIWP",
-      "supersededBy": "vault",
-      "reason": "Replaced by scripts/deploy-review2.sh. This Vault predates the fixes from the second adversarial security review: the reserve floor was a share of net assets, which record_writedown lowers with no cash moving, so alternating allocate and write_down walked the whole of the reserves out of the Vault in slices that were each individually inside the floor; and a withdrawal claim the USDC contract refused to deliver, which for a Stellar Asset Contract means any claimant without a trustline, with a frozen one, or with a limit below the claim, trapped the payout path and froze the whole FIFO queue permanently."
     },
     {
       "contract": "agusdCore",
@@ -271,38 +119,6 @@
       "reason": "Replaced by scripts/deploy-review2.sh. It names the superseded Vault as its only minter and has minted, so the pointer is frozen and issuance could not follow the Vault to its replacement. Superseded with a zero supply: every unit it issued was redeemed for USDC through its own Vault before the handover, so it strands no holders."
     },
     {
-      "contract": "allocationEngine",
-      "generation": 4,
-      "label": "Allocation Engine, fourth deployment",
-      "address": "CAOGJDWH5SZAVPGLBB2NCKGPT4OUFT3YEKUCKEJP6BVN3CR2WUKJDONN",
-      "supersededBy": "allocationEngine",
-      "reason": "Replaced by scripts/deploy-review2.sh. This Allocation Engine predates the fixes from the second adversarial security review: the reserve floor was a share of net assets, which record_writedown lowers with no cash moving, so alternating allocate and write_down walked the whole of the reserves out of the Vault in slices that were each individually inside the floor; and a withdrawal claim the USDC contract refused to deliver, which for a Stellar Asset Contract means any claimant without a trustline, with a frozen one, or with a limit below the claim, trapped the payout path and froze the whole FIFO queue permanently."
-    },
-    {
-      "contract": "poolAdapters.private-credit",
-      "generation": 4,
-      "label": "Private credit adapter, fourth deployment",
-      "address": "CBWFVABYRGKAGDN54MIN4GIXQO3ALVPJ3POSVFDFKUQSLYL4M4JT5BBT",
-      "supersededBy": "poolAdapters.private-credit",
-      "reason": "Replaced by scripts/deploy-review2.sh, and not because its code changed: it is byte for byte the adapter that was already deployed. It could not follow the new Engine and Vault because set_counterparties refuses an adapter holding USDC, and it holds 0.2 USDC left over from the write-down the previous smoke run performed. The position was written off, so its exposure is zero, deallocate is capped at zero and there is no sweep entry point, which leaves the cash and the repair path both stuck. That is finding M2 of the second adversarial review, recorded and left for triage, and this retirement is what it cost. The Etherfuse adapter, empty, was repointed in place instead."
-    },
-    {
-      "contract": "staking",
-      "generation": 5,
-      "label": "sagUSD staking, fifth deployment",
-      "address": "CDU7BYCE535Y4WU6FAQTMNPLR3RD7HTGWR2NETW7EEPAQTLY2XGVYE7X",
-      "supersededBy": "staking",
-      "reason": "Replaced by scripts/deploy-review2.sh, and not because its code changed. It stores the agUSD it accepts and closes that pointer once it has taken custody, which it has; the Vault changed, so agUSD changed, so this contract had to follow. Its stake was unwound and redeemed before the handover, so it strands nobody."
-    },
-    {
-      "contract": "vault",
-      "generation": 6,
-      "label": "Vault Contract, sixth deployment",
-      "address": "CCVFI7YGBYL346U4NY2TSXGIH3766LKK74BJ5VDCKX5YZFJIUBDFIKXT",
-      "supersededBy": "vault",
-      "reason": "This Vault was replaced by a later run of scripts/deploy-review2.sh from the same source: byte for byte the contract that superseded it. It was retired because the smoke run left it carrying recognised losses that were experiments rather than credit events, and recognised_losses is deliberately permanent, so a book whose reserve floor is not tightened for good by a test is only reachable through a fresh deployment. The permanence is the fix behaving as designed, and this retirement is the price of it."
-    },
-    {
       "contract": "agusdCore",
       "generation": 5,
       "label": "agUSD, fifth deployment",
@@ -311,60 +127,12 @@
       "reason": "Replaced by scripts/deploy-review2.sh. It names the superseded Vault as its only minter and has minted, so the pointer is frozen and issuance could not follow the Vault to its replacement. Superseded with a zero supply: every unit it issued was redeemed for USDC through its own Vault before the handover, so it strands no holders."
     },
     {
-      "contract": "allocationEngine",
-      "generation": 5,
-      "label": "Allocation Engine, fifth deployment",
-      "address": "CA2KUSVWB6G5MTA32XXAGACXNHQQM3ETND3CWVJRVTNPLG2PXIJJ7YAZ",
-      "supersededBy": "allocationEngine",
-      "reason": "This Allocation Engine was replaced by a later run of scripts/deploy-review2.sh from the same source: byte for byte the contract that superseded it. It was retired because the smoke run left it carrying recognised losses that were experiments rather than credit events, and recognised_losses is deliberately permanent, so a book whose reserve floor is not tightened for good by a test is only reachable through a fresh deployment. The permanence is the fix behaving as designed, and this retirement is the price of it."
-    },
-    {
-      "contract": "poolAdapters.private-credit",
-      "generation": 5,
-      "label": "Private credit adapter, fifth deployment",
-      "address": "CDPFTGS62IZHPZEGK6ENVTBLUKMLOD4OEPD7UVMJG3FCNDWS65TWQFYQ",
-      "supersededBy": "poolAdapters.private-credit",
-      "reason": "Replaced by scripts/deploy-review2.sh, and not because its code changed: it is byte for byte the adapter that was already deployed. It could not follow the new Engine and Vault because set_counterparties refuses an adapter holding USDC, and it holds USDC left over from a written-down position. The position was written off, so its exposure is zero, deallocate is capped at zero and there is no sweep entry point, which leaves the cash and the repair path both stuck. That is finding M2 of the second adversarial review, recorded and left for triage, and this retirement is what it cost. The Etherfuse adapter, empty, was repointed in place instead."
-    },
-    {
-      "contract": "vault",
-      "generation": 7,
-      "label": "Vault Contract, seventh deployment",
-      "address": "CBIJCFWZXCHMWBEDXBCCKIPVTPUI4TDMZOMMI6S7URU5GLTA5627JDPK",
-      "supersededBy": "vault",
-      "reason": "This Vault was replaced by a later run of scripts/deploy-review2.sh from the same source: byte for byte the contract that superseded it. It was retired because the smoke run left it carrying recognised losses that were experiments rather than credit events, and recognised_losses is deliberately permanent, so a book whose reserve floor is not tightened for good by a test is only reachable through a fresh deployment. The permanence is the fix behaving as designed, and this retirement is the price of it."
-    },
-    {
       "contract": "agusdCore",
       "generation": 6,
       "label": "agUSD, sixth deployment",
       "address": "CCS3LZINQQRRQQSSVXGPNEOIAGNMB6AR7UAVJEK7MZ6RGVSPVZNA2YZD",
       "supersededBy": "agusdCore",
       "reason": "Replaced by scripts/deploy-review2.sh. It names the superseded Vault as its only minter and has minted, so the pointer is frozen and issuance could not follow the Vault to its replacement. Superseded with a zero supply: every unit it issued was redeemed for USDC through its own Vault before the handover, so it strands no holders."
-    },
-    {
-      "contract": "allocationEngine",
-      "generation": 6,
-      "label": "Allocation Engine, sixth deployment",
-      "address": "CB45BH7XYH6QWWSOI67Z4IEK6VYF7TO53OYQIFKLIMJ6ZZOBXJ2EEK4K",
-      "supersededBy": "allocationEngine",
-      "reason": "This Allocation Engine was replaced by a later run of scripts/deploy-review2.sh from the same source: byte for byte the contract that superseded it. It was retired because the smoke run left it carrying recognised losses that were experiments rather than credit events, and recognised_losses is deliberately permanent, so a book whose reserve floor is not tightened for good by a test is only reachable through a fresh deployment. The permanence is the fix behaving as designed, and this retirement is the price of it."
-    },
-    {
-      "contract": "poolAdapters.private-credit",
-      "generation": 6,
-      "label": "Private credit adapter, sixth deployment",
-      "address": "CANRYN2HGYU6SBQOYKCL52LSNSXKOK54ECK2UFAZTMHNPK47VUZQUIIQ",
-      "supersededBy": "poolAdapters.private-credit",
-      "reason": "Replaced by scripts/deploy-review2.sh, and not because its code changed: it is byte for byte the adapter that was already deployed. It could not follow the new Engine and Vault because set_counterparties refuses an adapter holding USDC, and it holds USDC left over from a written-down position. The position was written off, so its exposure is zero, deallocate is capped at zero and there is no sweep entry point, which leaves the cash and the repair path both stuck. That is finding M2 of the second adversarial review, recorded and left for triage, and this retirement is what it cost. The Etherfuse adapter, empty, was repointed in place instead."
-    },
-    {
-      "contract": "vault",
-      "generation": 8,
-      "label": "Vault Contract, eighth deployment",
-      "address": "CAK7NGMFYPAJKFY74TOQSCIJADCDCCMAOKEGFHI2O7BZBCQQTIAFCSSL",
-      "supersededBy": "vault",
-      "reason": "Replaced by scripts/deploy-mediums.sh, which closes the Medium findings of the second adversarial review. Every contract in this generation wires itself through an initialize() that runs in its own transaction after the deploy, which is a public window in which the same call naming a different admin can land first, and which took its counterparties on trust while the setters that repair those same pointers interrogated them. A __constructor replaces it in all seven contracts, so the bytecode of every one of them differs from the source and none of them could be reused. This Vault also has no record_recovery, so capital written off and later recovered has no way back onto its books, and no bump_claim, so the keeper the architecture document describes has nothing to call and a head claim that outlives its 90 day TTL stops the whole withdrawal queue until somebody pays for a RestoreFootprint."
     },
     {
       "contract": "agusdCore",
@@ -376,43 +144,59 @@
     },
     {
       "contract": "allocationEngine",
+      "generation": 1,
+      "address": "CANDJEHBZUPGBWQMWM567Z3NQR4AHJKJSMWB4LTXPT6SC7GSRKSL2SGS",
+      "supersededBy": "allocationEngine",
+      "reason": "Stores the Vault it governs at initialize() with no setter, and the Vault it names was superseded, so every cap it enforced was measured against a balance sheet nobody was depositing into any more. This is the contract the whole incident is named after.",
+      "label": "Allocation Engine, first deployment"
+    },
+    {
+      "contract": "allocationEngine",
+      "generation": 2,
+      "label": "Allocation Engine, second deployment",
+      "address": "CBCLMUK4R2CW3YVCX3OQ3GMGAXUNKA6JQWXH2AG3JW7U35FBNFHEAMKE",
+      "supersededBy": "allocationEngine",
+      "reason": "Replaced by scripts/deploy-rewire.sh. This Allocation Engine carried the counterparty setters but the guards on them were too loose: Vault.set_engine accepted any address, including an ordinary account, which made the pointer that releases the Vault's reserves a one call instruction to hand them over, and the adapters could be repointed at a Vault their own Engine did not govern, which would have misdirected repayments one allocation later. Deployed and replaced the same day, before it held anything but the deploying admin's own working capital."
+    },
+    {
+      "contract": "allocationEngine",
+      "generation": 3,
+      "label": "Allocation Engine, third deployment",
+      "address": "CAFJKWLUGUSYEC7L5ZBNFIFEPSO5MLI7SKDMVVJCGC6Z2TGVP5SZ5HUX",
+      "supersededBy": "allocationEngine",
+      "reason": "Replaced by scripts/deploy-hardening.sh. This Allocation Engine predates the fixes from the adversarial security review: the Vault delegated the reserve floor entirely to whatever Allocation Engine it pointed at, so a contract that answered vault() correctly could empty it; queued withdrawals were counted as free liquidity by the floor and the caps, so capital could be deployed against money already owed; a stalled head claim froze the withdrawal queue for everyone behind it; a credit loss could not be recognised on-chain at all; sagUSD carried report_nav, a bare setter on the denominator of its own share price; and no contract had admin rotation."
+    },
+    {
+      "contract": "allocationEngine",
+      "generation": 4,
+      "label": "Allocation Engine, fourth deployment",
+      "address": "CAOGJDWH5SZAVPGLBB2NCKGPT4OUFT3YEKUCKEJP6BVN3CR2WUKJDONN",
+      "supersededBy": "allocationEngine",
+      "reason": "Replaced by scripts/deploy-review2.sh. This Allocation Engine predates the fixes from the second adversarial security review: the reserve floor was a share of net assets, which record_writedown lowers with no cash moving, so alternating allocate and write_down walked the whole of the reserves out of the Vault in slices that were each individually inside the floor; and a withdrawal claim the USDC contract refused to deliver, which for a Stellar Asset Contract means any claimant without a trustline, with a frozen one, or with a limit below the claim, trapped the payout path and froze the whole FIFO queue permanently."
+    },
+    {
+      "contract": "allocationEngine",
+      "generation": 5,
+      "label": "Allocation Engine, fifth deployment",
+      "address": "CA2KUSVWB6G5MTA32XXAGACXNHQQM3ETND3CWVJRVTNPLG2PXIJJ7YAZ",
+      "supersededBy": "allocationEngine",
+      "reason": "This Allocation Engine was replaced by a later run of scripts/deploy-review2.sh from the same source: byte for byte the contract that superseded it. It was retired because the smoke run left it carrying recognised losses that were experiments rather than credit events, and recognised_losses is deliberately permanent, so a book whose reserve floor is not tightened for good by a test is only reachable through a fresh deployment. The permanence is the fix behaving as designed, and this retirement is the price of it."
+    },
+    {
+      "contract": "allocationEngine",
+      "generation": 6,
+      "label": "Allocation Engine, sixth deployment",
+      "address": "CB45BH7XYH6QWWSOI67Z4IEK6VYF7TO53OYQIFKLIMJ6ZZOBXJ2EEK4K",
+      "supersededBy": "allocationEngine",
+      "reason": "This Allocation Engine was replaced by a later run of scripts/deploy-review2.sh from the same source: byte for byte the contract that superseded it. It was retired because the smoke run left it carrying recognised losses that were experiments rather than credit events, and recognised_losses is deliberately permanent, so a book whose reserve floor is not tightened for good by a test is only reachable through a fresh deployment. The permanence is the fix behaving as designed, and this retirement is the price of it."
+    },
+    {
+      "contract": "allocationEngine",
       "generation": 7,
       "label": "Allocation Engine, seventh deployment",
       "address": "CBM2RACBNQU6YKRQAXWMGVFANCO3AJ4LOQONEY5O7IPMXPUBS6G56HRT",
       "supersededBy": "allocationEngine",
       "reason": "Replaced by scripts/deploy-mediums.sh, which closes the Medium findings of the second adversarial review. Every contract in this generation wires itself through an initialize() that runs in its own transaction after the deploy, which is a public window in which the same call naming a different admin can land first, and which took its counterparties on trust while the setters that repair those same pointers interrogated them. A __constructor replaces it in all seven contracts, so the bytecode of every one of them differs from the source and none of them could be reused. This Allocation Engine also measures its three concentration caps on live exposure alone, which write_down sets to zero while the adapter goes on holding the capital, so a pool could be filled to its cap, written off and filled again without limit; it has no recover, so capital in an adapter with no exposure left cannot be moved by any entry point; and a divergence between its admin and the Vault's surfaces as the Vault trapping four frames down rather than as a named refusal."
-    },
-    {
-      "contract": "oracleAdapter",
-      "generation": 2,
-      "label": "Oracle Adapter, second deployment",
-      "address": "CCIABPQMPGS4HSDQYN46M67LV6B5LCYO6X2XLCI27JSOMKUMN3N4DWJG",
-      "supersededBy": "oracleAdapter",
-      "reason": "Replaced by scripts/deploy-mediums.sh, which closes the Medium findings of the second adversarial review. Every contract in this generation wires itself through an initialize() that runs in its own transaction after the deploy, which is a public window in which the same call naming a different admin can land first, and which took its counterparties on trust while the setters that repair those same pointers interrogated them. A __constructor replaces it in all seven contracts, so the bytecode of every one of them differs from the source and none of them could be reused. Nothing else about this Oracle Adapter changed, and it would have been reused as it was in the previous two deployments, but a contract whose deployed bytecode no longer matches the repository is not one an audit can be run against. Its three feeds are registered again on the replacement with the same guards."
-    },
-    {
-      "contract": "poolAdapters.private-credit",
-      "generation": 7,
-      "label": "Private credit adapter, seventh deployment",
-      "address": "CCDB2I753FQJCRMVQVSYMUU2UT2R2H2UQJ7I2OLESJ7EKHCZUWCA4PSR",
-      "supersededBy": "poolAdapters.private-credit",
-      "reason": "Replaced by scripts/deploy-mediums.sh, which closes the Medium findings of the second adversarial review. Every contract in this generation wires itself through an initialize() that runs in its own transaction after the deploy, which is a public window in which the same call naming a different admin can land first, and which took its counterparties on trust while the setters that repair those same pointers interrogated them. A __constructor replaces it in all seven contracts, so the bytecode of every one of them differs from the source and none of them could be reused. This adapter also has no recover_surplus, which is finding M2: deallocate is capped at booked exposure, so a written-down position leaves USDC here that no entry point can move, and because set_counterparties refuses an adapter holding USDC, one stroop of it closes the only repair path the contract has. Three earlier generations of this adapter were retired for exactly that, which is what the fix cost before it was made."
-    },
-    {
-      "contract": "poolAdapters.etherfuse",
-      "generation": 4,
-      "label": "Etherfuse adapter, fourth deployment",
-      "address": "CADNIBDB5LZHGOOSVTL2LF47XCRPEL53IHBES2Y4RIORI4I3VCKF4ZFV",
-      "supersededBy": "poolAdapters.etherfuse",
-      "reason": "Replaced by scripts/deploy-mediums.sh, which closes the Medium findings of the second adversarial review. Every contract in this generation wires itself through an initialize() that runs in its own transaction after the deploy, which is a public window in which the same call naming a different admin can land first, and which took its counterparties on trust while the setters that repair those same pointers interrogated them. A __constructor replaces it in all seven contracts, so the bytecode of every one of them differs from the source and none of them could be reused. This adapter also has no recover_surplus. It was repointed in place rather than redeployed in the two previous deployments, being empty both times, and could have been again; what it could not do is carry code it does not have."
-    },
-    {
-      "contract": "staking",
-      "generation": 6,
-      "label": "sagUSD staking, sixth deployment",
-      "address": "CALOJ3UHHZ7V4LU5J4WY3DIFIXCTL37K36SZTIKSNGVB4TANNMSRQWKX",
-      "supersededBy": "staking",
-      "reason": "Replaced by scripts/deploy-mediums.sh, which closes the Medium findings of the second adversarial review. Every contract in this generation wires itself through an initialize() that runs in its own transaction after the deploy, which is a public window in which the same call naming a different admin can land first, and which took its counterparties on trust while the setters that repair those same pointers interrogated them. A __constructor replaces it in all seven contracts, so the bytecode of every one of them differs from the source and none of them could be reused. It stores the agUSD it accepts and closes that pointer once it has taken custody, so it would have had to follow the new token in any case. Its stake was unwound and redeemed before the handover, so it strands nobody."
     },
     {
       "contract": "allocationEngine",
@@ -439,14 +223,6 @@
       "reason": "Replaced by scripts/rewire-engine-m1.sh, for M1 of the third adversarial review. A pool adapter's recover_surplus may be taken by the adapter's own admin as well as by the Engine, which is how an adapter stuck to superseded counterparties is unstuck without a working Engine. Taken that way the cash reaches the Vault and no book moves, and in this Engine that is terminal: the surplus is gone, so recover gets NothingToRecover from the adapter and reverts, and Vault::record_recovery has no other caller. The write-down stays on recognised_losses for the life of the Vault, freezing the floor's share of it as undeployable reserves, and on the pool's concentration charge for the life of the Engine. book_recovery is recover with the adapter leg removed, bounded by the same unaccounted balance the Vault already checks. Nothing else was redeployed: the Vault took the replacement through set_engine and both adapters followed through set_counterparties."
     },
     {
-      "contract": "oracleAdapter",
-      "generation": 3,
-      "label": "Oracle Adapter, third deployment",
-      "address": "CCTAZFQ35P5KAAWTD2MLTYGEETKVF3N5ZR6MM6SVPQ22M2TKALINL6SX",
-      "supersededBy": "oracleAdapter",
-      "reason": "Replaced by scripts/redeploy-oracle-quorum.sh so that the deployed Oracle Adapter is the one in this repository. It has no per-feed quorum threshold, so the V2 path the architecture document describes, a value committing only once N distinct authorized reporters have submitted it for the same round, existed only in the document. The replacement carries it with every feed defaulting to a threshold of 1, which is V1 exactly: the first vote is quorum and it commits, and the staleness, band, deviation and rate limit guards run unchanged. No live feed was raised above 1 by that deployment, because a real 2-of-3 needs reporter keys that are actually independent and that is an operational decision. Only the Vault names this contract, so the rewiring was one set_oracle and the three feeds re-registered with their recorded parameters and their values restored."
-    },
-    {
       "contract": "allocationEngine",
       "generation": 11,
       "label": "Allocation Engine, eleventh deployment",
@@ -463,12 +239,68 @@
       "reason": "Replaced by scripts/rewire-token-edge.sh. register_pool proved an adapter named this Engine and this Engine's Vault, and set_counterparties proved from the other side that the Engine governs the Vault, and neither was about the asset. An adapter stores a token, it was a constructor argument nothing validated against the Vault, and it is the address every transfer in the adapter uses. An adapter with the right pointers and the wrong token is a one way door: settle_allocation sends what the Vault holds so real USDC arrives, deallocate sends back the token the adapter stores and traps, recover_surplus measures its surplus in that token and reports nothing to recover, and a write-down clears all three books while the money stays. Both sides check it now, the adapter at construction and the Engine on every call that moves capital."
     },
     {
-      "contract": "poolAdapters.private-credit",
-      "generation": 8,
-      "label": "Private credit adapter, eighth deployment",
-      "address": "CA24YZ2NP2X5NRL3VPUU3APCHNIF4HA765RXTMDIBYGKMEKRXEEJ4MSR",
-      "supersededBy": "poolAdapters.private-credit",
-      "reason": "Replaced by scripts/rewire-token-edge.sh. register_pool proved an adapter named this Engine and this Engine's Vault, and set_counterparties proved from the other side that the Engine governs the Vault, and neither was about the asset. An adapter stores a token, it was a constructor argument nothing validated against the Vault, and it is the address every transfer in the adapter uses. An adapter with the right pointers and the wrong token is a one way door: settle_allocation sends what the Vault holds so real USDC arrives, deallocate sends back the token the adapter stores and traps, recover_surplus measures its surplus in that token and reports nothing to recover, and a write-down clears all three books while the money stays. Both sides check it now, the adapter at construction and the Engine on every call that moves capital."
+      "contract": "allocationEngine",
+      "generation": 13,
+      "label": "Allocation Engine, thirteenth deployment",
+      "address": "CCSZ3QEV3LPZ3CQCHUADR4CLYGO3GHKDS26BKSL2XMV2XPDW3DCAVIMQ",
+      "supersededBy": "allocationEngine",
+      "reason": "Replaced by scripts/rewire-drop-book-recovery.sh. register_pool proved an adapter named this Engine and this Engine's Vault, and set_counterparties proved from the other side that the Engine governs the Vault, and neither was about the asset. An adapter stores a token, it was a constructor argument nothing validated against the Vault, and it is the address every transfer in the adapter uses. An adapter with the right pointers and the wrong token is a one way door: settle_allocation sends what the Vault holds so real USDC arrives, deallocate sends back the token the adapter stores and traps, recover_surplus measures its surplus in that token and reports nothing to recover, and a write-down clears all three books while the money stays. Both sides check it now, the adapter at construction and the Engine on every call that moves capital."
+    },
+    {
+      "contract": "oracleAdapter",
+      "generation": 1,
+      "label": "Oracle Adapter, first deployment",
+      "address": "CDV5BC4XCNT5ASOZNFXBQXRGKVXGKHLRVK5EDX6XP5J6EBIZWSXCSV7G",
+      "supersededBy": "oracleAdapter",
+      "reason": "Replaced by scripts/deploy-hardening.sh. This Oracle Adapter predates the fixes from the adversarial security review: the Vault delegated the reserve floor entirely to whatever Allocation Engine it pointed at, so a contract that answered vault() correctly could empty it; queued withdrawals were counted as free liquidity by the floor and the caps, so capital could be deployed against money already owed; a stalled head claim froze the withdrawal queue for everyone behind it; a credit loss could not be recognised on-chain at all; sagUSD carried report_nav, a bare setter on the denominator of its own share price; and no contract had admin rotation."
+    },
+    {
+      "contract": "oracleAdapter",
+      "generation": 2,
+      "label": "Oracle Adapter, second deployment",
+      "address": "CCIABPQMPGS4HSDQYN46M67LV6B5LCYO6X2XLCI27JSOMKUMN3N4DWJG",
+      "supersededBy": "oracleAdapter",
+      "reason": "Replaced by scripts/deploy-mediums.sh, which closes the Medium findings of the second adversarial review. Every contract in this generation wires itself through an initialize() that runs in its own transaction after the deploy, which is a public window in which the same call naming a different admin can land first, and which took its counterparties on trust while the setters that repair those same pointers interrogated them. A __constructor replaces it in all seven contracts, so the bytecode of every one of them differs from the source and none of them could be reused. Nothing else about this Oracle Adapter changed, and it would have been reused as it was in the previous two deployments, but a contract whose deployed bytecode no longer matches the repository is not one an audit can be run against. Its three feeds are registered again on the replacement with the same guards."
+    },
+    {
+      "contract": "oracleAdapter",
+      "generation": 3,
+      "label": "Oracle Adapter, third deployment",
+      "address": "CCTAZFQ35P5KAAWTD2MLTYGEETKVF3N5ZR6MM6SVPQ22M2TKALINL6SX",
+      "supersededBy": "oracleAdapter",
+      "reason": "Replaced by scripts/redeploy-oracle-quorum.sh so that the deployed Oracle Adapter is the one in this repository. It has no per-feed quorum threshold, so the V2 path the architecture document describes, a value committing only once N distinct authorized reporters have submitted it for the same round, existed only in the document. The replacement carries it with every feed defaulting to a threshold of 1, which is V1 exactly: the first vote is quorum and it commits, and the staleness, band, deviation and rate limit guards run unchanged. No live feed was raised above 1 by that deployment, because a real 2-of-3 needs reporter keys that are actually independent and that is an operational decision. Only the Vault names this contract, so the rewiring was one set_oracle and the three feeds re-registered with their recorded parameters and their values restored."
+    },
+    {
+      "contract": "poolAdapters.etherfuse",
+      "generation": 1,
+      "address": "CBS3OGCVYMI3XQN2ORZZNE2WKGYK24VSTVDUB3QS5HCZHBQQFWKFLYKK",
+      "supersededBy": "poolAdapters.etherfuse",
+      "reason": "Stores both the Engine and the Vault at initialize() with no setters, and both of the addresses it stores were superseded.",
+      "label": "Etherfuse adapter, first deployment"
+    },
+    {
+      "contract": "poolAdapters.etherfuse",
+      "generation": 2,
+      "label": "Etherfuse adapter, second deployment",
+      "address": "CCFYYCIHEKQLFN5TZKGFBW3GAH6SBXA7YEWMETTR62TWPEC43X2H6KGO",
+      "supersededBy": "poolAdapters.etherfuse",
+      "reason": "Replaced by scripts/deploy-rewire.sh. This Etherfuse adapter carried the counterparty setters but the guards on them were too loose: Vault.set_engine accepted any address, including an ordinary account, which made the pointer that releases the Vault's reserves a one call instruction to hand them over, and the adapters could be repointed at a Vault their own Engine did not govern, which would have misdirected repayments one allocation later. Deployed and replaced the same day, before it held anything but the deploying admin's own working capital."
+    },
+    {
+      "contract": "poolAdapters.etherfuse",
+      "generation": 3,
+      "label": "Etherfuse adapter, third deployment",
+      "address": "CBA3GQLHCEOCCZIDVFZ74AG4FUCEO2SN7AMGY4RSAMN4DTHW2WAH7EWI",
+      "supersededBy": "poolAdapters.etherfuse",
+      "reason": "Replaced by scripts/deploy-hardening.sh. This Etherfuse adapter predates the fixes from the adversarial security review: the Vault delegated the reserve floor entirely to whatever Allocation Engine it pointed at, so a contract that answered vault() correctly could empty it; queued withdrawals were counted as free liquidity by the floor and the caps, so capital could be deployed against money already owed; a stalled head claim froze the withdrawal queue for everyone behind it; a credit loss could not be recognised on-chain at all; sagUSD carried report_nav, a bare setter on the denominator of its own share price; and no contract had admin rotation."
+    },
+    {
+      "contract": "poolAdapters.etherfuse",
+      "generation": 4,
+      "label": "Etherfuse adapter, fourth deployment",
+      "address": "CADNIBDB5LZHGOOSVTL2LF47XCRPEL53IHBES2Y4RIORI4I3VCKF4ZFV",
+      "supersededBy": "poolAdapters.etherfuse",
+      "reason": "Replaced by scripts/deploy-mediums.sh, which closes the Medium findings of the second adversarial review. Every contract in this generation wires itself through an initialize() that runs in its own transaction after the deploy, which is a public window in which the same call naming a different admin can land first, and which took its counterparties on trust while the setters that repair those same pointers interrogated them. A __constructor replaces it in all seven contracts, so the bytecode of every one of them differs from the source and none of them could be reused. This adapter also has no recover_surplus. It was repointed in place rather than redeployed in the two previous deployments, being empty both times, and could have been again; what it could not do is carry code it does not have."
     },
     {
       "contract": "poolAdapters.etherfuse",
@@ -477,6 +309,118 @@
       "address": "CAYOGJ35O5LIULVSGIWIGGMUQS7SDXFF7BLFQK63X62WPLBTMD5PV2NF",
       "supersededBy": "poolAdapters.etherfuse",
       "reason": "Replaced by scripts/rewire-token-edge.sh. register_pool proved an adapter named this Engine and this Engine's Vault, and set_counterparties proved from the other side that the Engine governs the Vault, and neither was about the asset. An adapter stores a token, it was a constructor argument nothing validated against the Vault, and it is the address every transfer in the adapter uses. An adapter with the right pointers and the wrong token is a one way door: settle_allocation sends what the Vault holds so real USDC arrives, deallocate sends back the token the adapter stores and traps, recover_surplus measures its surplus in that token and reports nothing to recover, and a write-down clears all three books while the money stays. Both sides check it now, the adapter at construction and the Engine on every call that moves capital."
+    },
+    {
+      "contract": "poolAdapters.private-credit",
+      "generation": 1,
+      "address": "CCDZRKZDCWJWTFMLVJFW4LRALZEWRDKWOOD727EDO3EFFKLNDKCXT3VZ",
+      "supersededBy": "poolAdapters.private-credit",
+      "reason": "Stores both the Engine and the Vault at initialize() with no setters, and both of the addresses it stores were superseded.",
+      "label": "Private credit adapter, first deployment"
+    },
+    {
+      "contract": "poolAdapters.private-credit",
+      "generation": 2,
+      "label": "Private credit adapter, second deployment",
+      "address": "CDKLN4NBLLHYUOQEDLSKWM6BI7HSN4NL3W5B2MB4DUAPJG4IKA2RSMEV",
+      "supersededBy": "poolAdapters.private-credit",
+      "reason": "Replaced by scripts/deploy-rewire.sh. This private credit adapter carried the counterparty setters but the guards on them were too loose: Vault.set_engine accepted any address, including an ordinary account, which made the pointer that releases the Vault's reserves a one call instruction to hand them over, and the adapters could be repointed at a Vault their own Engine did not govern, which would have misdirected repayments one allocation later. Deployed and replaced the same day, before it held anything but the deploying admin's own working capital."
+    },
+    {
+      "contract": "poolAdapters.private-credit",
+      "generation": 3,
+      "label": "Private credit adapter, third deployment",
+      "address": "CBAPY7KRVIG3FPGSP3VKXXA6SCDKZUWBSFDWISRJXR5V7PYPVQZGFTOZ",
+      "supersededBy": "poolAdapters.private-credit",
+      "reason": "Replaced by scripts/deploy-hardening.sh. This private credit adapter predates the fixes from the adversarial security review: the Vault delegated the reserve floor entirely to whatever Allocation Engine it pointed at, so a contract that answered vault() correctly could empty it; queued withdrawals were counted as free liquidity by the floor and the caps, so capital could be deployed against money already owed; a stalled head claim froze the withdrawal queue for everyone behind it; a credit loss could not be recognised on-chain at all; sagUSD carried report_nav, a bare setter on the denominator of its own share price; and no contract had admin rotation."
+    },
+    {
+      "contract": "poolAdapters.private-credit",
+      "generation": 4,
+      "label": "Private credit adapter, fourth deployment",
+      "address": "CBWFVABYRGKAGDN54MIN4GIXQO3ALVPJ3POSVFDFKUQSLYL4M4JT5BBT",
+      "supersededBy": "poolAdapters.private-credit",
+      "reason": "Replaced by scripts/deploy-review2.sh, and not because its code changed: it is byte for byte the adapter that was already deployed. It could not follow the new Engine and Vault because set_counterparties refuses an adapter holding USDC, and it holds 0.2 USDC left over from the write-down the previous smoke run performed. The position was written off, so its exposure is zero, deallocate is capped at zero and there is no sweep entry point, which leaves the cash and the repair path both stuck. That is finding M2 of the second adversarial review, recorded and left for triage, and this retirement is what it cost. The Etherfuse adapter, empty, was repointed in place instead."
+    },
+    {
+      "contract": "poolAdapters.private-credit",
+      "generation": 5,
+      "label": "Private credit adapter, fifth deployment",
+      "address": "CDPFTGS62IZHPZEGK6ENVTBLUKMLOD4OEPD7UVMJG3FCNDWS65TWQFYQ",
+      "supersededBy": "poolAdapters.private-credit",
+      "reason": "Replaced by scripts/deploy-review2.sh, and not because its code changed: it is byte for byte the adapter that was already deployed. It could not follow the new Engine and Vault because set_counterparties refuses an adapter holding USDC, and it holds USDC left over from a written-down position. The position was written off, so its exposure is zero, deallocate is capped at zero and there is no sweep entry point, which leaves the cash and the repair path both stuck. That is finding M2 of the second adversarial review, recorded and left for triage, and this retirement is what it cost. The Etherfuse adapter, empty, was repointed in place instead."
+    },
+    {
+      "contract": "poolAdapters.private-credit",
+      "generation": 6,
+      "label": "Private credit adapter, sixth deployment",
+      "address": "CANRYN2HGYU6SBQOYKCL52LSNSXKOK54ECK2UFAZTMHNPK47VUZQUIIQ",
+      "supersededBy": "poolAdapters.private-credit",
+      "reason": "Replaced by scripts/deploy-review2.sh, and not because its code changed: it is byte for byte the adapter that was already deployed. It could not follow the new Engine and Vault because set_counterparties refuses an adapter holding USDC, and it holds USDC left over from a written-down position. The position was written off, so its exposure is zero, deallocate is capped at zero and there is no sweep entry point, which leaves the cash and the repair path both stuck. That is finding M2 of the second adversarial review, recorded and left for triage, and this retirement is what it cost. The Etherfuse adapter, empty, was repointed in place instead."
+    },
+    {
+      "contract": "poolAdapters.private-credit",
+      "generation": 7,
+      "label": "Private credit adapter, seventh deployment",
+      "address": "CCDB2I753FQJCRMVQVSYMUU2UT2R2H2UQJ7I2OLESJ7EKHCZUWCA4PSR",
+      "supersededBy": "poolAdapters.private-credit",
+      "reason": "Replaced by scripts/deploy-mediums.sh, which closes the Medium findings of the second adversarial review. Every contract in this generation wires itself through an initialize() that runs in its own transaction after the deploy, which is a public window in which the same call naming a different admin can land first, and which took its counterparties on trust while the setters that repair those same pointers interrogated them. A __constructor replaces it in all seven contracts, so the bytecode of every one of them differs from the source and none of them could be reused. This adapter also has no recover_surplus, which is finding M2: deallocate is capped at booked exposure, so a written-down position leaves USDC here that no entry point can move, and because set_counterparties refuses an adapter holding USDC, one stroop of it closes the only repair path the contract has. Three earlier generations of this adapter were retired for exactly that, which is what the fix cost before it was made."
+    },
+    {
+      "contract": "poolAdapters.private-credit",
+      "generation": 8,
+      "label": "Private credit adapter, eighth deployment",
+      "address": "CA24YZ2NP2X5NRL3VPUU3APCHNIF4HA765RXTMDIBYGKMEKRXEEJ4MSR",
+      "supersededBy": "poolAdapters.private-credit",
+      "reason": "Replaced by scripts/rewire-token-edge.sh. register_pool proved an adapter named this Engine and this Engine's Vault, and set_counterparties proved from the other side that the Engine governs the Vault, and neither was about the asset. An adapter stores a token, it was a constructor argument nothing validated against the Vault, and it is the address every transfer in the adapter uses. An adapter with the right pointers and the wrong token is a one way door: settle_allocation sends what the Vault holds so real USDC arrives, deallocate sends back the token the adapter stores and traps, recover_surplus measures its surplus in that token and reports nothing to recover, and a write-down clears all three books while the money stays. Both sides check it now, the adapter at construction and the Engine on every call that moves capital."
+    },
+    {
+      "contract": "staking",
+      "generation": 1,
+      "address": "CABPYD4U5FAYLBEBMY2MVGVF7BILXTNPWGLOPIXCMUK3QQGIAE2XTALX",
+      "supersededBy": "staking",
+      "reason": "Accepts the generation 1 agUSD, stores it at initialize() with no setter, and has no re-initialization guard. A holder of the agUSD the protocol now issues could not stake at all, and the refusal read as an insufficient balance rather than as a wiring mistake. It is left running rather than drained: it still holds 49.19 agUSD of staked position against 48.39 sagUSD shares, on the token it accepts, so its existing stakers are unaffected by the handover.",
+      "label": "sagUSD staking, first deployment"
+    },
+    {
+      "contract": "staking",
+      "generation": 2,
+      "label": "sagUSD staking, second deployment",
+      "address": "CDY3ED6T72VJDX5RCMQOZNCV5XKJBHQVAYPNOXTWB66RNBVOS5BTC345",
+      "supersededBy": "staking",
+      "reason": "Replaced by scripts/deploy-rewire.sh. This sagUSD staking carried the counterparty setters but the guards on them were too loose: Vault.set_engine accepted any address, including an ordinary account, which made the pointer that releases the Vault's reserves a one call instruction to hand them over, and the adapters could be repointed at a Vault their own Engine did not govern, which would have misdirected repayments one allocation later. Deployed and replaced the same day, before it held anything but the deploying admin's own working capital."
+    },
+    {
+      "contract": "staking",
+      "generation": 3,
+      "label": "sagUSD staking, third deployment",
+      "address": "CBMEW3QALCS6FFJMK5FR7LVKUWX3MPIP26LQQQAFYMQFYVG6VUWFTHZF",
+      "supersededBy": "staking",
+      "reason": "Replaced by scripts/deploy-sagusd.sh. Exposes accrue_yield and share_price, the names this contract shipped with, rather than distribute_yield and exchange_rate, the names Agama committed to in its answer to the SCF panel and that DeFindex compatibility is a funded deliverable for. A wallet looking for the committed convention did not find it on this contract. Superseded holding nothing: NAV and share supply were both zero at handover, so it strands no staker."
+    },
+    {
+      "contract": "staking",
+      "generation": 4,
+      "label": "sagUSD staking, fourth deployment",
+      "address": "CCBEDKRQHKAP2W3NC4UIYC4WZSMJVYRXN6EQERHFII45M3PD4JL6HFO2",
+      "supersededBy": "staking",
+      "reason": "Replaced by scripts/deploy-hardening.sh. This sagUSD staking predates the fixes from the adversarial security review: the Vault delegated the reserve floor entirely to whatever Allocation Engine it pointed at, so a contract that answered vault() correctly could empty it; queued withdrawals were counted as free liquidity by the floor and the caps, so capital could be deployed against money already owed; a stalled head claim froze the withdrawal queue for everyone behind it; a credit loss could not be recognised on-chain at all; sagUSD carried report_nav, a bare setter on the denominator of its own share price; and no contract had admin rotation."
+    },
+    {
+      "contract": "staking",
+      "generation": 5,
+      "label": "sagUSD staking, fifth deployment",
+      "address": "CDU7BYCE535Y4WU6FAQTMNPLR3RD7HTGWR2NETW7EEPAQTLY2XGVYE7X",
+      "supersededBy": "staking",
+      "reason": "Replaced by scripts/deploy-review2.sh, and not because its code changed. It stores the agUSD it accepts and closes that pointer once it has taken custody, which it has; the Vault changed, so agUSD changed, so this contract had to follow. Its stake was unwound and redeemed before the handover, so it strands nobody."
+    },
+    {
+      "contract": "staking",
+      "generation": 6,
+      "label": "sagUSD staking, sixth deployment",
+      "address": "CALOJ3UHHZ7V4LU5J4WY3DIFIXCTL37K36SZTIKSNGVB4TANNMSRQWKX",
+      "supersededBy": "staking",
+      "reason": "Replaced by scripts/deploy-mediums.sh, which closes the Medium findings of the second adversarial review. Every contract in this generation wires itself through an initialize() that runs in its own transaction after the deploy, which is a public window in which the same call naming a different admin can land first, and which took its counterparties on trust while the setters that repair those same pointers interrogated them. A __constructor replaces it in all seven contracts, so the bytecode of every one of them differs from the source and none of them could be reused. It stores the agUSD it accepts and closes that pointer once it has taken custody, so it would have had to follow the new token in any case. Its stake was unwound and redeemed before the handover, so it strands nobody."
     },
     {
       "contract": "staking",
@@ -493,6 +437,70 @@
       "address": "CCJY5C455WD5QJLIA52R3L2V7TI2TQLHCZ3U2POUPV5G3TPD32OO7XAM",
       "supersededBy": "staking",
       "reason": "Replaced by scripts/redeploy-staking-ttl.sh. request_unstake wrote the Pending record with set and nothing else, which gave it 4095 ledgers, under six hours. That record is the whole of what says a departed staker is still owed anything, because the shares are burned and the assets are out of nav by then, so its archival leaves the money belonging to nobody until somebody pays for a RestoreFootprint. The Vault gives a withdrawal claim ninety days and exposes bump_claim so that anybody can push it out, both added by the second adversarial review for exactly this failure; this contract had neither. The replacement writes the record through one helper that extends it to the same ninety days and adds bump_pending, permissionless for the reason bump_claim is. It was empty at the time, so it stranded nobody, and nothing on-chain names this contract."
+    },
+    {
+      "contract": "vault",
+      "generation": 1,
+      "address": "CAVKHGBQUEPVTWHFJGU42ZVZA6VZSM6RZXFHCUXTT72JFRWNPF5OFJW3",
+      "supersededBy": "vault",
+      "reason": "Initialized against the first generation agUSD with no setter for the token address and no upgrade entry point, so its deposit() could never mint. The first Allocation Engine was pointed at it and could not be repointed either, which is what stranded the Vault that replaced it.",
+      "label": "Vault Contract, first deployment"
+    },
+    {
+      "contract": "vault",
+      "generation": 2,
+      "address": "CDQP7L5RZ6AM4J2PZETMG7TC4M3CDTVQ6QAMYPLG43Z6GAOCB4TR3KS4",
+      "supersededBy": "vault",
+      "reason": "Initialized with the generation 1 Allocation Engine as its allocation counterparty, and settle_allocation authorizes that address and no other. The Engine it names governs a different Vault, so this one can take deposits and pay its withdrawal queue but can never release capital to a pool: 100% idle for the life of the contract. It carries set_agusd but not set_engine, so the pointer that matters could not be corrected.",
+      "label": "Vault Contract, second deployment"
+    },
+    {
+      "contract": "vault",
+      "generation": 3,
+      "label": "Vault Contract, third deployment",
+      "address": "CAU54R4PIHZXGCRZMJJCCIOFNMVXZHZF6BBNNSGWJT6A4UZ32MA33AFY",
+      "supersededBy": "vault",
+      "reason": "Replaced by scripts/deploy-rewire.sh. This Vault Contract carried the counterparty setters but the guards on them were too loose: Vault.set_engine accepted any address, including an ordinary account, which made the pointer that releases the Vault's reserves a one call instruction to hand them over, and the adapters could be repointed at a Vault their own Engine did not govern, which would have misdirected repayments one allocation later. Deployed and replaced the same day, before it held anything but the deploying admin's own working capital."
+    },
+    {
+      "contract": "vault",
+      "generation": 4,
+      "label": "Vault Contract, fourth deployment",
+      "address": "CCGPF36PDG2WBBK6ZROLMNMHD67UV4MNG6PHQCN2PXWLLRBXCYF5KVRR",
+      "supersededBy": "vault",
+      "reason": "Replaced by scripts/deploy-hardening.sh. This Vault Contract predates the fixes from the adversarial security review: the Vault delegated the reserve floor entirely to whatever Allocation Engine it pointed at, so a contract that answered vault() correctly could empty it; queued withdrawals were counted as free liquidity by the floor and the caps, so capital could be deployed against money already owed; a stalled head claim froze the withdrawal queue for everyone behind it; a credit loss could not be recognised on-chain at all; sagUSD carried report_nav, a bare setter on the denominator of its own share price; and no contract had admin rotation."
+    },
+    {
+      "contract": "vault",
+      "generation": 5,
+      "label": "Vault Contract, fifth deployment",
+      "address": "CCW5EQCVHXA2PTXN4Y4QMO4O4YMG6BRMB7M2PYASILFI53BL3CKDSIWP",
+      "supersededBy": "vault",
+      "reason": "Replaced by scripts/deploy-review2.sh. This Vault predates the fixes from the second adversarial security review: the reserve floor was a share of net assets, which record_writedown lowers with no cash moving, so alternating allocate and write_down walked the whole of the reserves out of the Vault in slices that were each individually inside the floor; and a withdrawal claim the USDC contract refused to deliver, which for a Stellar Asset Contract means any claimant without a trustline, with a frozen one, or with a limit below the claim, trapped the payout path and froze the whole FIFO queue permanently."
+    },
+    {
+      "contract": "vault",
+      "generation": 6,
+      "label": "Vault Contract, sixth deployment",
+      "address": "CCVFI7YGBYL346U4NY2TSXGIH3766LKK74BJ5VDCKX5YZFJIUBDFIKXT",
+      "supersededBy": "vault",
+      "reason": "This Vault was replaced by a later run of scripts/deploy-review2.sh from the same source: byte for byte the contract that superseded it. It was retired because the smoke run left it carrying recognised losses that were experiments rather than credit events, and recognised_losses is deliberately permanent, so a book whose reserve floor is not tightened for good by a test is only reachable through a fresh deployment. The permanence is the fix behaving as designed, and this retirement is the price of it."
+    },
+    {
+      "contract": "vault",
+      "generation": 7,
+      "label": "Vault Contract, seventh deployment",
+      "address": "CBIJCFWZXCHMWBEDXBCCKIPVTPUI4TDMZOMMI6S7URU5GLTA5627JDPK",
+      "supersededBy": "vault",
+      "reason": "This Vault was replaced by a later run of scripts/deploy-review2.sh from the same source: byte for byte the contract that superseded it. It was retired because the smoke run left it carrying recognised losses that were experiments rather than credit events, and recognised_losses is deliberately permanent, so a book whose reserve floor is not tightened for good by a test is only reachable through a fresh deployment. The permanence is the fix behaving as designed, and this retirement is the price of it."
+    },
+    {
+      "contract": "vault",
+      "generation": 8,
+      "label": "Vault Contract, eighth deployment",
+      "address": "CAK7NGMFYPAJKFY74TOQSCIJADCDCCMAOKEGFHI2O7BZBCQQTIAFCSSL",
+      "supersededBy": "vault",
+      "reason": "Replaced by scripts/deploy-mediums.sh, which closes the Medium findings of the second adversarial review. Every contract in this generation wires itself through an initialize() that runs in its own transaction after the deploy, which is a public window in which the same call naming a different admin can land first, and which took its counterparties on trust while the setters that repair those same pointers interrogated them. A __constructor replaces it in all seven contracts, so the bytecode of every one of them differs from the source and none of them could be reused. This Vault also has no record_recovery, so capital written off and later recovered has no way back onto its books, and no bump_claim, so the keeper the architecture document describes has nothing to call and a head claim that outlives its 90 day TTL stops the whole withdrawal queue until somebody pays for a RestoreFootprint."
     }
   ],
   "oracleFeedGuards": "The band bounds every report including the first, which a deviation bound cannot reach because a bound on a move needs something to move from. The minimum interval is measured in ledger time between accepted values, not in the timestamps the reporter supplies, because the reporter chooses those. The reference point is persistent, so it cannot expire out from under the checks that read it.",
