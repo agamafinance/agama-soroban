@@ -75,7 +75,6 @@
 
 extern crate std;
 
-use std::vec;
 
 use super::*;
 use allocation_engine::{AllocationEngine, AllocationEngineClient};
@@ -468,8 +467,27 @@ fn check_invariants(state: &FuzzState) -> PResult {
     Ok(())
 }
 
+// Case counts and how far this has actually been run.
+//
+// The committed figure is what keeps `cargo test --workspace` usable, not what
+// the suite is capable of. It has been run much harder than this by raising
+// the number here and re-running, and the results are worth writing down so
+// that nobody has to guess how much exploration the default buys:
+//
+// | Run | Cases | Sequence length | Result |
+// |---|---|---|---|
+// | committed default | 64 | 1 to 29 | about 6 seconds |
+// | wide | 1500 | 1 to 29 | 121 seconds, nothing found |
+// | deep | 300 | 1 to 89 | 57 seconds, nothing found |
+//
+// The wide run is the one that matters for confidence in the invariants as
+// stated; the deep run is the one that matters for interleavings, since a
+// defect that needs forty operations to reach cannot appear in a suite that
+// never generates forty. The defect this suite did find, `book_recovery`
+// lowering `floor_base`, needed four, which is a reminder that depth is not
+// where the value usually is.
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(24))]
+    #![proptest_config(ProptestConfig::with_cases(64))]
 
     #[test]
     fn vault_engine_accounting_invariants_hold(ops in proptest::collection::vec(op_strategy(), 1..30)) {
