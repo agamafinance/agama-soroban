@@ -36,8 +36,19 @@
 #   7. staking takes the new token, which it can only do while empty
 #   8. a full round trip on the result, or none of it is worth anything
 #
-# Usage: bash scripts/deploy-vault-generation.sh
+# The block above is the first run's motivation. Every later run has its own,
+# which is why the record's reason is an argument rather than a literal here.
+#
+# Usage: MIGRATION_REASON="why this generation replaces the live one" \
+#          bash scripts/deploy-vault-generation.sh
 set -euo pipefail
+
+if [ -z "${MIGRATION_REASON:-}" ]; then
+  echo "MIGRATION_REASON is unset. It is written verbatim into the superseded" >&2
+  echo "entries for the retired Vault and agUSD, and the record is the only" >&2
+  echo "place the reason survives, so this script will not guess it." >&2
+  exit 2
+fi
 cd "$(dirname "$0")/.."
 
 NET=testnet
@@ -236,31 +247,25 @@ done
 
 echo ""
 echo "==> writing $DEP"
-python3 - "$DEP" "$VAULT" "$OLD_VAULT" "$AGUSD" "$OLD_AGUSD" <<'PY'
+python3 - "$DEP" "$VAULT" "$OLD_VAULT" "$AGUSD" "$OLD_AGUSD" "$MIGRATION_REASON" <<'PY'
 import json, sys
-path, vault, old_vault, agusd, old_agusd = sys.argv[1:]
+path, vault, old_vault, agusd, old_agusd, REASON = sys.argv[1:]
 dep = json.load(open(path))
 history = dep.get('superseded', [])
 ORD = ['first','second','third','fourth','fifth','sixth','seventh','eighth','ninth','tenth',
        'eleventh','twelfth','thirteenth','fourteenth','fifteenth']
-REASON = (
-    'Replaced together by scripts/deploy-vault-generation.sh. The Vault it replaces does not '
-    'interrogate its oracle in set_oracle, exposes neither oracle() nor oracle_feed(), and does not '
-    'require the agUSD it mints to count stroops the way its USDC does, which is the requirement the '
-    'one for one peg actually rests on. agUSD moved with it because agusd-core::set_minter refuses '
-    'once mints > 0, so the minter pointer was frozen at the Vault being retired and a replacement '
-    'Vault could never have minted that token. Both retired at zero: the outstanding supply was '
-    'redeemed first, which needed the position lifted over the 1 agUSD anti-dust floor by a deposit, '
-    'and which is why this generation waited on the operator account being funded. Nothing else was '
-    'redeployed: the Engine, the oracle, both adapters and staking all followed through their own '
-    'setters.'
-)
 for contract, address, label in (('vault', old_vault, 'Vault Contract'),
                                  ('agusdCore', old_agusd, 'agUSD (`contracts/agusd-core`)')):
     gen = 1 + sum(1 for e in history if e['contract'] == contract)
     history.append({'contract': contract, 'generation': gen,
                     'label': '%s, %s deployment' % (label, ORD[gen - 1]),
                     'address': address, 'supersededBy': contract, 'reason': REASON})
+    # Refusing a reason copied from the generation before, because that is the
+    # mistake this argument exists to prevent, and it is silent otherwise.
+    prev = [e for e in history[:-1] if e['contract'] == contract]
+    if prev and prev[-1]['reason'].strip() == REASON.strip():
+        sys.exit('the reason given is the one already recorded for %s generation %d, so one of '
+                 'the two is wrong' % (contract, prev[-1]['generation']))
 dep['contracts']['vault'] = vault
 dep['contracts']['agusdCore'] = agusd
 dep['superseded'] = history
