@@ -50,14 +50,19 @@
 //! `Vault::recognised_losses`: that a write-down cannot manufacture releasable
 //! headroom, and a recovery cannot give back less than it took.
 //!
-//! `book_recovery` is deliberately left out of that last bullet. This suite
-//! found, and `book_recovery_can_lower_floor_base` below demonstrates by hand,
-//! that it does not hold: `book_recovery` can lower `floor_base`, contrary to
-//! its own module docs. See that test for the mechanism and the PR
-//! description for the write-up. The combined sequence below still exercises
-//! `book_recovery` for the other invariants, which do hold for it; only the
-//! `floor_base` claim is excluded here, in favour of the dedicated failing
-//! test that documents the break on its own.
+//! `book_recovery` was excluded from that last bullet once, because this suite
+//! found it could lower `floor_base` in four operations: a donation, an
+//! allocation, a write-down, a booking. The base read the real token balance
+//! then, so the donation raised it on arrival and the booking lowered
+//! `recognised_losses` by the same amount with no further cash moving. The
+//! entry point was removed for it.
+//!
+//! The base is measured on `booked_reserves` now, and the mechanism is gone
+//! with the basis: an unannounced arrival moves no term of the base, and a
+//! booking moves `booked_reserves` up by exactly what it moves
+//! `recognised_losses` down. `book_recovery` is back, and it is inside the
+//! bullet rather than excluded from it, so the fuzzer gets to falsify the
+//! claim on every run instead of a comment asserting it.
 //!
 //! Deferred claims, the path where the token itself refuses a payout, are
 //! outside what this suite can reach: the mock USDC used here never refuses a
@@ -74,6 +79,9 @@
 //! picks the persisted case up automatically.
 
 extern crate std;
+// prop_oneof! expands to a vec! past ten branches, and the contract
+// crates are no_std, so the macro has to be brought in by hand.
+use std::vec;
 
 
 use super::*;
@@ -102,6 +110,7 @@ enum Op {
     Deallocate { pool: usize, amount: i128 },
     WriteDown { pool: usize, amount: i128 },
     Recover { pool: usize },
+    BookRecovery { pool: usize, amount: i128 },
     Donate { amount: i128 },
     SetPaused(bool),
 }
@@ -135,6 +144,8 @@ fn op_strategy() -> impl Strategy<Value = Op> {
         2 => (0usize..2, amount_strategy())
             .prop_map(|(pool, amount)| Op::WriteDown { pool, amount }),
         2 => (0usize..2usize).prop_map(|pool| Op::Recover { pool }),
+        2 => (0usize..2usize, amount_strategy())
+            .prop_map(|(pool, amount)| Op::BookRecovery { pool, amount }),
         2 => amount_strategy().prop_map(|amount| Op::Donate { amount }),
         1 => any::<bool>().prop_map(Op::SetPaused),
     ]
@@ -340,6 +351,12 @@ fn apply(state: &mut FuzzState, op: &Op) -> PResult {
             let pool_id = state.pool_id(*pool);
             let _ = state.engine.try_recover(&state.admin, &pool_id);
         }
+        Op::BookRecovery { pool, amount } => {
+            let pool_id = state.pool_id(*pool);
+            let _ = state
+                .engine
+                .try_book_recovery(&state.admin, &pool_id, amount);
+        }
         Op::Donate { amount } => {
             if *amount > 0 {
                 let donor = Address::generate(&state.e);
@@ -375,7 +392,15 @@ fn check_floor_base(state: &FuzzState, op: &Op, before: i128) -> PResult {
                 op
             );
         }
-        Op::Recover { .. } => {
+        Op::Recover { .. } | Op::BookRecovery { .. } => {
+            // book_recovery is inside this arm rather than excluded from it.
+            // It used to be excluded because it broke the property: the base
+            // read the token balance, so a donation raised it on arrival and
+            // booking the same cash lowered recognised_losses with no cash
+            // moving. Measured on booked_reserves, booking moves one term up
+            // by exactly what it moves the other down, so this is the claim
+            // the fuzzer now gets to falsify rather than a note saying it
+            // cannot be made.
             prop_assert!(
                 after >= before,
                 "floor_base fell after a recovery: before={} after={} op={:?}",
@@ -480,12 +505,21 @@ fn check_invariants(state: &FuzzState) -> PResult {
 // | wide | 1500 | 1 to 29 | 121 seconds, nothing found |
 // | deep | 300 | 1 to 89 | 57 seconds, nothing found |
 //
+// Re-run after `book_recovery` was restored, with the operation generated again
+// and the `floor_base` invariant applied to it rather than excluded from it,
+// which is the claim that failed the first time:
+//
+// | wide | 1500 | 1 to 29 | 73 seconds, nothing found |
+// | deep | 300 | 1 to 89 | 19 seconds, nothing found |
+//
 // The wide run is the one that matters for confidence in the invariants as
 // stated; the deep run is the one that matters for interleavings, since a
 // defect that needs forty operations to reach cannot appear in a suite that
 // never generates forty. The defect this suite did find, `book_recovery`
 // lowering `floor_base`, needed four, which is a reminder that depth is not
-// where the value usually is.
+// where the value usually is. It needed the old basis more than it needed
+// depth: the same four operations against a base measured on accounted cash
+// do nothing at all.
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
