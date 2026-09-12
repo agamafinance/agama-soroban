@@ -72,6 +72,20 @@ echo "== ORACLE ADAPTER: push NAV, read it back =="
 TS=$(( $(date +%s) - 120 ))
 push() {
   local hash
+  # A feed refuses a value inside its minimum interval, an hour on these two, so
+  # a push that follows another script's within the hour is rejected and the old
+  # value stands. That is the rate limit working, and it used to surface here as
+  # three assertion failures that look like the oracle not storing what it was
+  # given. Say which it is.
+  LAST=$(q "$ORACLE" last_update --feed_id "$1" 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin).get('recorded_at',0))" 2>/dev/null || echo 0)
+  NOW=$(date -u +%s)
+  if [ "${LAST:-0}" != "0" ] && [ $((NOW - LAST)) -lt 3600 ]; then
+    echo "  $1 was last reported $((NOW - LAST))s ago and its minimum interval is 3600s."
+    echo "  A push now is refused and the stored value does not move, so the NAV"
+    echo "  assertions below would compare against the previous value. Wait out the"
+    echo "  interval and re-run; this is the rate limit doing its job."
+    exit 2
+  fi
   hash=$(tx "$ORACLE" push_nav --reporter "$ADMIN" --feed_id "$1" --nav "$2" --timestamp "$TS")
   echo "  push_nav $1 = $2  tx $hash"
   assert_eq "get_nav($1) reads back what was pushed" "$(q "$ORACLE" get_nav --feed_id "$1")" "$2"
