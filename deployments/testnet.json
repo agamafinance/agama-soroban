@@ -116,7 +116,8 @@
       "label": "agUSD, fourth deployment",
       "address": "CANR4HJCDO7KDIUKTNGOJJUSZ45VB6EVR5IFHTOPQUCGAZ2XEDVJGIYG",
       "supersededBy": "agusdCore",
-      "reason": "Replaced by scripts/deploy-review2.sh. It names the superseded Vault as its only minter and has minted, so the pointer is frozen and issuance could not follow the Vault to its replacement. Superseded with a zero supply: every unit it issued was redeemed for USDC through its own Vault before the handover, so it strands no holders."
+      "reason": "Replaced by scripts/deploy-review2.sh. It names the superseded Vault as its only minter and has minted, so the pointer is frozen and issuance could not follow the Vault to its replacement. Superseded with a zero supply: every unit it issued was redeemed for USDC through its own Vault before the handover, so it strands no holders.",
+      "wasmHash": "3b6e82f6d3bf6ff5a3eac80c4e27a999dcd566678c314d7650604781075c55cf"
     },
     {
       "contract": "agusdCore",
@@ -124,7 +125,8 @@
       "label": "agUSD, fifth deployment",
       "address": "CAT5VV5BTSFZEIAT37NRTHWSYS6LQCIZ7AIERGSFK2GRWY7VLNQR3FXA",
       "supersededBy": "agusdCore",
-      "reason": "Replaced by scripts/deploy-review2.sh. It names the superseded Vault as its only minter and has minted, so the pointer is frozen and issuance could not follow the Vault to its replacement. Superseded with a zero supply: every unit it issued was redeemed for USDC through its own Vault before the handover, so it strands no holders."
+      "reason": "Replaced by scripts/deploy-review2.sh. It names the superseded Vault as its only minter and has minted, so the pointer is frozen and issuance could not follow the Vault to its replacement. Superseded with a zero supply: every unit it issued was redeemed for USDC through its own Vault before the handover, so it strands no holders.",
+      "wasmHash": "3b6e82f6d3bf6ff5a3eac80c4e27a999dcd566678c314d7650604781075c55cf"
     },
     {
       "contract": "agusdCore",
@@ -132,7 +134,8 @@
       "label": "agUSD, sixth deployment",
       "address": "CCS3LZINQQRRQQSSVXGPNEOIAGNMB6AR7UAVJEK7MZ6RGVSPVZNA2YZD",
       "supersededBy": "agusdCore",
-      "reason": "Replaced by scripts/deploy-review2.sh. It names the superseded Vault as its only minter and has minted, so the pointer is frozen and issuance could not follow the Vault to its replacement. Superseded with a zero supply: every unit it issued was redeemed for USDC through its own Vault before the handover, so it strands no holders."
+      "reason": "Replaced by scripts/deploy-review2.sh. It names the superseded Vault as its only minter and has minted, so the pointer is frozen and issuance could not follow the Vault to its replacement. Superseded with a zero supply: every unit it issued was redeemed for USDC through its own Vault before the handover, so it strands no holders.",
+      "wasmHash": "3b6e82f6d3bf6ff5a3eac80c4e27a999dcd566678c314d7650604781075c55cf"
     },
     {
       "contract": "agusdCore",
@@ -140,7 +143,8 @@
       "label": "agUSD, seventh deployment",
       "address": "CDO7WPJHUFTM3Q6ZLT5FRQIK4OYX5ZG7ERDC2B5W3BWXBRPPMXV2L6PL",
       "supersededBy": "agusdCore",
-      "reason": "Replaced by scripts/deploy-mediums.sh, which closes the Medium findings of the second adversarial review. Every contract in this generation wires itself through an initialize() that runs in its own transaction after the deploy, which is a public window in which the same call naming a different admin can land first, and which took its counterparties on trust while the setters that repair those same pointers interrogated them. A __constructor replaces it in all seven contracts, so the bytecode of every one of them differs from the source and none of them could be reused. It names the superseded Vault as its only minter and has minted, so the pointer is frozen and issuance could not follow the Vault to its replacement. Superseded with a zero supply: every unit it issued was redeemed for USDC through its own Vault before the handover, so it strands no holders."
+      "reason": "Replaced by scripts/deploy-mediums.sh, which closes the Medium findings of the second adversarial review. Every contract in this generation wires itself through an initialize() that runs in its own transaction after the deploy, which is a public window in which the same call naming a different admin can land first, and which took its counterparties on trust while the setters that repair those same pointers interrogated them. A __constructor replaces it in all seven contracts, so the bytecode of every one of them differs from the source and none of them could be reused. It names the superseded Vault as its only minter and has minted, so the pointer is frozen and issuance could not follow the Vault to its replacement. Superseded with a zero supply: every unit it issued was redeemed for USDC through its own Vault before the handover, so it strands no holders.",
+      "wasmHash": "3b6e82f6d3bf6ff5a3eac80c4e27a999dcd566678c314d7650604781075c55cf"
     },
     {
       "contract": "allocationEngine",
@@ -180,7 +184,8 @@
       "label": "Allocation Engine, fifth deployment",
       "address": "CA2KUSVWB6G5MTA32XXAGACXNHQQM3ETND3CWVJRVTNPLG2PXIJJ7YAZ",
       "supersededBy": "allocationEngine",
-      "reason": "This Allocation Engine was replaced by a later run of scripts/deploy-review2.sh from the same source: byte for byte the contract that superseded it. It was retired because the smoke run left it carrying recognised losses that were experiments rather than credit events, and recognised_losses is deliberately permanent, so a book whose reserve floor is not tightened for good by a test is only reachable through a fresh deployment. The permanence is the fix behaving as designed, and this retirement is the price of it."
+      "reason": "This Allocation Engine was replaced by a later run of scripts/deploy-review2.sh from the same source: byte for byte the contract that superseded it. It was retired because the smoke run left it carrying recognised losses that were experiments rather than credit events, and recognised_losses is deliberately permanent, so a book whose reserve floor is not tightened for good by a test is only reachable through a fresh deployment. The permanence is the fix behaving as designed, and this retirement is the price of it.",
+      "wasmHash": "4d865347f72f984e1880e4321824228f8b28e8df5cc2a46f4cf66c094712c017"
     },
     {
       "contract": "allocationEngine",
@@ -188,7 +193,8 @@
       "label": "Allocation Engine, sixth deployment",
       "address": "CB45BH7XYH6QWWSOI67Z4IEK6VYF7TO53OYQIFKLIMJ6ZZOBXJ2EEK4K",
       "supersededBy": "allocationEngine",
-      "reason": "This Allocation Engine was replaced by a later run of scripts/deploy-review2.sh from the same source: byte for byte the contract that superseded it. It was retired because the smoke run left it carrying recognised losses that were experiments rather than credit events, and recognised_losses is deliberately permanent, so a book whose reserve floor is not tightened for good by a test is only reachable through a fresh deployment. The permanence is the fix behaving as designed, and this retirement is the price of it."
+      "reason": "This Allocation Engine was replaced by a later run of scripts/deploy-review2.sh from the same source: byte for byte the contract that superseded it. It was retired because the smoke run left it carrying recognised losses that were experiments rather than credit events, and recognised_losses is deliberately permanent, so a book whose reserve floor is not tightened for good by a test is only reachable through a fresh deployment. The permanence is the fix behaving as designed, and this retirement is the price of it.",
+      "wasmHash": "4d865347f72f984e1880e4321824228f8b28e8df5cc2a46f4cf66c094712c017"
     },
     {
       "contract": "allocationEngine",
@@ -196,7 +202,8 @@
       "label": "Allocation Engine, seventh deployment",
       "address": "CBM2RACBNQU6YKRQAXWMGVFANCO3AJ4LOQONEY5O7IPMXPUBS6G56HRT",
       "supersededBy": "allocationEngine",
-      "reason": "Replaced by scripts/deploy-mediums.sh, which closes the Medium findings of the second adversarial review. Every contract in this generation wires itself through an initialize() that runs in its own transaction after the deploy, which is a public window in which the same call naming a different admin can land first, and which took its counterparties on trust while the setters that repair those same pointers interrogated them. A __constructor replaces it in all seven contracts, so the bytecode of every one of them differs from the source and none of them could be reused. This Allocation Engine also measures its three concentration caps on live exposure alone, which write_down sets to zero while the adapter goes on holding the capital, so a pool could be filled to its cap, written off and filled again without limit; it has no recover, so capital in an adapter with no exposure left cannot be moved by any entry point; and a divergence between its admin and the Vault's surfaces as the Vault trapping four frames down rather than as a named refusal."
+      "reason": "Replaced by scripts/deploy-mediums.sh, which closes the Medium findings of the second adversarial review. Every contract in this generation wires itself through an initialize() that runs in its own transaction after the deploy, which is a public window in which the same call naming a different admin can land first, and which took its counterparties on trust while the setters that repair those same pointers interrogated them. A __constructor replaces it in all seven contracts, so the bytecode of every one of them differs from the source and none of them could be reused. This Allocation Engine also measures its three concentration caps on live exposure alone, which write_down sets to zero while the adapter goes on holding the capital, so a pool could be filled to its cap, written off and filled again without limit; it has no recover, so capital in an adapter with no exposure left cannot be moved by any entry point; and a divergence between its admin and the Vault's surfaces as the Vault trapping four frames down rather than as a named refusal.",
+      "wasmHash": "4d865347f72f984e1880e4321824228f8b28e8df5cc2a46f4cf66c094712c017"
     },
     {
       "contract": "allocationEngine",
@@ -348,7 +355,8 @@
       "label": "Private credit adapter, fifth deployment",
       "address": "CDPFTGS62IZHPZEGK6ENVTBLUKMLOD4OEPD7UVMJG3FCNDWS65TWQFYQ",
       "supersededBy": "poolAdapters.private-credit",
-      "reason": "Replaced by scripts/deploy-review2.sh, and not because its code changed: it is byte for byte the adapter that was already deployed. It could not follow the new Engine and Vault because set_counterparties refuses an adapter holding USDC, and it holds USDC left over from a written-down position. The position was written off, so its exposure is zero, deallocate is capped at zero and there is no sweep entry point, which leaves the cash and the repair path both stuck. That is finding M2 of the second adversarial review, recorded and left for triage, and this retirement is what it cost. The Etherfuse adapter, empty, was repointed in place instead."
+      "reason": "Replaced by scripts/deploy-review2.sh, and not because its code changed: it is byte for byte the adapter that was already deployed. It could not follow the new Engine and Vault because set_counterparties refuses an adapter holding USDC, and it holds USDC left over from a written-down position. The position was written off, so its exposure is zero, deallocate is capped at zero and there is no sweep entry point, which leaves the cash and the repair path both stuck. That is finding M2 of the second adversarial review, recorded and left for triage, and this retirement is what it cost. The Etherfuse adapter, empty, was repointed in place instead.",
+      "wasmHash": "9f98afd57f310b4a9fc8956757ba69a8209a00882b31a595ec1ae9f4cb60b720"
     },
     {
       "contract": "poolAdapters.private-credit",
@@ -356,7 +364,8 @@
       "label": "Private credit adapter, sixth deployment",
       "address": "CANRYN2HGYU6SBQOYKCL52LSNSXKOK54ECK2UFAZTMHNPK47VUZQUIIQ",
       "supersededBy": "poolAdapters.private-credit",
-      "reason": "Replaced by scripts/deploy-review2.sh, and not because its code changed: it is byte for byte the adapter that was already deployed. It could not follow the new Engine and Vault because set_counterparties refuses an adapter holding USDC, and it holds USDC left over from a written-down position. The position was written off, so its exposure is zero, deallocate is capped at zero and there is no sweep entry point, which leaves the cash and the repair path both stuck. That is finding M2 of the second adversarial review, recorded and left for triage, and this retirement is what it cost. The Etherfuse adapter, empty, was repointed in place instead."
+      "reason": "Replaced by scripts/deploy-review2.sh, and not because its code changed: it is byte for byte the adapter that was already deployed. It could not follow the new Engine and Vault because set_counterparties refuses an adapter holding USDC, and it holds USDC left over from a written-down position. The position was written off, so its exposure is zero, deallocate is capped at zero and there is no sweep entry point, which leaves the cash and the repair path both stuck. That is finding M2 of the second adversarial review, recorded and left for triage, and this retirement is what it cost. The Etherfuse adapter, empty, was repointed in place instead.",
+      "wasmHash": "9f98afd57f310b4a9fc8956757ba69a8209a00882b31a595ec1ae9f4cb60b720"
     },
     {
       "contract": "poolAdapters.private-credit",
@@ -364,7 +373,8 @@
       "label": "Private credit adapter, seventh deployment",
       "address": "CCDB2I753FQJCRMVQVSYMUU2UT2R2H2UQJ7I2OLESJ7EKHCZUWCA4PSR",
       "supersededBy": "poolAdapters.private-credit",
-      "reason": "Replaced by scripts/deploy-mediums.sh, which closes the Medium findings of the second adversarial review. Every contract in this generation wires itself through an initialize() that runs in its own transaction after the deploy, which is a public window in which the same call naming a different admin can land first, and which took its counterparties on trust while the setters that repair those same pointers interrogated them. A __constructor replaces it in all seven contracts, so the bytecode of every one of them differs from the source and none of them could be reused. This adapter also has no recover_surplus, which is finding M2: deallocate is capped at booked exposure, so a written-down position leaves USDC here that no entry point can move, and because set_counterparties refuses an adapter holding USDC, one stroop of it closes the only repair path the contract has. Three earlier generations of this adapter were retired for exactly that, which is what the fix cost before it was made."
+      "reason": "Replaced by scripts/deploy-mediums.sh, which closes the Medium findings of the second adversarial review. Every contract in this generation wires itself through an initialize() that runs in its own transaction after the deploy, which is a public window in which the same call naming a different admin can land first, and which took its counterparties on trust while the setters that repair those same pointers interrogated them. A __constructor replaces it in all seven contracts, so the bytecode of every one of them differs from the source and none of them could be reused. This adapter also has no recover_surplus, which is finding M2: deallocate is capped at booked exposure, so a written-down position leaves USDC here that no entry point can move, and because set_counterparties refuses an adapter holding USDC, one stroop of it closes the only repair path the contract has. Three earlier generations of this adapter were retired for exactly that, which is what the fix cost before it was made.",
+      "wasmHash": "9f98afd57f310b4a9fc8956757ba69a8209a00882b31a595ec1ae9f4cb60b720"
     },
     {
       "contract": "poolAdapters.private-credit",
@@ -484,7 +494,8 @@
       "label": "Vault Contract, sixth deployment",
       "address": "CCVFI7YGBYL346U4NY2TSXGIH3766LKK74BJ5VDCKX5YZFJIUBDFIKXT",
       "supersededBy": "vault",
-      "reason": "This Vault was replaced by a later run of scripts/deploy-review2.sh from the same source: byte for byte the contract that superseded it. It was retired because the smoke run left it carrying recognised losses that were experiments rather than credit events, and recognised_losses is deliberately permanent, so a book whose reserve floor is not tightened for good by a test is only reachable through a fresh deployment. The permanence is the fix behaving as designed, and this retirement is the price of it."
+      "reason": "This Vault was replaced by a later run of scripts/deploy-review2.sh from the same source: byte for byte the contract that superseded it. It was retired because the smoke run left it carrying recognised losses that were experiments rather than credit events, and recognised_losses is deliberately permanent, so a book whose reserve floor is not tightened for good by a test is only reachable through a fresh deployment. The permanence is the fix behaving as designed, and this retirement is the price of it.",
+      "wasmHash": "4f1caff860fd5f00ba9a2c2d6b292da298e60ed5e7642701160c2b85187567a9"
     },
     {
       "contract": "vault",
@@ -492,7 +503,8 @@
       "label": "Vault Contract, seventh deployment",
       "address": "CBIJCFWZXCHMWBEDXBCCKIPVTPUI4TDMZOMMI6S7URU5GLTA5627JDPK",
       "supersededBy": "vault",
-      "reason": "This Vault was replaced by a later run of scripts/deploy-review2.sh from the same source: byte for byte the contract that superseded it. It was retired because the smoke run left it carrying recognised losses that were experiments rather than credit events, and recognised_losses is deliberately permanent, so a book whose reserve floor is not tightened for good by a test is only reachable through a fresh deployment. The permanence is the fix behaving as designed, and this retirement is the price of it."
+      "reason": "This Vault was replaced by a later run of scripts/deploy-review2.sh from the same source: byte for byte the contract that superseded it. It was retired because the smoke run left it carrying recognised losses that were experiments rather than credit events, and recognised_losses is deliberately permanent, so a book whose reserve floor is not tightened for good by a test is only reachable through a fresh deployment. The permanence is the fix behaving as designed, and this retirement is the price of it.",
+      "wasmHash": "4f1caff860fd5f00ba9a2c2d6b292da298e60ed5e7642701160c2b85187567a9"
     },
     {
       "contract": "vault",
@@ -500,7 +512,8 @@
       "label": "Vault Contract, eighth deployment",
       "address": "CAK7NGMFYPAJKFY74TOQSCIJADCDCCMAOKEGFHI2O7BZBCQQTIAFCSSL",
       "supersededBy": "vault",
-      "reason": "Replaced by scripts/deploy-mediums.sh, which closes the Medium findings of the second adversarial review. Every contract in this generation wires itself through an initialize() that runs in its own transaction after the deploy, which is a public window in which the same call naming a different admin can land first, and which took its counterparties on trust while the setters that repair those same pointers interrogated them. A __constructor replaces it in all seven contracts, so the bytecode of every one of them differs from the source and none of them could be reused. This Vault also has no record_recovery, so capital written off and later recovered has no way back onto its books, and no bump_claim, so the keeper the architecture document describes has nothing to call and a head claim that outlives its 90 day TTL stops the whole withdrawal queue until somebody pays for a RestoreFootprint."
+      "reason": "Replaced by scripts/deploy-mediums.sh, which closes the Medium findings of the second adversarial review. Every contract in this generation wires itself through an initialize() that runs in its own transaction after the deploy, which is a public window in which the same call naming a different admin can land first, and which took its counterparties on trust while the setters that repair those same pointers interrogated them. A __constructor replaces it in all seven contracts, so the bytecode of every one of them differs from the source and none of them could be reused. This Vault also has no record_recovery, so capital written off and later recovered has no way back onto its books, and no bump_claim, so the keeper the architecture document describes has nothing to call and a head claim that outlives its 90 day TTL stops the whole withdrawal queue until somebody pays for a RestoreFootprint.",
+      "wasmHash": "4f1caff860fd5f00ba9a2c2d6b292da298e60ed5e7642701160c2b85187567a9"
     },
     {
       "contract": "staking",
@@ -540,7 +553,7 @@
       "label": "Vault Contract, tenth deployment",
       "address": "CBNS3LWIQCVCGQU45LRCHPCJN2KMWE5FUFNLX2DNQXYU7T6Y3QZAYHLT",
       "supersededBy": "vault",
-      "reason": "Replaced together by scripts/deploy-vault-generation.sh. The Vault it replaces does not interrogate its oracle in set_oracle, exposes neither oracle() nor oracle_feed(), and does not require the agUSD it mints to count stroops the way its USDC does, which is the requirement the one for one peg actually rests on. agUSD moved with it because agusd-core::set_minter refuses once mints > 0, so the minter pointer was frozen at the Vault being retired and a replacement Vault could never have minted that token. Both retired at zero: the outstanding supply was redeemed first, which needed the position lifted over the 1 agUSD anti-dust floor by a deposit, and which is why this generation waited on the operator account being funded. Nothing else was redeployed: the Engine, the oracle, both adapters and staking all followed through their own setters."
+      "reason": "Replaced together by scripts/deploy-vault-generation.sh, so that the reserve floor stops being a share of the raw idle balance. In the Vault it replaces, floor_base is built on the USDC the contract happens to hold, so cash arriving without the books being told raises the base the moment it lands and can be spent a second time when something finally books it: an invariant fuzzer reproduced that in four operations. The replacement measures the base on the flows the Vault recorded itself and adds accounted_free_reserves, which the liquidity check in settle_allocation now uses. Neither is reachable through a setter, so shipping them takes a new Vault, and the difference is checkable on-chain: the retired one exposes booked_reserves and no accounted_free_reserves. agUSD moved with it because agusd-core::set_minter refuses once mints > 0, so the minter pointer was frozen at the Vault being retired and a replacement Vault could never have minted that token. Both retired at zero, the outstanding supply having been redeemed first. Staking followed agUSD for its own frozen setter; the Engine, the oracle and both adapters followed through theirs."
     },
     {
       "contract": "agusdCore",
@@ -548,7 +561,7 @@
       "label": "agUSD (`contracts/agusd-core`), ninth deployment",
       "address": "CDXCGLN3QY3CFZK5IV5KVRN5MACRISEHPIL4LTATQC7PMCAEDDMICZXV",
       "supersededBy": "agusdCore",
-      "reason": "Replaced together by scripts/deploy-vault-generation.sh. The Vault it replaces does not interrogate its oracle in set_oracle, exposes neither oracle() nor oracle_feed(), and does not require the agUSD it mints to count stroops the way its USDC does, which is the requirement the one for one peg actually rests on. agUSD moved with it because agusd-core::set_minter refuses once mints > 0, so the minter pointer was frozen at the Vault being retired and a replacement Vault could never have minted that token. Both retired at zero: the outstanding supply was redeemed first, which needed the position lifted over the 1 agUSD anti-dust floor by a deposit, and which is why this generation waited on the operator account being funded. Nothing else was redeployed: the Engine, the oracle, both adapters and staking all followed through their own setters."
+      "reason": "Replaced together by scripts/deploy-vault-generation.sh, so that the reserve floor stops being a share of the raw idle balance. In the Vault it replaces, floor_base is built on the USDC the contract happens to hold, so cash arriving without the books being told raises the base the moment it lands and can be spent a second time when something finally books it: an invariant fuzzer reproduced that in four operations. The replacement measures the base on the flows the Vault recorded itself and adds accounted_free_reserves, which the liquidity check in settle_allocation now uses. Neither is reachable through a setter, so shipping them takes a new Vault, and the difference is checkable on-chain: the retired one exposes booked_reserves and no accounted_free_reserves. agUSD moved with it because agusd-core::set_minter refuses once mints > 0, so the minter pointer was frozen at the Vault being retired and a replacement Vault could never have minted that token. Both retired at zero, the outstanding supply having been redeemed first. Staking followed agUSD for its own frozen setter; the Engine, the oracle and both adapters followed through theirs."
     },
     {
       "contract": "staking",
