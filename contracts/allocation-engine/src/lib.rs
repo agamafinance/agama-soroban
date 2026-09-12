@@ -177,6 +177,19 @@ pub trait VaultInterface {
     /// includes claims whose agUSD has already been burned, and lending those
     /// out is how a queued claim becomes unpayable.
     fn free_reserves(e: Env) -> i128;
+    /// The same quantity measured on the cash the Vault can account for from
+    /// its own flows, rather than on the balance it happens to hold. This is
+    /// what `settle_allocation` checks a release against, so it is what this
+    /// Engine has to check it against too, or the Engine permits allocations
+    /// the Vault then refuses and the two limits stop being one limit.
+    fn accounted_free_reserves(e: Env) -> i128;
+    /// The reserve floor's denominator, taken from the Vault rather than
+    /// rebuilt here. Rebuilding it from this Engine's own books reproduces it
+    /// only while no term is clamped, and the Vault clamps the sum once at the
+    /// end precisely because clamping a term first drifts the base down a
+    /// stroop per deallocation. One number, read from the contract that owns
+    /// it, cannot drift from itself.
+    fn floor_base(e: Env) -> i128;
     /// Move `amount` of that USDC to `pool`. The Vault is the only custodian;
     /// the Engine can instruct a release but never holds the funds itself. The
     /// Vault applies its own floor to this and can refuse.
@@ -884,7 +897,7 @@ impl AllocationEngine {
         // committed to paying out, so a book with every dollar queued for
         // withdrawal still reported a healthy reserve ratio and still let the
         // Engine deploy against it.
-        let idle = vault.free_reserves();
+        let idle = vault.accounted_free_reserves();
         let deployed = Self::total_allocated(e.clone());
         let total_assets = idle + deployed;
         if amount > idle {
@@ -947,7 +960,7 @@ impl AllocationEngine {
         // denominator loosens the cap, which is the wrong direction; the floor
         // is the only limit here that a larger base makes tighter.
         let idle_after = idle - amount;
-        let floor_base = total_assets + Self::written_off(e.clone());
+        let floor_base = vault.floor_base();
         if idle_after * BPS < Self::reserve_floor_bps(e.clone()) as i128 * floor_base {
             return Err(EngineError::ReserveFloorBreached);
         }
@@ -1289,8 +1302,9 @@ impl AllocationEngine {
     /// falls when cash actually leaves.
     pub fn get_reserve_ratio(e: Env) -> Result<u32, EngineError> {
         let vault_address = Self::vault(e.clone())?;
-        let idle = VaultClient::new(&e, &vault_address).free_reserves();
-        let base = idle + Self::total_allocated(e.clone()) + Self::written_off(e.clone());
+        let vault = VaultClient::new(&e, &vault_address);
+        let idle = vault.accounted_free_reserves();
+        let base = vault.floor_base();
         if base <= 0 {
             // No assets means nothing is at risk, so the reserve is complete.
             return Ok(BPS as u32);
@@ -1370,8 +1384,7 @@ impl AllocationEngine {
     /// it has ever written off.
     pub fn floor_base(e: Env) -> Result<i128, EngineError> {
         let vault_address = Self::vault(e.clone())?;
-        let idle = VaultClient::new(&e, &vault_address).free_reserves();
-        Ok(idle + Self::total_allocated(e.clone()) + Self::written_off(e))
+        Ok(VaultClient::new(&e, &vault_address).floor_base())
     }
 
     /// Capital currently deployed into `pool_id`, in USDC.

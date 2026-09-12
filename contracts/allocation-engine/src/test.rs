@@ -80,7 +80,85 @@ impl MockVault {
         }
     }
 
+    // ---- the three books the reserve floor is measured on ----
+    //
+    // The real Vault keeps these and the Engine now reads its base off them, so
+    // the mock keeps them the same way. `booked` starts at whatever balance the
+    // mock was funded with: cash a test sends afterwards is unannounced, which
+    // is exactly the case the accounted base exists to not count.
+
+    pub fn booked_reserves(e: Env) -> i128 {
+        match e.storage().instance().get(&symbol_short!("booked")) {
+            Some(v) => v,
+            None => Self::idle_reserves(e),
+        }
+    }
+
+    /// Pin `booked` at the balance held right now, so USDC sent afterwards is
+    /// cash the books cannot explain. That is what a misdirected repayment, an
+    /// over-payment, an adapter admin's own surplus sweep or a donation looks
+    /// like from inside the Vault, and it is the case the accounted base exists
+    /// to not count.
+    pub fn book_current_balance(e: Env) {
+        let now = Self::idle_reserves(e.clone());
+        Self::set_booked(&e, now);
+    }
+
+    fn set_booked(e: &Env, v: i128) {
+        e.storage().instance().set(&symbol_short!("booked"), &v);
+    }
+
+    pub fn deployed_capital(e: Env) -> i128 {
+        e.storage()
+            .instance()
+            .get(&symbol_short!("deployed"))
+            .unwrap_or(0)
+    }
+
+    pub fn recognised_losses(e: Env) -> i128 {
+        e.storage()
+            .instance()
+            .get(&symbol_short!("losses"))
+            .unwrap_or(0)
+    }
+
+    fn queued(e: &Env) -> i128 {
+        e.storage()
+            .instance()
+            .get(&symbol_short!("queued"))
+            .unwrap_or(0)
+    }
+
+    pub fn accounted_free_reserves(e: Env) -> i128 {
+        let free = Self::booked_reserves(e.clone()) - Self::queued(&e);
+        if free < 0 {
+            0
+        } else {
+            free
+        }
+    }
+
+    /// Summed unclamped and clamped once, exactly as the Vault does it. A mock
+    /// that clamped the cash term first would hide the drift the Vault's
+    /// comment is about.
+    pub fn floor_base(e: Env) -> i128 {
+        let base = Self::booked_reserves(e.clone()) + Self::deployed_capital(e.clone())
+            + Self::recognised_losses(e.clone())
+            - Self::queued(&e);
+        if base < 0 {
+            0
+        } else {
+            base
+        }
+    }
+
     pub fn settle_allocation(e: Env, pool: Address, amount: i128) {
+        let booked = Self::booked_reserves(e.clone());
+        let deployed = Self::deployed_capital(e.clone());
+        Self::set_booked(&e, booked - amount);
+        e.storage()
+            .instance()
+            .set(&symbol_short!("deployed"), &(deployed + amount));
         TokenClient::new(&e, &Self::usdc(e.clone())).transfer(
             &e.current_contract_address(),
             &pool,
@@ -91,6 +169,12 @@ impl MockVault {
     /// The real Vault verifies the cash arrived. This one records the call so
     /// the tests can assert the Engine makes it.
     pub fn record_repayment(e: Env, amount: i128) {
+        let booked = Self::booked_reserves(e.clone());
+        let deployed = Self::deployed_capital(e.clone());
+        Self::set_booked(&e, booked + amount);
+        e.storage()
+            .instance()
+            .set(&symbol_short!("deployed"), &(deployed - amount));
         let seen: i128 = e
             .storage()
             .instance()
@@ -117,6 +201,14 @@ impl MockVault {
             panic!("not the vault admin");
         }
         admin.require_auth();
+        let deployed = Self::deployed_capital(e.clone());
+        let losses = Self::recognised_losses(e.clone());
+        e.storage()
+            .instance()
+            .set(&symbol_short!("deployed"), &(deployed - amount));
+        e.storage()
+            .instance()
+            .set(&symbol_short!("losses"), &(losses + amount));
         let seen: i128 = e
             .storage()
             .instance()
@@ -143,6 +235,12 @@ impl MockVault {
             panic!("not the vault admin");
         }
         admin.require_auth();
+        let booked = Self::booked_reserves(e.clone());
+        let losses = Self::recognised_losses(e.clone());
+        Self::set_booked(&e, booked + amount);
+        e.storage()
+            .instance()
+            .set(&symbol_short!("losses"), &(losses - amount));
         let seen: i128 = e
             .storage()
             .instance()
@@ -1073,6 +1171,79 @@ fn queued_withdrawals_are_subtracted_before_the_caps_and_the_floor() {
     // And the queue keeps its money: 420 free plus 400 queued is the 820 the
     // Vault is holding.
     assert_eq!(f.usdc.balance(&f.vault_id), 820 * USDC);
+}
+
+/// The Engine and the Vault measure the reserve floor on one base.
+///
+/// They did not. `Engine::floor_base` and `Engine::get_reserve_ratio` built
+/// their base from `Vault::free_reserves`, which reads the real token balance,
+/// while `settle_allocation` had already moved onto accounted cash. For any
+/// unaccounted amount `U` the Engine's base ran higher by `U` and its
+/// free-reserves term by `U` too, so asking for `floor_bps` of the base left
+/// the Engine more permissive by `(1 - floor_bps) * U`.
+///
+/// The direction was safe, since the Vault re-checks in the same transaction
+/// and refuses, but a limit enforced in two places against two different
+/// numbers is one limit and one decoration, and `get_reserve_ratio` is the
+/// number an integrator reads.
+#[test]
+fn a_donation_to_the_vault_moves_neither_the_engines_base_nor_its_ratio() {
+    let f = setup();
+    let vault = MockVaultClient::new(&f.e, &f.vault_id);
+    vault.book_current_balance();
+
+    let base_before = f.engine.floor_base();
+    let ratio_before = f.engine.get_reserve_ratio();
+    assert_eq!(base_before, 1_000 * USDC);
+    assert_eq!(ratio_before, 10_000);
+
+    // 500 USDC arrives with nothing telling the Vault. The balance is 1500 and
+    // the books still say 1000.
+    f.usdc.faucet(&f.vault_id, &(500 * USDC));
+    assert_eq!(f.usdc.balance(&f.vault_id), 1_500 * USDC);
+    assert_eq!(vault.free_reserves(), 1_500 * USDC);
+    assert_eq!(vault.accounted_free_reserves(), 1_000 * USDC);
+
+    // Neither the base nor the ratio moves, and both still equal the Vault's.
+    assert_eq!(f.engine.floor_base(), base_before);
+    assert_eq!(f.engine.floor_base(), vault.floor_base());
+    assert_eq!(f.engine.get_reserve_ratio(), ratio_before);
+
+    // The donation buys no room to deploy. The 30% pool cap is a share of total
+    // assets, and total assets are now 1000 rather than 1500, so the cap allows
+    // 300 and refuses 400. Measured on the balance, as it was, 400 would have
+    // been inside a cap that allowed 450.
+    assert_eq!(
+        f.engine.try_allocate(&f.admin, &f.pool_a, &(400 * USDC)),
+        Err(Ok(EngineError::PoolCapExceeded))
+    );
+    f.engine.allocate(&f.admin, &f.pool_a, &(300 * USDC));
+
+    // And the Engine's base is still the Vault's afterwards: an allocation
+    // moves booked down and deployed up by the same amount, so it is neutral.
+    assert_eq!(f.engine.floor_base(), vault.floor_base());
+    assert_eq!(f.engine.floor_base(), base_before);
+}
+
+/// An allocation the raw balance would fund and the books would not is refused
+/// on liquidity, by the Engine, before the Vault ever has to refuse it.
+#[test]
+fn unaccounted_cash_is_not_deployable() {
+    let f = setup();
+    let vault = MockVaultClient::new(&f.e, &f.vault_id);
+    vault.book_current_balance();
+    // The queue owns 900 of the 1000 booked, leaving 100 deployable.
+    vault.set_queued(&(900 * USDC));
+    f.usdc.faucet(&f.vault_id, &(500 * USDC));
+
+    // 600 sits above the queue's claim on the balance, and 100 above it on the
+    // books. The Engine measures the second.
+    assert_eq!(vault.free_reserves(), 600 * USDC);
+    assert_eq!(vault.accounted_free_reserves(), 100 * USDC);
+    assert_eq!(
+        f.engine.try_allocate(&f.admin, &f.pool_a, &(200 * USDC)),
+        Err(Ok(EngineError::InsufficientReserves))
+    );
 }
 
 /// Deallocation tells the Vault, and the real Vault checks the cash arrived
@@ -2063,94 +2234,87 @@ fn pool_registry_cost_by_pool_count() {
     }
 }
 
-/// Finds how many same-bucket pools it takes for one `allocate` call to
-/// exceed the soroban-sdk test harness's default CPU instruction budget
-/// (100,000,000 instructions). Every probe builds a fresh registry of exactly
-/// that size and makes exactly one `allocate` call against it, per
-/// `scale_registry`'s reasoning, so the number this prints is a real,
-/// reproducible measurement rather than an extrapolation.
-///
-/// The host escalates a budget overrun to a Rust panic even through
-/// `try_allocate`, on the reasoning that a transaction which has run out of
-/// its resource budget is not in a state a contract can recover from and
-/// report as an ordinary error. `catch_unwind` is how this test observes that
-/// as a value instead of aborting the run, and the panic hook is silenced
-/// around it so a probe that is expected to fail does not fill the test
-/// output with a backtrace.
-fn allocate_survives(n: u32) -> bool {
+/// Instructions the host metered for one `allocate` into a registry of `n`
+/// pools sharing an originator and a jurisdiction. The call has to stay inside
+/// the budget, so `n` must be at or below the ceiling.
+fn allocate_instructions(n: u32) -> i64 {
     let (f, target) = scale_registry(n);
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        f.engine.allocate(&f.admin, &target, &1);
-    }))
-    .is_ok()
+    f.engine.allocate(&f.admin, &target, &1);
+    f.e.cost_estimate().resources().instructions
 }
 
+/// Where the default instruction budget stops `allocate`, established without
+/// ever making a call that exceeds it.
+///
+/// This used to bisect, running `allocate` at rising pool counts inside
+/// `catch_unwind` and treating a panic as the ceiling. That stopped working
+/// when the ceiling moved: one pool past it the overrun is small, and the
+/// host's panic there is non-unwinding, which `catch_unwind` cannot catch and
+/// which aborts the whole test process instead of failing one test. Probing a
+/// boundary by stepping over it is only safe while stepping over it is safe.
+///
+/// Measuring is both safer and more informative. Two calls that each stay
+/// inside the budget give the cost at the ceiling and the marginal cost of the
+/// pool that reached it; one more pool costs at least that again, which is what
+/// puts it over. Nothing here runs over budget.
 #[test]
 fn allocate_eventually_exceeds_the_default_instruction_budget() {
-    let previous_hook = std::panic::take_hook();
-    std::panic::set_hook(std::boxed::Box::new(|_| {}));
+    // soroban-sdk's test-harness default, its stand-in for the network limit.
+    const LIMIT: i64 = 100_000_000;
+    const CEILING: u32 = 276;
 
-    // Double from a count already known to succeed until one fails, then
-    // binary search the boundary between the two.
-    let mut lo = 100u32;
-    let mut hi = lo * 2;
-    // A generous multiple of anything this protocol will plausibly register,
-    // so a future change that removed the cost entirely would fail this test
-    // instead of looping forever.
-    const SAFETY_CEILING: u32 = 100_000;
-    while allocate_survives(hi) {
-        lo = hi;
-        hi *= 2;
-        assert!(
-            hi <= SAFETY_CEILING,
-            "allocate() had not exceeded the default instruction budget even \
-             at {hi} pools sharing one originator and jurisdiction"
-        );
-    }
-    while hi - lo > 1 {
-        let mid = lo + (hi - lo) / 2;
-        if allocate_survives(mid) {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
+    let at_ceiling = allocate_instructions(CEILING);
+    let one_below = allocate_instructions(CEILING - 1);
+    let marginal = at_ceiling - one_below;
 
-    std::panic::set_hook(previous_hook);
     std::println!(
-        "allocate() succeeds at {lo} pools and exceeds the default instruction budget at \
-         {hi} pools, sharing one originator and jurisdiction"
+        "allocate() at {CEILING} pools costs {at_ceiling} instructions, \
+         {} short of the {LIMIT} budget, and the pool that got it there cost \
+         {marginal}, so {} exceeds",
+        LIMIT - at_ceiling,
+        CEILING + 1
+    );
+    assert!(
+        at_ceiling < LIMIT,
+        "allocate() at {CEILING} pools already costs {at_ceiling}, over the {LIMIT} budget"
+    );
+    assert!(
+        at_ceiling + marginal > LIMIT,
+        "one more pool past {CEILING} would cost {} and still be inside the {LIMIT} budget, \
+         so the ceiling has moved up",
+        at_ceiling + marginal
     );
 }
 
-/// At the boundary the previous test finds, both budget dimensions are close
-/// to their ceiling, and it is worth recording which one actually binds
-/// first. `DEFAULT_MEM_BYTES_LIMIT` in soroban-env-host is 40MB
-/// (41,943,040 bytes); at 277 pools this call is at 38,334,437 bytes, 91% of
-/// that. It is the CPU dimension that crosses first: 99,988,993 of a
-/// 100,000,000 instruction budget, 11,007 instructions of headroom, which is
-/// why one more pool is enough to fail. A network that raised the memory
-/// limit without raising the instruction one would not move this ceiling; a
-/// network that raised the instruction limit would eventually make memory the
-/// binding dimension instead.
+/// At the ceiling the previous test establishes, both budget dimensions are
+/// close, and it is worth recording which one actually binds first.
+/// `DEFAULT_MEM_BYTES_LIMIT` in soroban-env-host is 40MB (41,943,040 bytes);
+/// at 276 pools this call is at 38,308,999 bytes, 91% of that. It is the CPU
+/// dimension that crosses first: 99,516,940 of a 100,000,000 instruction
+/// budget, 483,060 of headroom against a marginal cost of 648,847 per pool,
+/// which is why one more pool is enough to fail. A network that raised the
+/// memory limit without raising the instruction one would not move this
+/// ceiling; a network that raised the instruction limit would eventually make
+/// memory the binding dimension instead.
 #[test]
 fn the_instruction_budget_binds_before_the_memory_budget() {
-    let (f, target) = scale_registry(277);
+    let (f, target) = scale_registry(276);
     f.engine.allocate(&f.admin, &target, &1);
     let res = f.e.cost_estimate().resources();
     assert!(res.instructions < 100_000_000);
     assert!(res.mem_bytes < 40 * 1024 * 1024);
     // Both within budget, and the instruction count is the one within a
-    // rounding error of it: registering one pool the calls above measured at
-    // roughly 100,000-350,000 instructions each pushes this over on its own.
+    // rounding error of it: one more pool, at the marginal cost the previous
+    // test measures, pushes this over on its own while memory still has 9%.
     assert!(res.instructions > 99_000_000);
+    assert!(res.mem_bytes < 39 * 1024 * 1024);
 }
 
-/// The 277-pool ceiling above is the worst case: every pool sharing one
+/// The 276-pool ceiling above is the worst case: every pool sharing one
 /// originator and one jurisdiction, so every one of them is read out of
 /// persistent storage twice on the way to `charged_where_originator` and
 /// twice more on the way to `charged_where_jurisdiction`. A real book is not
-/// a monoculture; a private credit originator that fronted 277 separate
+/// a monoculture; a private credit originator that fronted 276 separate
 /// on-chain pool adapters under one jurisdiction would itself be the story,
 /// long before the Engine's instruction budget was.
 ///
@@ -2159,7 +2323,7 @@ fn the_instruction_budget_binds_before_the_memory_budget() {
 /// but itself in both walks, and the cost left is the one thing a diverse
 /// registry cannot avoid, decoding the whole `Cfg::Pools` map once per call.
 /// At 1000 pools that is 18,686,325 instructions, 19% of the default budget,
-/// against 277 pools already exhausting it in the shared-bucket case above.
+/// against 276 pools already exhausting it in the shared-bucket case above.
 /// Which of the two shapes bounds this protocol in practice is a statement
 /// about how concentrated its book is allowed to get, not about this test,
 /// and the concentration caps this Engine already enforces are exactly what
@@ -2190,3 +2354,4 @@ fn pool_registry_cost_with_one_originator_and_jurisdiction_per_pool() {
         assert!(res.instructions < 50_000_000);
     }
 }
+
