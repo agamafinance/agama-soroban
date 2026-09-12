@@ -13,10 +13,10 @@
 #
 # Fixing it properly means measuring the base on booked_reserves, which drags
 # settle_allocation with it and makes cash nobody deposited undeployable. That
-# is a redesign of the reserve floor's basis and it is written up in
-# docs/reviews/floor-base-on-accounted-cash.md rather than taken at speed on top
-# of the bug it fixes. So the entry point is removed and M1 is open again, which
-# is where the third review left it and for the reason it gave.
+# is a redesign of the reserve floor's basis, which is why it is not taken at
+# speed on top of the bug it fixes. So the entry point is removed and M1 is open
+# again. (The redesign was taken later: floor_base now measures the base on
+# accounted cash, and see docs/ARCHITECTURE.md for what it computes.)
 #
 # Only the Engine changes. The adapters and the Vault are untouched and follow
 # through their own setters, and the pool registry is rebuilt on the
@@ -185,9 +185,9 @@ REASON = (
     'is immune because cash sitting in an adapter is outside the base until the sweep brings it in, '
     'so its rise and its fall happen in one call and cancel. Fixing it properly means measuring the '
     'base on booked_reserves, which drags settle_allocation with it and makes cash nobody deposited '
-    'undeployable, a redesign of the reserve floor basis written up in '
-    'docs/reviews/floor-base-on-accounted-cash.md rather than taken on top of the bug it fixes. M1 '
-    'is open again, which is where the third review left it and for the reason it gave.'
+    'undeployable, a redesign of the reserve floor basis rather than something to take on top of '
+    'the bug it fixes. M1 is open again. The redesign was taken later and floor_base now measures '
+    'the base on accounted cash.'
 )
 def retire(contract, address, label_base):
     gen = 1 + sum(1 for e in history if e['contract'] == contract)
