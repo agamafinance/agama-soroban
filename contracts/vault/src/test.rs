@@ -2055,3 +2055,30 @@ fn the_agusd_pointer_refuses_a_token_that_counts_stroops_differently() {
     bare.set_agusd(&f.admin, &right);
     assert_eq!(bare.agusd(), right);
 }
+
+/// `overflow-checks = true` is in the release profile, so i128 arithmetic traps
+/// rather than wrapping in the contract that is actually deployed.
+///
+/// It is one line in a manifest and it is load bearing: every accounting
+/// quantity here is an i128 and several are sums over a registry or a queue. A
+/// silent wrap in `outstanding_liabilities` or `floor_base` would be a
+/// catastrophe that looks like an ordinary number. The line is easy to delete
+/// while tidying a profile, which is why it is worth a test rather than trust.
+///
+/// Asserted on the manifest rather than by overflowing something, because the
+/// test profile is not the release profile: a test that overflows proves the
+/// setting for `cargo test`, which is not the build that reaches the ledger.
+#[test]
+fn the_release_profile_traps_on_overflow_rather_than_wrapping() {
+    let manifest = include_str!("../../../Cargo.toml");
+    let release = manifest
+        .split("[profile.release]")
+        .nth(1)
+        .expect("no release profile in the workspace manifest");
+    let release = release.split("\n[").next().unwrap();
+    assert!(
+        release.contains("overflow-checks = true"),
+        "the release profile does not enable overflow checks, so every i128 sum \
+         in this protocol wraps silently in the build that gets deployed"
+    );
+}
