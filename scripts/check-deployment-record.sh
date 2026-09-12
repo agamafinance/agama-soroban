@@ -171,6 +171,7 @@ for e in d.get('pendingRedeployment', []):
   if [ -n "$PENDING" ]; then
     echo "  declared as pending redeployment: $(echo "$PENDING" | tr '\n' ' ')"
   fi
+  TMPW=$(mktemp -d); trap 'rm -rf "$TMPW"' EXIT
   stellar contract build >/dev/null 2>&1 || bad "the release build failed, so nothing was compared"
   while IFS='|' read -r name addr wasm; do
     [ -n "$addr" ] || continue
@@ -185,10 +186,46 @@ for e in d.get('pendingRedeployment', []):
       else
         ok "$name"
       fi
-    elif echo "$PENDING" | grep -qx "$name"; then
-      ok "$name differs and is declared: chain ${chain:0:16} vs local ${local_hash:0:16}"
     else
-      bad "$name differs and nothing declares it: chain ${chain:0:16} vs local ${local_hash:0:16}"
+      # Locate the divergence before judging it. Soroban embeds doc comments in
+      # contractspecv0, so a comment edited above a public entry point moves the
+      # module hash while the code section stays identical. A declaration that
+      # covers a metadata-only difference is a fair statement; one that covers a
+      # changed code section is not, whatever it says, so the code section is
+      # checked separately and a declaration cannot excuse it.
+      stellar contract fetch --id "$addr" --network testnet > "$TMPW/$name.chain.wasm" 2>/dev/null || true
+      DIFFS=$(python3 - "$TMPW/$name.chain.wasm" "target/wasm32v1-none/release/$wasm" <<'PY2'
+import subprocess, sys, os
+here = os.path.dirname(os.path.abspath(sys.argv[0])) if False else 'scripts'
+def secs(p):
+    out = subprocess.run(['python3', 'scripts/wasm-sections.py', p],
+                         capture_output=True, text=True)
+    return [l.split('|') for l in out.stdout.strip().split('\n') if l]
+try:
+    a, b = secs(sys.argv[1]), secs(sys.argv[2])
+except Exception:
+    sys.exit(0)
+if not a or not b:
+    sys.exit(0)
+names = {(x[0], x[1]) for x in a} | {(x[0], x[1]) for x in b}
+da = {(x[0], x[1]): (x[2], x[3]) for x in a}
+db = {(x[0], x[1]): (x[2], x[3]) for x in b}
+for key in sorted(names):
+    if da.get(key) != db.get(key):
+        print(key[1] or ('section ' + key[0]))
+PY2
+)
+      CODE_DIFF=$(echo "$DIFFS" | grep -cx "section 10" || true)
+      DLIST=$(echo "$DIFFS" | tr '\n' ' ')
+      if echo "$PENDING" | grep -qx "$name"; then
+        if [ "$CODE_DIFF" != 0 ]; then
+          bad "$name is declared, but the difference reaches the code section: $DLIST"
+        else
+          ok "$name differs and is declared, outside the code section: $DLIST"
+        fi
+      else
+        bad "$name differs and nothing declares it ($DLIST): chain ${chain:0:16} vs local ${local_hash:0:16}"
+      fi
     fi
   done < <(python3 -c "
 import json
