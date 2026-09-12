@@ -314,7 +314,7 @@ Claim records carry a 90 day TTL, bumped whenever they are written and by `bump_
 
 **Security**
 
-Constructor rather than a front-runnable `initialize` · `require_auth()` on all state-changing calls · Zero/negative validation · Pause circuit breaker on deposits, requests and allocations, never on payouts · Minimum withdrawal amount · FIFO queue (no priority, no stalling, and no freezing on a payout the token refuses) · The reserve floor enforced against the Vault's own book, so no Allocation Engine can take reserves below it, and against a base a write-down cannot move, so no admin can either · Two-step admin handover.
+Every state-changing entry point authorized, or on an explicit list of the ones that deliberately are not, checked by `scripts/check-authorization.sh` rather than by reading: it follows helpers, because several calls here authorize inside one, and it fails both on a new unauthorized entry point and on an allowlist entry that has outlived its reason · Overflow checks on in the release profile, so an i128 sum traps rather than wrapping in the build that reaches the ledger, pinned by a test against the manifest because the test profile is not the release profile · Constructor rather than a front-runnable `initialize` · `require_auth()` on all state-changing calls · Zero/negative validation · Pause circuit breaker on deposits, requests and allocations, never on payouts · Minimum withdrawal amount · FIFO queue (no priority, no stalling, and no freezing on a payout the token refuses) · The reserve floor enforced against the Vault's own book, so no Allocation Engine can take reserves below it, and against a base a write-down cannot move, so no admin can either · Two-step admin handover.
 
 ### 4.2 agUSD Token Contract (SEP-41)
 
