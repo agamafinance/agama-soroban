@@ -989,12 +989,33 @@ impl Vault {
             return Err(VaultError::InvalidAmount);
         }
 
-        let free_after = Self::free_reserves(e.clone()) - amount;
+        // Both checks on the same basis, or they disagree and this call stops
+        // being neutral on the floor's base.
+        //
+        // Releasing `amount` moves accounted free reserves down by exactly what
+        // it moves deployed capital up by, so the base does not move. Measured
+        // on the raw balance it did move, because the balance counts unannounced
+        // cash that `booked_reserves` does not, and an allocation funded partly
+        // by that cash lowered one term of the base without raising the other.
+        // The fuzzer finds that in two operations, a donation and an allocation.
+        //
+        // The consequence is deliberate and it is the conservative reading:
+        // cash that arrived without the books being told is not deployable until
+        // something books it. Capital no agUSD claims, that nobody deposited,
+        // should not be lent out on the strength of being in the balance.
+        let free_after = Self::accounted_free_reserves(e.clone()) - amount;
         if free_after < 0 {
             return Err(VaultError::InsufficientLiquidity);
         }
+        // The base built the same way `floor_base` builds it, from unclamped
+        // terms, so that the number this call is checked against is the number
+        // the view reports. Computing it from the clamped free figure here was
+        // the same one stroop drift by another route.
         let deployed_after = Self::deployed_capital(e.clone()) + amount;
-        let base = free_after + deployed_after + Self::recognised_losses(e.clone());
+        let base_raw = Self::booked_reserves(e.clone()) - amount + deployed_after
+            + Self::recognised_losses(e.clone())
+            - Self::outstanding_liabilities(e.clone());
+        let base = if base_raw < 0 { 0 } else { base_raw };
         if free_after * BPS < Self::reserve_floor_bps(e.clone()) as i128 * base {
             return Err(VaultError::ReserveFloorBreached);
         }
@@ -1369,7 +1390,82 @@ impl Vault {
     /// also the correct one: agUSD redeems one for one, so a default does not
     /// reduce by one stroop what the Vault owes.
     pub fn floor_base(e: Env) -> Result<i128, VaultError> {
-        Ok(Self::get_net_assets(e.clone())? + Self::recognised_losses(e))
+        if !e.storage().instance().has(&Cfg::Engine) {
+            return Err(VaultError::NotInitialized);
+        }
+        // Summed without clamping any term, and clamped once at the end.
+        //
+        // Clamping the cash term first breaks the neutrality the whole change
+        // is for, and a fuzzer found it at one stroop. A withdrawal request
+        // raises liabilities without moving cash, so `booked - liabilities` can
+        // be negative while capital is out; the clamp then reports zero, and a
+        // `deallocate` that raises booked by `amount` raises the clamped term by
+        // less than `amount` while deployed falls by all of it. The base drifts
+        // down by the difference, once per deallocation, which is exactly the
+        // kind of slow leak the floor exists to prevent.
+        //
+        // Unclamped, the sum reads as what it is: everything the Vault has
+        // accounted for, plus what is out, plus what has been written off, less
+        // what the queue is owed. Every pairing that should be neutral is:
+        // allocate moves booked down and deployed up, deallocate the reverse, a
+        // recovery moves booked up and losses down. Only a withdrawal request
+        // lowers it, and it should, because the protocol owes more than it did.
+        //
+        // The clamp at the end is for the comparison rather than the arithmetic.
+        // A negative base would satisfy any floor trivially, and a Vault whose
+        // accounted assets are under water has worse problems than its reserve
+        // ratio; zero is the honest floor for a number that is a denominator.
+        let base = Self::booked_reserves(e.clone()) + Self::deployed_capital(e.clone())
+            + Self::recognised_losses(e.clone())
+            - Self::outstanding_liabilities(e);
+        Ok(if base < 0 { 0 } else { base })
+    }
+
+    /// Free reserves measured on what this Vault can account for, rather than
+    /// on what it happens to be holding.
+    ///
+    /// `free_reserves` reads the real token balance, and that is right for it:
+    /// a claim can only be paid with cash actually held, whoever sent it. It is
+    /// wrong for the floor's base, and an invariant fuzzer is what established
+    /// that rather than an argument.
+    ///
+    /// USDC arrives here without the books being told. A repayment sent
+    /// straight to this address, an over-payment, an adapter admin taking its
+    /// own surplus sweep, an outright donation. A base built on the raw balance
+    /// counts that cash the moment it lands, and `record_repayment` and
+    /// `record_recovery` book the same cash later, the second of them lowering
+    /// `recognised_losses` as it does. Both terms sit in the base, so the dollar
+    /// is counted on arrival and spent again on booking, and the base ends lower
+    /// than it stood in between.
+    ///
+    /// The third review derived that the base can only be lowered by calls
+    /// bounded by unaccounted cash, and that every unit of that cash had raised
+    /// the base by the same amount when it arrived. Both halves are true. The
+    /// conclusion drawn from them, that the base therefore never falls, is not,
+    /// because the rise and the fall can be in different transactions and the
+    /// base is higher in between. `Engine::book_recovery` made that reachable in
+    /// a single call and was removed for it.
+    ///
+    /// Measured here, on the balance this Vault's own flows explain, unannounced
+    /// cash counts for nothing until something books it, and booking it moves
+    /// accounted free reserves up by precisely what it moves recognised losses
+    /// down. A sweep does not inflate the base and a booking does not deflate
+    /// it. Both are neutral, which is what they always should have been, and it
+    /// is why the finding the sweep caused stops being a finding rather than
+    /// staying an open one.
+    ///
+    /// `booked_reserves` is the right quantity for this because it is already
+    /// exactly the balance this Vault can explain from its own flows: deposits
+    /// in, allocations out, repayments and recoveries in, payouts out. It is the
+    /// number `record_repayment` and `record_recovery` already bound themselves
+    /// against, so the concept is not new here, only the place it is read.
+    pub fn accounted_free_reserves(e: Env) -> i128 {
+        let free = Self::booked_reserves(e.clone()) - Self::outstanding_liabilities(e);
+        if free < 0 {
+            0
+        } else {
+            free
+        }
     }
 
     /// NAV for the Vault's feed, straight from the Oracle Adapter. A stale feed

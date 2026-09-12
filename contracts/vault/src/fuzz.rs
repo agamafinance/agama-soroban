@@ -502,65 +502,70 @@ proptest! {
     }
 }
 
-/// The finding that removed `Engine::book_recovery`, kept as the record of it.
+/// The finding that removed `Engine::book_recovery`, and the fix that followed
+/// it, in one case.
 ///
 /// The fuzzer's shrunk counterexample was a donation straight to the Vault, an
-/// allocation, a write-down and a `book_recovery`, after which `floor_base` had
-/// fallen. The mechanism: `idle_reserves` reads the real token balance, so cash
-/// that arrives without the books being told raises the base the moment it
-/// lands. `book_recovery` then booked that same cash and lowered
-/// `recognised_losses` by up to the same amount with no further cash moving.
-/// Both terms are in the base, so the dollar was counted on arrival and spent
-/// again on booking, and the base ended lower than it stood in between.
+/// allocation, a write-down and a booking, after which `floor_base` had fallen.
+/// The mechanism was a double count: the base read the real token balance, so
+/// cash arriving without the books being told raised it the moment it landed,
+/// and booking the same cash afterwards lowered `recognised_losses` by the same
+/// amount with no further cash moving. One dollar, counted on arrival and spent
+/// again on booking.
 ///
-/// `recover` does not have the problem, and the difference is where the cash
-/// sits when it is booked. In an adapter it is outside the base until the sweep
-/// brings it in, so the rise and the fall happen in the same call and cancel.
-/// The comment written on `book_recovery` claimed the two were equivalent,
-/// because an admin could send USDC to an adapter and sweep it through
-/// `recover` for the same effect. The round trip is not equivalent, and that
-/// sentence is what this counterexample refutes.
-///
-/// Fixing it properly means measuring the base on `booked_reserves` rather than
-/// the raw balance, which then requires `settle_allocation` to measure the same
-/// way or the two disagree and an allocation stops being neutral on the base,
-/// which then makes cash nobody deposited undeployable. That is a redesign of
-/// the reserve floor's basis and it is written up as a proposal in
-/// `docs/reviews/floor-base-on-accounted-cash.md` rather than taken at speed on
-/// top of the bug it is fixing.
-///
-/// So `book_recovery` is gone and M1 of the third review is open again, which
-/// is where that review left it, for the reason it gave: "That is new authority
-/// over `recognised_losses` and a product decision, which is why it is recorded
-/// rather than written."
+/// The base is measured on `booked_reserves` now, so the first half of that
+/// cannot happen: an unannounced arrival moves nothing. This is that property,
+/// and it is stronger than the one this test used to make. It used to assert
+/// that a donation raised the base and that nothing could then spend it, which
+/// accepted the double count and only removed the second half of it.
 #[test]
-fn there_is_no_way_to_book_a_recovery_against_cash_already_in_the_vault() {
+fn cash_the_vault_cannot_account_for_does_not_move_the_floors_base() {
     let state = setup();
+    let base_before = state.vault.floor_base();
+
     let donor = Address::generate(&state.e);
     state.usdc.faucet(&donor, &(1_000 * USDC));
     soroban_sdk::token::TokenClient::new(&state.e, &state.usdc_id)
         .transfer(&donor, &state.vault_id, &(1_000 * USDC));
 
-    // The donation raises the base, because the base reads the real balance.
-    // On its own that is conservative: more cash, more floor.
-    let base = state.vault.floor_base();
-    assert_eq!(base, 1_000 * USDC);
-
-    state
-        .engine
-        .allocate(&state.admin, &state.ef_pool_id, &(500 * USDC));
-    state.engine.write_down(
-        &state.admin,
-        &state.ef_pool_id,
-        &(500 * USDC),
-        &symbol_short!("FUZZ"),
+    // The money is really there. The Vault simply does not count it, because
+    // nothing has told its books it arrived.
+    assert_eq!(
+        state.usdc.balance(&state.vault_id) - state.vault.booked_reserves(),
+        1_000 * USDC,
+        "the donation did not land"
     );
-    assert_eq!(state.vault.floor_base(), base);
+    assert_eq!(
+        state.vault.floor_base(),
+        base_before,
+        "an unannounced arrival moved the floor's base"
+    );
 
-    // And nothing can spend that same dollar a second time. The Vault's
-    // `record_recovery` is reachable only from `Engine::recover`, which is
-    // bounded by what an adapter holds above its booked exposure, so the cash
-    // it books is cash the base was not already counting.
-    assert_eq!(state.vault.recognised_losses(), 500 * USDC);
-    assert_eq!(state.vault.floor_base(), base);
+    // And it is not deployable either, which is the other half of measuring
+    // both checks on the same basis. Capital nobody deposited, that no agUSD
+    // claims, is not lent out on the strength of being in the balance.
+    let allocatable = state.vault.accounted_free_reserves();
+    assert!(
+        state
+            .engine
+            .try_allocate(&state.admin, &state.ef_pool_id, &(allocatable + 1))
+            .is_err(),
+        "the Vault deployed more than it can account for"
+    );
+
+    // An allocation inside what it can account for still works, and is still
+    // neutral on the base, which is what makes the two measures consistent.
+    if allocatable > 0 {
+        let probe = allocatable / 4;
+        if probe > 0 {
+            state
+                .engine
+                .allocate(&state.admin, &state.ef_pool_id, &probe);
+            assert_eq!(
+                state.vault.floor_base(),
+                base_before,
+                "an allocation moved the base it is supposed to be neutral on"
+            );
+        }
+    }
 }

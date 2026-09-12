@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc fde1761f5f97874e7dc165bf512c2d49fe2f575fe8396462a24e9fff4de3fac0 # shrinks to ops = [Donate { amount: 9286152974 }, Allocate { pool: 0, amount: 9999999 }]
+cc 239d8f35fee94d25690a62a1b556f6797c74cad0b521180510bef89bea4c88f2 # shrinks to ops = [Donate { amount: 8312833450 }, Deposit { user: 3, amount: 31618301188 }, Allocate { pool: 0, amount: 8083110185 }, RequestWithdrawal { user: 3, amount: 23535191004 }, Deallocate { pool: 0, amount: 9999999 }]

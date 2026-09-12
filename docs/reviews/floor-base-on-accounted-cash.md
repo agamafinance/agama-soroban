@@ -1,7 +1,8 @@
-# Proposal: measure the reserve floor's base on accounted cash
+# The reserve floor's base is measured on accounted cash
 
-Status: **proposed, not taken.** Written after an invariant fuzzer found the
-defect below, and deliberately not applied in the same change that fixed it.
+Status: **taken.** Written as a proposal after an invariant fuzzer found the
+defect below, deliberately not applied in the same change that fixed it, and
+applied a day later once the thing that was missing had been built.
 
 ## What the fuzzer found
 
@@ -84,7 +85,63 @@ pre-audit codebase in one morning, with no second opinion, would be repeating
 the mistake that produced the bug: a chain of individually plausible steps with
 nothing checking the conclusion.
 
-## What was done instead
+## What changed between proposing it and taking it
+
+One thing, and it was the thing the deferral rested on. The stated reason for
+not applying it was "three coupled changes to the most reviewed part of the
+system, reached by following a bug from the day before, with nothing checking
+the conclusion."
+
+The fuzzer is that check, and by the time this was taken it was proven on
+exactly this defect class: it had found the original `book_recovery` defect in
+four operations, and the halfway state where only `floor_base` had moved in two.
+
+It earned that reputation again during the implementation. At 1500 cases it
+found a **one stroop** drift in `floor_base` on a `deallocate`, from the clamp.
+`accounted_free_reserves` clamps at zero, because free cash cannot be negative,
+and a withdrawal request raises liabilities without moving cash, so
+`booked - liabilities` can be negative while capital is out. The clamp then
+reports zero, and a `deallocate` raising booked by `amount` raises the clamped
+term by less than `amount` while deployed falls by all of it. The base drifts
+down by the difference, once per deallocation: precisely the slow leak the floor
+exists to prevent, reintroduced by the fix for a different leak.
+
+The base is therefore summed from unclamped terms and clamped once at the end:
+
+```
+base = booked_reserves + deployed_capital + recognised_losses - outstanding_liabilities
+floor_base = max(0, base)
+```
+
+Which reads as what it is. Everything the Vault has accounted for, plus what is
+out, plus what has been written off, less what the queue is owed. Every pairing
+that should be neutral is, and only a withdrawal request lowers it, which it
+should, because the protocol owes more than it did. The clamp at the end is for
+the comparison rather than the arithmetic: a negative base satisfies any floor
+trivially, and zero is the honest value for a number used as a denominator.
+
+## What it did to M1, which is the reason it was worth doing
+
+M1 stops being a finding rather than staying an open one.
+
+The harm M1 described was that an adapter admin's surplus sweep raises the
+floor's base while `recognised_losses` still carries the same amount, so the
+base counts the dollar twice and freezes `floor_bps` of it as reserves that can
+never be deployed. Measured on accounted cash the sweep does not touch
+`booked_reserves`, so the base does not move, so nothing is frozen and there is
+nothing to unfreeze.
+
+`an_adapter_admins_sweep_no_longer_inflates_the_floors_base` is that, and it
+fails on the old base with the inflation it describes, 12000000000 against
+10000000000 on the fixture. The entry point written to release that inflation,
+and which the fuzzer then showed could lower the base, turns out not to have
+been needed for it at all.
+
+The permanent residue on the deployment stops being an unexplainable gap and
+becomes a conservative buffer that counts for nothing.
+
+## What was done first, and kept
+
 
 `Engine::book_recovery` is removed, and M1 of the third review is open again.
 That is where the review left it, and the reason it gave was exactly this:

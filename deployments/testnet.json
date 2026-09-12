@@ -9,11 +9,11 @@
   "contracts": {
     "usdc": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
     "agusd": "CCXEP6QAAYEMFMV2JGBULD2NS6AQB6KQSBHLPPBJSDBCN6HOYIHNQ6H3",
-    "staking": "CCXCJYWY73QOMLITR2QQEOBFHDFKUQ35BR7VZQ4K3MC5DWZOZO7TO2GP",
-    "vault": "CBNS3LWIQCVCGQU45LRCHPCJN2KMWE5FUFNLX2DNQXYU7T6Y3QZAYHLT",
+    "staking": "CD3VPDGFTJ6VJ2BW6ZLCJ2MLO72LIM74XSKWZNIDYNJZW3NW7BPG35Y3",
+    "vault": "CCPBVZ3WCUTA2OYC2HKYVZUNUV46K47TPKMHSS5IDFYRRPFEDASZNFFD",
     "allocationEngine": "CAJPGOOYVWYJLUNNPQM645L27KUTYGLM2BTHWT2OVRUNJTVTGZCWSBSG",
     "oracleAdapter": "CBH7NW5LQX5MIELSF5T5EPGFADIHDZMAGNPNJE5NP22FNNVOKSEVFB3N",
-    "agusdCore": "CDXCGLN3QY3CFZK5IV5KVRN5MACRISEHPIL4LTATQC7PMCAEDDMICZXV"
+    "agusdCore": "CDBIY2KAXTMSS5ZAFNGCMSVCMJMOFGIRMWPYPEDS5JLI5S3WGMCGEX3Z"
   },
   "creditVaults": {
     "payment-financing": "CAUFXVGKB2OKEDDO6SDWH4ZSWXJ37T2WYKEVUTBOCWZAFEUTGCFYQEF4",
@@ -533,6 +533,30 @@
       "address": "CCUGWQ5DRO66BASGU5UZIX6YWIWJ6GKQOBAABT2246OE5WZOI6JFHA7V",
       "supersededBy": "agusdCore",
       "reason": "Replaced together by scripts/deploy-vault-generation.sh. The Vault it replaces does not interrogate its oracle in set_oracle, exposes neither oracle() nor oracle_feed(), and does not require the agUSD it mints to count stroops the way its USDC does, which is the requirement the one for one peg actually rests on. agUSD moved with it because agusd-core::set_minter refuses once mints > 0, so the minter pointer was frozen at the Vault being retired and a replacement Vault could never have minted that token. Both retired at zero: the outstanding supply was redeemed first, which needed the position lifted over the 1 agUSD anti-dust floor by a deposit, and which is why this generation waited on the operator account being funded. Nothing else was redeployed: the Engine, the oracle, both adapters and staking all followed through their own setters."
+    },
+    {
+      "contract": "vault",
+      "generation": 10,
+      "label": "Vault Contract, tenth deployment",
+      "address": "CBNS3LWIQCVCGQU45LRCHPCJN2KMWE5FUFNLX2DNQXYU7T6Y3QZAYHLT",
+      "supersededBy": "vault",
+      "reason": "Replaced together by scripts/deploy-vault-generation.sh. The Vault it replaces does not interrogate its oracle in set_oracle, exposes neither oracle() nor oracle_feed(), and does not require the agUSD it mints to count stroops the way its USDC does, which is the requirement the one for one peg actually rests on. agUSD moved with it because agusd-core::set_minter refuses once mints > 0, so the minter pointer was frozen at the Vault being retired and a replacement Vault could never have minted that token. Both retired at zero: the outstanding supply was redeemed first, which needed the position lifted over the 1 agUSD anti-dust floor by a deposit, and which is why this generation waited on the operator account being funded. Nothing else was redeployed: the Engine, the oracle, both adapters and staking all followed through their own setters."
+    },
+    {
+      "contract": "agusdCore",
+      "generation": 9,
+      "label": "agUSD (`contracts/agusd-core`), ninth deployment",
+      "address": "CDXCGLN3QY3CFZK5IV5KVRN5MACRISEHPIL4LTATQC7PMCAEDDMICZXV",
+      "supersededBy": "agusdCore",
+      "reason": "Replaced together by scripts/deploy-vault-generation.sh. The Vault it replaces does not interrogate its oracle in set_oracle, exposes neither oracle() nor oracle_feed(), and does not require the agUSD it mints to count stroops the way its USDC does, which is the requirement the one for one peg actually rests on. agUSD moved with it because agusd-core::set_minter refuses once mints > 0, so the minter pointer was frozen at the Vault being retired and a replacement Vault could never have minted that token. Both retired at zero: the outstanding supply was redeemed first, which needed the position lifted over the 1 agUSD anti-dust floor by a deposit, and which is why this generation waited on the operator account being funded. Nothing else was redeployed: the Engine, the oracle, both adapters and staking all followed through their own setters."
+    },
+    {
+      "contract": "staking",
+      "generation": 11,
+      "label": "sagUSD staking, eleventh deployment",
+      "address": "CCXCJYWY73QOMLITR2QQEOBFHDFKUQ35BR7VZQ4K3MC5DWZOZO7TO2GP",
+      "supersededBy": "staking",
+      "reason": "Replaced by scripts/redeploy-staking-follow-agusd.sh, so that staking accepts the agUSD generation deployed alongside the reserve floor change. Its own set_agusd could not do it: the setter refuses once stakes > 0, and stakes is a cumulative count of every stake ever taken which never decrements, so the pointer freezes permanently at the first one even on a contract that is completely empty. That is conservative rather than over-strict, because a pending unstake survives with supply and NAV both at zero and is denominated in assets, so repointing the token underneath it would pay a claim in a token it was never priced against, and the contract cannot enumerate its own pending records to check. The cost is that every agUSD generation forces a staking redeployment for the life of the protocol. It was empty here, so it stranded nobody, and nothing on-chain names this contract."
     }
   ],
   "oracleFeedGuards": "The band bounds every report including the first, which a deviation bound cannot reach because a bound on a move needs something to move from. The minimum interval is measured in ledger time between accepted values, not in the timestamps the reporter supplies, because the reporter chooses those. The reference point is persistent, so it cannot expire out from under the checks that read it.",

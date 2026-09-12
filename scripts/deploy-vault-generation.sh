@@ -66,7 +66,7 @@ PC_JUR=$(j "d['engineConfig']['pools']['private-credit']['jurisdiction']")
 EF_ORIG=$(j "d['engineConfig']['pools']['etherfuse']['originator']")
 EF_JUR=$(j "d['engineConfig']['pools']['etherfuse']['jurisdiction']")
 
-TOPUP=50000000     # 5 USDC in, to clear the 1 agUSD anti-dust floor on the way out
+MIN_WITHDRAWAL=10000000  # the Vault's anti-dust floor, 1 agUSD at 7 decimals
 SEED=20000000      # 2 USDC left in the new Vault, so it is live rather than empty
 MOVE=5000000       # 0.5 USDC through a pool, to prove the wiring end to end
 
@@ -109,8 +109,25 @@ HELD=$(q0 "$OLD_AGUSD" balance --id "$ADMIN")
 chk "the operator holds the whole agUSD supply" "$HELD" "$SUPPLY"
 BAL=$(q0 "$USDC" balance --id "$ADMIN")
 echo "    operator USDC = $BAL"
-if [ "$BAL" -lt $((TOPUP + SEED)) ]; then
-  echo "    not enough to both clear the floor and seed the new Vault, needs $((TOPUP + SEED))"
+# A top-up is only needed when the outstanding supply is below MIN_WITHDRAWAL
+# and therefore cannot be redeemed at all. That was the case the first time this
+# ran, at 0.2 agUSD against a 1 agUSD floor, and it is not a general condition:
+# a position already over the floor comes out on its own. And the seed for the
+# new Vault comes out of the redemption proceeds, which land before the seeding
+# step, so it does not have to be held up front either.
+NEED=0
+if [ "$SUPPLY" != "0" ] && [ "$SUPPLY" -lt "$MIN_WITHDRAWAL" ]; then
+  NEED=$((MIN_WITHDRAWAL - SUPPLY))
+  echo "    supply $SUPPLY is under the $MIN_WITHDRAWAL anti-dust floor, so a top-up of $NEED is needed"
+else
+  echo "    supply clears the anti-dust floor, so no top-up is needed"
+fi
+if [ "$BAL" -lt "$NEED" ]; then
+  echo "    and the operator is $((NEED - BAL)) short of it"
+  fail=1
+fi
+if [ $((SUPPLY + BAL)) -lt "$SEED" ]; then
+  echo "    nothing would be left to seed the new Vault with, which needs $SEED"
   fail=1
 fi
 [ "$fail" = 0 ] || { echo "refusing to start a migration that cannot finish"; exit 1; }
@@ -123,10 +140,15 @@ if [ "$(q0 "$OLD_AGUSD" total_supply)" = "0" ] && [ "$(q0 "$OLD_VAULT" idle_rese
   echo "-- Already retired at zero by an earlier run. Nothing to redeem and"
   echo "-- nothing left in the Vault, so this part is done."
 else
-echo "-- MIN_WITHDRAWAL is 1 agUSD and the position is 0.2, so it cannot be"
-echo "-- redeemed as it stands. Depositing lifts it over the floor, and then"
-echo "-- the whole balance comes out in one request."
-echo "    deposit             tx $(tx "$OLD_VAULT" deposit --from "$ADMIN" --amount "$TOPUP")"
+if [ "$NEED" != "0" ]; then
+  echo "-- The position is under the anti-dust floor and cannot be redeemed as it"
+  echo "-- stands, so a deposit lifts it over and the whole balance comes out in"
+  echo "-- one request."
+  echo "    deposit             tx $(tx "$OLD_VAULT" deposit --from "$ADMIN" --amount "$((NEED + MIN_WITHDRAWAL)))")"
+else
+  echo "-- The position already clears the anti-dust floor, so it comes out as it"
+  echo "-- stands."
+fi
 HELD=$(q0 "$OLD_AGUSD" balance --id "$ADMIN")
 echo "    the operator now holds $HELD agUSD, against a floor of 10000000"
 CLAIM=$(stellar contract invoke --id "$OLD_VAULT" --source "$SRC" --network "$NET" -- \
