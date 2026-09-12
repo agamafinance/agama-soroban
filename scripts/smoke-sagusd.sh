@@ -95,6 +95,18 @@ fi
 assert_eq "share_price is the same view under the older name" \
   "$(q "$STAKING" share_price)" "$(num "$(q "$STAKING" exchange_rate)")"
 
+# This measures share issuance and the exchange rate from a standing start, so
+# it needs the staking contract empty. Another script leaving shares in it turns
+# every rate assertion below into a diff that reads like a pricing bug and is
+# not. Unwinding is the operator's call: the shares belong to somebody.
+if [ "$(num "$(q "$STAKING" total_supply)")" != "0" ] || [ "$(num "$(q "$STAKING" nav)")" != "0" ]; then
+  echo ""
+  echo "  the staking contract is not empty: supply $(num "$(q "$STAKING" total_supply)"), nav $(num "$(q "$STAKING" nav)")"
+  echo "  This measures issuance and the rate from a standing start. To clear it:"
+  echo "  request_unstake the whole share balance, wait out the cooldown, claim."
+  exit 2
+fi
+
 echo ""
 echo "== PREFLIGHT: agUSD to stake and to distribute =="
 NEED=$((STAKE + YIELD))
