@@ -3,7 +3,7 @@ use super::*;
 use allocation_engine::{AllocationEngine, AllocationEngineClient, EngineError};
 use mock_usdc::{MockUsdc, MockUsdcClient};
 use oracle_adapter::{OracleAdapter, OracleAdapterClient};
-use private_credit::PrivateCreditAdapter;
+use private_credit::{PrivateCreditAdapter, PrivateCreditAdapterClient};
 use soroban_sdk::testutils::storage::Persistent as _;
 use soroban_sdk::testutils::{Address as _, Ledger as _};
 use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
@@ -1826,12 +1826,30 @@ fn the_agusd_pointer_refuses_a_token_this_vault_cannot_mint() {
 fn a_vault_that_has_not_been_given_an_engine_releases_nothing() {
     let f = setup();
 
-    // Constructed and nothing else, and funded, so that the refusals below
-    // cannot be read as an empty balance.
+    // Constructed and nothing else, and funded by a deposit rather than a
+    // faucet, so that the refusals below cannot be read as an empty balance.
+    //
+    // The faucet is what this used to do, and it stopped being enough when the
+    // reserve floor moved onto accounted cash: a transfer nobody booked raises
+    // the balance and nothing else, so a Vault funded that way can pay a claim
+    // and cannot deploy a stroop. Depositing is what an actual depositor does,
+    // and it is the only funding that makes the allocation at the end of this
+    // test a statement about the Engine pointer rather than about the balance.
     let bare_id = f.e.register(Vault, (f.admin.clone(), f.usdc.address.clone()));
     let bare = VaultClient::new(&f.e, &bare_id);
-    f.usdc.faucet(&bare_id, &(1_000 * USDC));
+    let bare_agusd = f.e.register(MockUsdc, ());
+    MockUsdcClient::new(&f.e, &bare_agusd).initialize(
+        &bare_id,
+        &7u32,
+        &String::from_str(&f.e, "Agama USD"),
+        &String::from_str(&f.e, "agUSD"),
+    );
+    bare.set_agusd(&f.admin, &bare_agusd);
+    let funder = Address::generate(&f.e);
+    f.usdc.faucet(&funder, &(1_000 * USDC));
+    bare.deposit(&funder, &(1_000 * USDC));
     assert_eq!(bare.idle_reserves(), 1_000 * USDC);
+    assert_eq!(bare.accounted_free_reserves(), 1_000 * USDC);
 
     assert_eq!(
         bare.try_allocation_engine(),
@@ -2081,4 +2099,65 @@ fn the_release_profile_traps_on_overflow_rather_than_wrapping() {
         "the release profile does not enable overflow checks, so every i128 sum \
          in this protocol wraps silently in the build that gets deployed"
     );
+}
+
+/// M1 stops being a finding, which is why the base was moved rather than
+/// `book_recovery` restored.
+///
+/// M1 was: a pool adapter's `recover_surplus` can be taken by the adapter's own
+/// admin, the cash reaches the Vault with no book moving, and `Engine::recover`
+/// then gets `NothingToRecover` so the write-down can never be released. The
+/// harm was that the swept cash raised the floor's base while
+/// `recognised_losses` still carried the same amount, so the base counted the
+/// dollar twice and froze `floor_bps` of it as reserves that could never be
+/// deployed.
+///
+/// Measured on accounted cash there is no inflation to release. The sweep does
+/// not touch `booked_reserves`, so the base does not move, so there is nothing
+/// frozen and nothing to unfreeze. The entry point that was written to release
+/// it, and that an invariant fuzzer then showed could lower the base, is not
+/// needed for this at all.
+#[test]
+fn an_adapter_admins_sweep_no_longer_inflates_the_floors_base() {
+    let f = setup();
+    depositor(&f, 1_000 * USDC);
+    let base = f.vault.floor_base();
+
+    f.engine.allocate(&f.admin, &f.pool, &(200 * USDC));
+    assert_eq!(f.vault.floor_base(), base, "an allocation moved the base");
+
+    f.engine
+        .write_down(&f.admin, &f.pool, &(200 * USDC), &symbol_short!("DEFAULT"));
+    assert_eq!(f.vault.floor_base(), base, "a write-down moved the base");
+    assert_eq!(f.vault.recognised_losses(), 200 * USDC);
+
+    // The adapter admin takes the fallback sweep. Real cash arrives and no book
+    // moves, which is the whole of M1.
+    PrivateCreditAdapterClient::new(&f.e, &f.pool).recover_surplus(&f.admin);
+    assert_eq!(f.usdc.balance(&f.pool), 0, "the sweep did not move the cash");
+    assert_eq!(
+        f.vault.idle_reserves() - f.vault.booked_reserves(),
+        200 * USDC,
+        "the cash is not sitting unaccounted, so this is not the M1 state"
+    );
+
+    // And the base did not move, so nothing was ever frozen by it.
+    assert_eq!(
+        f.vault.floor_base(),
+        base,
+        "the sweep inflated the floor's base, which is the harm M1 described"
+    );
+    assert_eq!(
+        f.vault.recognised_losses(),
+        200 * USDC,
+        "the loss is still recorded, which is honest: the capital did not come back"
+    );
+
+    // The loss is still there and still cannot be released, because nothing can
+    // book cash the Vault cannot attribute. That is a conservative buffer now
+    // rather than a distortion: the base the floor is a share of is unchanged,
+    // so the same allocation that was possible before the whole sequence is
+    // possible after it.
+    f.engine.allocate(&f.admin, &f.pool, &(200 * USDC));
+    assert_eq!(f.vault.floor_base(), base);
 }
