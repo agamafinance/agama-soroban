@@ -130,6 +130,8 @@ assert_eq "total supply did not move" "$(q "$AGUSD_CORE" total_supply)" "$SUPPLY
 
 echo ""
 echo "== DEPOSIT: USDC in, agUSD out 1:1 =="
+SUPPLY_BEFORE=$(num "$(q "$AGUSD_CORE" total_supply)")
+IDLE_BEFORE=$(num "$(q "$VAULT" idle_reserves)")
 U0=$(num "$(q "$USDC" balance --id "$ADMIN")")
 if [ "$U0" -lt "$DEPOSIT" ]; then
   echo "  the admin holds $U0 (7dp) of USDC and the deposit is $DEPOSIT"
@@ -175,11 +177,30 @@ assert_eq "the USDC came back" "$(q "$USDC" balance --id "$ADMIN")" "$((U1 + WIT
 assert_eq "out of the Vault's reserves" "$(q "$VAULT" idle_reserves)" "$((R1 - WITHDRAW))"
 assert_eq "the claim is settled" "$(q "$VAULT" claim_status --claim_id "$CLAIM_ID")" "Claimed"
 assert_eq "the queue is empty again" "$(q "$VAULT" queue_length)" "0"
-# The whole point of the generation 2 token: supply is exactly what the Vault
-# is holding, because the Vault is the only thing that can create it and this
-# Vault has not deployed any capital.
-assert_eq "one agUSD in circulation, one USDC in the Vault" \
-  "$(q "$AGUSD_CORE" total_supply)" "$(num "$(q "$VAULT" idle_reserves)")"
+# The whole point of the generation 2 token: the Vault is the only thing that
+# can create it, one unit per USDC deposited.
+#
+# Asserted as a delta and an inequality rather than as an equality of totals,
+# and the difference matters. Equality of totals also claims the Vault has never
+# received a stroop it did not mint against, which is a different property and
+# not one this script establishes: USDC can arrive here by a transfer nobody
+# booked, an earlier version of smoke-hardening did exactly that, and the Vault
+# cannot account for it afterwards. Those stroops leave the Vault holding more
+# than agUSD claims, which is the safe direction and still breaks an equality.
+#
+# So: minting is one for one, measured across the deposit this script just made,
+# and the Vault is never short of what it owes. Both hold on a deployment other
+# scripts have used, which equality of totals does not.
+assert_eq "the deposit minted exactly one agUSD per USDC" \
+  "$(( $(num "$(q "$AGUSD_CORE" total_supply)") - SUPPLY_BEFORE ))" \
+  "$(( $(num "$(q "$VAULT" idle_reserves)") - IDLE_BEFORE ))"
+HELD=$(num "$(q "$VAULT" idle_reserves)")
+OWED=$(num "$(q "$AGUSD_CORE" total_supply)")
+if [ "$HELD" -ge "$OWED" ]; then
+  ok "the Vault is not short of what agUSD claims (holds $HELD against $OWED)"
+else
+  bad "the Vault holds $HELD against $OWED of agUSD: it is short"
+fi
 
 echo ""
 echo "== CUSTODY: only the Allocation Engine can pull funds out =="
@@ -216,7 +237,13 @@ refuses "allocating $OVER, past the ${POOL_CAP} bps pool cap, is refused" 407 \
 # book, so a 20% floor could never bind on its own. The deployed limits no
 # longer have that problem, and scripts/smoke-journey.sh reaches the state where
 # the floor is the only limit refusing an allocation without touching it.
-UNDER=$(( TOTAL / 100 ))
+# Sized from the floor rather than picked. A 9500 bps floor is breached by an
+# allocation that leaves free reserves below 95% of the base, which means one
+# larger than 5% of it; the old figure here was 1%, which a 95% floor does not
+# refuse at all, and it passed only because the deployment it was written
+# against had a different shape. Ten percent is safely over the line and still
+# well inside the 4000 bps pool cap.
+UNDER=$(( $(num "$(q "$VAULT" free_reserves)") / 10 ))
 echo "  raise the floor to 9500 bps  tx $(tx "$ENGINE" set_reserve_floor --admin "$ADMIN" --floor_bps 9500)"
 refuses "allocating $UNDER, well inside every cap, is refused by the floor" 410 \
   "$ENGINE" allocate --admin "$ADMIN" --pool_id "$EF" --amount "$UNDER"

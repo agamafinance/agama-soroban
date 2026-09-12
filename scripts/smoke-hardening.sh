@@ -115,6 +115,11 @@ echo "$IFACE" | grep -q 'fn distribute_yield' && ok "distribute_yield is there, 
   || bad "distribute_yield is missing"
 echo "$IFACE" | grep -q 'fn exchange_rate' && ok "exchange_rate is there" || bad "exchange_rate is missing"
 
+# What the Vault holds and cannot explain, before this script touches anything.
+# Carried to the end, where the only thing asserted is that it did not grow.
+UNACCOUNTED_BEFORE=$(( $(num "$(q "$VAULT" idle_reserves)") - $(num "$(q "$VAULT" booked_reserves)") ))
+echo "  vault unaccounted cash at start  $UNACCOUNTED_BEFORE"
+
 echo ""
 echo "== VAULT: deposit, and the numbers the limits are measured on =="
 IDLE0=$(q0 "$VAULT" idle_reserves)
@@ -292,13 +297,40 @@ echo "  distribute_yield $WRITE_OFF  tx $(tx "$STAKING" distribute_yield --amoun
 assert_eq "the NAV rose by exactly what arrived" "$(q "$STAKING" nav)" "$((NAV0 + STAKE + WRITE_OFF))"
 assert_eq "and the agUSD is really there" "$(q "$AGUSD" balance --id "$STAKING")" "$((HELD0 + STAKE + WRITE_OFF))"
 
-# Make the written down demonstration whole. This is the operator putting back
-# the 0.1 USDC the write-down recognised as gone, so the testnet deployment is
-# not left with agUSD nobody can redeem. It is a transfer from the admin, not a
-# protocol mechanism: nothing in the contracts does this, and nothing should be
-# read as though something did. Who bears a credit loss is an open product
-# decision, and this script is not the place it gets made.
-echo "  restore the written down amount  tx $(tx "$USDC" transfer --from "$ADMIN" --to "$VAULT" --amount "$WRITE_OFF")"
+# Make the written down demonstration whole, and do it through the contracts
+# rather than around them.
+#
+# This used to transfer the 0.1 USDC straight to the Vault. The comment on it
+# said, correctly, that nothing in the contracts does that and nothing should be
+# read as though something did. What it did not anticipate is that the Vault
+# cannot account for cash that arrives that way: `idle_reserves` reads the real
+# balance, so the money is there, and no call can book it, so agUSD supply stays
+# permanently below the Vault's assets. Two other smoke scripts correctly flag
+# that as an imbalance, and since `Engine::book_recovery` was removed there is no
+# way to clear it. The last run left exactly that: 0.1 USDC in the Vault that
+# nothing claims and nothing can attribute, which is finding M1 in the flesh.
+#
+# So the restoration goes to the adapter, which is where the loss was, and
+# `recover` brings it home. That is the protocol mechanism for exactly this: it
+# sweeps what an adapter holds above its booked exposure, the Vault verifies the
+# arrival before it moves a number, and the recognised loss is released against
+# it. It is still the operator putting their own money back, and who bears a
+# credit loss is still an open product decision that this script does not make.
+# What changes is that the books end consistent instead of one dollar apart.
+echo "  restore it to the adapter        tx $(tx "$USDC" transfer --from "$ADMIN" --to "$PC" --amount "$WRITE_OFF")"
+echo "  recover, which books it          tx $(tx "$ENGINE" recover --admin "$ADMIN" --pool_id "$PC")"
+assert_eq "the loss is released" "$(q "$VAULT" recognised_losses)" "0"
+# Measured as a change rather than against zero, and the reason is worth
+# recording. An earlier version of this script transferred the restoration
+# straight to the Vault, and the Vault cannot account for cash that arrives that
+# way: no call books it, so it sits in the balance claimed by nothing. Those
+# stroops are still there and nothing can clear them, because the one entry
+# point that could was removed after an invariant fuzzer showed it lowered the
+# reserve floor's base. So the standing gap is M1 in the flesh, and what this
+# script is now responsible for is not adding to it.
+UNACCOUNTED_AFTER=$(( $(num "$(q "$VAULT" idle_reserves)") - $(num "$(q "$VAULT" booked_reserves)") ))
+assert_eq "this script added nothing the Vault cannot account for" \
+  "$UNACCOUNTED_AFTER" "$UNACCOUNTED_BEFORE"
 
 echo ""
 echo "== closing state =="
