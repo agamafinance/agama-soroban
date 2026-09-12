@@ -285,6 +285,7 @@ The dApp includes a "Bridge" tab using Circle's Bridge Kit SDK.
 | `free_reserves() / outstanding_liabilities() / get_net_assets() / deployed_capital()` | The four numbers the book is computed from, all readable by anyone. |
 | `recognised_losses() → i128` | Deployed capital written off and not recovered. Not an asset, and `get_net_assets()` correctly excludes it. It rises on a write-down and falls in exactly one way, `record_recovery`, which requires the cash to have arrived. |
 | `floor_base() → i128` | The denominator the reserve floor is a share of: `booked_reserves + deployed_capital + recognised_losses - outstanding_liabilities`, summed unclamped and clamped once at zero. |
+| `accounted_free_reserves() → i128` | `booked_reserves` net of what the queue is owed, never negative. What `settle_allocation` checks an allocation against, rather than `free_reserves`, which reads the real balance. The two differ by whatever cash reached the Vault without its books being told. |
 | `propose_admin(admin, new_admin)` / `accept_admin(new_admin)` | Two-step admin handover. |
 | `set_oracle(admin, oracle, feed_id)` | Points the Vault at an Oracle Adapter and a feed on it. Interrogates the pair before accepting it, which until now it was alone among this Vault's setters in not doing: the address has to answer `get_feed` for this exact feed, so it has to be a contract, it has to be an oracle, and it has to know the feed. It deliberately says nothing about whether that feed has reported yet or whether its last value is fresh, because pointing at a newly deployed oracle, or at one whose reporter is down, is an ordinary operation and often the reason for repointing. What no check reaches is a real feed that is the wrong one for this Vault's book, which is why the pair is now readable. |
 | `oracle() → Address` / `oracle_feed() → Symbol` | The pair `get_nav()` reports from. Every other counterparty on this Vault could be read back and this one could not, so the only way to learn where it pointed was to call `get_nav()` and infer it from the number, and a wrong pointer produces a plausible number. The missing getter is what let the missing check go unnoticed. |
@@ -344,6 +345,7 @@ Standard SEP-41 interface: `transfer`, `transfer_from`, `approve`, `allowance`, 
 | `share_price() → i128` | Alias of `exchange_rate()`, the name this contract shipped with. Same computation, retained because the generation 1 agUSD calls it on the credit vaults. |
 | `nav() → i128` | Total agUSD the contract is accountable for. It moves only through `stake`, `request_unstake` and `distribute_yield`, all three backed by a transfer. |
 | `total_shares() → i128` | sagUSD in circulation. |
+| `set_allocations(allocations)` / `allocations() → Vec<Allocation>` | Admin-written list of `{name, target_bps, apy_bps}`, readable by anyone. **Display metadata, and nothing in this contract reads it.** No accounting, no yield computation and no guard depends on it, so a `target_bps` that does not sum to 10000 or an `apy_bps` that no pool earns is not caught and is not meant to be. It is an admin assertion published on-chain, and should be read as one. |
 
 **There is no NAV setter.** The contract shipped with `report_nav(new_nav)`, admin-gated, accepting any non-negative value with no bound and no event, described as being for demo and reconciliation. NAV is the denominator of both directions of the share price — `stake` mints `amount * supply / nav`, `request_unstake` returns `shares * nav / supply` — so it was not a reporting convenience but an instruction to reprice every share in the contract. Against 1000 agUSD staked: `report_nav(1)`, stake 99 stroops and take 99% of the share supply, `report_nav` back, unstake, leave with 990 agUSD of somebody else's deposit. It has been removed rather than bounded, because `distribute_yield` already does the legitimate job and cannot overstate the book.
 
@@ -374,6 +376,7 @@ Write-offs reach the caps through the numerator instead. Every cap is measured o
 | `recover(admin, pool_id) → i128` | Brings home whatever an adapter holds above its booked exposure: a written-off position that recovers, and interest paid above principal. Both used to be unreachable, because `deallocate` is capped at booked exposure and a written-off position has none, and because an adapter holding USDC cannot be repointed — one stroop of stranded cash closed the only repair path the adapter had, and it cost three redeployments before it was worth fixing. The caller aims nothing: the destination is the adapter's stored Vault and the amount is the surplus, neither of them a parameter — which is a safety property only while that Vault is still the one this Engine governs, so this call re-runs the adapter check too. |
 | `deallocate(pool_id, amount)` | Records repayments returning to the Vault, and tells the Vault, which verifies the cash arrived before its own book is allowed to fall. Re-runs the adapter check first, so a stale pairing is refused by name here rather than four frames down at the Vault, or, where the Vault happens to hold unannounced cash of the same size, not refused at all. |
 | `propose_admin(admin, new_admin)` / `accept_admin(new_admin)` | Two-step admin handover. |
+| `vault_admin() → Address` | The Vault's admin, as the Vault reports it. Read rather than stored, so the Engine cannot go on naming an admin the Vault has already rotated away from. |
 | `get_exposure(pool_id) → i128` | Current allocation per pool. |
 | `get_exposures() → Map` | Full allocation state. Pools with no exposure appear as zero, so the map doubles as the whitelist. |
 | `total_allocated() → i128` | Total booked as deployed across every pool. |
@@ -425,7 +428,7 @@ The cost is not linear in the worst case. Marginal instructions per pool roughly
 | Private credit NAV | Off-chain report → Backend → Reporter key(s) | Centralized (V1, disclosed) → 2-of-3 quorum (V2) | 7 days | 500 bps | 0.50 to 2.00 | 1 hour |
 | Etherfuse bond price | Etherfuse API / on-chain | Deterministic | 48 hours | none | 0.50 to 2.00 | 1 hour |
 
-The band and the interval exist because a deviation bound is relative and cannot cover two cases on its own. It cannot reach the **first** report for a feed, since a bound on a move needs something to move from: before the band, `push_nav(i128::MAX)` was accepted and became the reference every later bound was a percentage of. And it says nothing about **how many** reports there can be, so forty pushes of +5% moved a NAV sevenfold in forty seconds with every one of them inside the bound. The interval is measured in ledger time between accepted values rather than in reported timestamps, because the reporter chooses those and can submit forty of them, a day apart, in the same minute.
+The band and the interval exist because a deviation bound is relative and cannot cover two cases on its own. It cannot reach the **first** report for a feed, since a bound on a move needs something to move from: before the band, a `push_nav` carrying `i128::MAX` was accepted and became the reference every later bound was a percentage of. And it says nothing about **how many** reports there can be, so forty pushes of +5% moved a NAV sevenfold in forty seconds with every one of them inside the bound. The interval is measured in ledger time between accepted values rather than in reported timestamps, because the reporter chooses those and can submit forty of them, a day apart, in the same minute.
 
 **V1 → V2: multi-reporter quorum.** V1 is a single disclosed reporter: one authorized address, one vote, and it lands. Every feed defaults to a quorum threshold of 1, which is exactly that. `set_quorum_threshold(admin, feed_id, n)` raises a feed above it, and once a feed's threshold is above 1, a value only commits after `n` distinct authorized reporters have submitted the same value for the same round, a round being identified by the feed and the reported timestamp. Each reporter gets one vote per round regardless of what it votes for, so a reporter cannot manufacture the second vote a round needs by signing twice. Partial agreement moves nothing: two reporters proposing two different values for the same round both sit short of quorum until enough of them converge on one. This is per-feed and reversible, an operating parameter the admin can raise or lower, not a write-once guard like a feed's staleness or deviation bound. The record of who has already voted in a round is kept for as long as the round can still be voted in, which is not the same as for as long as the round is unresolved: a round that commits advances the feed's timestamp, so monotonicity closes it behind the commit and the record is dropped, while a round that is refused moves no state at all and stays open, so the record is deliberately kept. Dropping it there would undo the feature. A reporter could seed a value of its own, wait for the round to be refused on some other value, vote for its own a second time and reach a quorum of two alone, which is a threshold above 1 buying no independence between reporters at all. A threshold of 1 is exempt by definition, one vote being the whole round. Once a round does reach quorum, the value it agreed on still has to clear every guard in this section, band, monotonicity, the rate limit, the deviation bound, unchanged: quorum decides how many reporters have to agree before a value is even evaluated, not whether it is evaluated.
 
@@ -436,7 +439,8 @@ Raising a feed's threshold defends against exactly one thing: a single reporter 
 ```text
 Originator (servicing data)
     → Agama Backend (reconciliation + validation)
-        → Reporter key calls push_nav(nav, timestamp) or submit_nav(nav, timestamp)
+        → Reporter calls push_nav(reporter, feed_id, nav, timestamp)
+       or submit_nav(reporter, feed_id, nav, timestamp)
             → Oracle Adapter records the vote:
                 ✓ Caller in authorized reporter set
                 ✓ NAV inside the feed's absolute band (covers the first report)
@@ -463,9 +467,45 @@ Originator (servicing data)
 | Originator misreports, all reporters relay it faithfully | Incorrect but internally consistent NAV | Not mitigated by quorum, since independent reporters agreeing on the same upstream mistake is exactly what quorum is designed to accept. Backend reconciliation. >5% requires admin confirmation. |
 | Reflector offline | Display-only impact | Core operations do not depend on Reflector. |
 
+**Entry Points**
+
+| Function | Description |
+|---|---|
+| `register_feed(admin, feed_id, staleness, deviation_bps, band_lo, band_hi, interval)` | Creates a feed and fixes its guards. **Write once:** re-registering an existing feed is rejected, so a bound that needs retuning takes a new `feed_id` and the change is visible to every consumer instead of loosening silently under an unchanged name. |
+| `push_nav(reporter, feed_id, nav, timestamp)` | Commits a value on a feed whose quorum threshold is 1. |
+| `submit_nav(reporter, feed_id, nav, timestamp)` | Casts a vote in a feed's round. Below the threshold it records the vote and does nothing else; at the threshold the agreed value is put through every guard in this section. |
+| `get_nav(feed_id) → i128` | The validated NAV. Reverts with `OracleStale` rather than returning an old number. |
+| `last_update(feed_id) → NavPoint` | The raw stored point, staleness included. Monitoring has to be able to see how stale a feed is, which `get_nav` deliberately refuses to say. |
+| `get_feed(feed_id) → FeedConfig` | A feed's guards, as registered. Also how the Vault's `set_oracle` interrogates a candidate oracle for the pair it is about to trust. |
+| `add_reporter(admin, reporter)` / `remove_reporter(admin, reporter)` | Reporter set membership. Both emit, so rotations are auditable off-chain without replaying the ledger. |
+| `is_reporter(addr) → bool` / `reporters() → Vec<Address>` | The set, readable by anyone. |
+| `set_quorum_threshold(admin, feed_id, n)` / `quorum_threshold(feed_id) → u32` | A feed's threshold, 1 until raised. Per-feed and reversible, an operating parameter rather than a write-once guard. |
+| `quorum_votes(feed_id, timestamp, nav) → u32` | Votes so far for one value in one round. Zero whether the round never started or nobody cast that value. |
+
 **Test Coverage (all contracts)**
 
 End-to-end flows (deposit → stake → yield → redeem) · Cap-violation rejection · Re-initialization guards · Access control, with targeted authorizations rather than a blanket mock · Zero/negative validation · Oracle staleness, deviation, band and rate limit · Oracle quorum: partial votes commit nothing, one vote per reporter per round, disagreeing values never reach quorum, every guard still binds on the value a round agreed on · Withdrawal queue ordering and permissionless settlement · A hostile Allocation Engine bounded by the Vault's own floor · Write-down accounting across three books · Two-step admin handover · The adapter solvency invariant, that an adapter never holds less USDC than it has booked, asserted after every call in a sequence that moves it · Property-based fuzzing over randomised operation sequences, on the Vault with the Allocation Engine and both adapters, on sagUSD, and on the oracle's quorum. It is what found that `Engine::book_recovery` could lower the reserve floor's base, in four operations, which is why that call no longer exists. Run harder than the committed case counts and the numbers written down: 1500 cases and sequences of up to 89 operations on the Vault, both clean. One property it is measured **not** to reach, a single reporter carrying a quorum by voting into a round twice, is pinned by a constructed test instead, and the oracle suite says so rather than letting its own existence imply otherwise.
+
+### 4.6 Pool Adapters
+
+**Purpose:** One contract per allocation target, holding that target's position and nothing else. The Engine never touches a pool directly; it calls an adapter, and the adapter is what knows how that pool converts cash. Two are deployed: private credit and Etherfuse.
+
+Both expose the same interface, which is what lets the Engine treat a new RWA type as configuration rather than as code.
+
+| Function | Description |
+|---|---|
+| `allocate(amount)` / `deallocate(amount)` | Engine-only. Move USDC into and out of the position. `deallocate` sends the cash to the adapter's stored Vault, not to a caller-supplied address. |
+| `write_down(amount)` | Engine-only. Records a loss against this adapter's booked exposure. |
+| `get_exposure() → i128` | What this adapter has booked as owed to the Vault. |
+| `recover_surplus(caller) → i128` | Sweeps USDC the adapter holds beyond its booked exposure to the stored Vault, and returns what it swept. `caller` must be the stored Engine or this adapter's own admin and authorizes for itself; the admin path is how an adapter left pointing at superseded counterparties is unstuck without a working Engine. It aims nothing: the destination is the stored Vault and the amount is `balance - exposure`, neither a parameter. `NothingToRecover` when the surplus is not positive. |
+| `set_counterparties(admin, engine, vault)` | Repoints the adapter. The token is deliberately **not** a parameter and is fixed at construction, so a repointing has to land on a Vault that custodies the asset this adapter already transfers with. Refuses unless the adapter is empty on both counts, zero booked exposure and zero USDC held, with `NotEmpty`, so a position is never left addressable only by a contract nobody points at. |
+| `engine()` / `vault()` / `usdc()` | The three counterparties, readable both ways: the Engine checks these against its own before it releases anything to this adapter. |
+| `pool_kind() → Symbol` | Which kind of pool this is, a constant. Read by the Engine and the UI. |
+| `oracle_feed() → Symbol` | Which oracle feed prices this adapter's position. |
+| `settlement_window() → (u32, u32)` (private credit) / `settlement_days() → u32` (Etherfuse) | Cash conversion time. **Nothing on-chain enforces either.** They are published so the Engine's operators and the withdrawal queue can be sized against the real settlement time of the book. Etherfuse reports 0: redemption is on-chain. |
+| `propose_admin` / `accept_admin` / `admin` / `pending_admin` | The same two-step handover every contract here carries. |
+
+The adapter solvency invariant, that an adapter never holds less USDC than it has booked, is asserted after every call in the fuzzer's sequences rather than argued for.
 
 ## 5. Settlement & Off-Chain Bridge
 
@@ -655,7 +695,7 @@ The same table's "repoint counterparties while the guards allow it" is worth rea
 
 **Pausability:** When paused, deposits, withdrawal *requests* and new allocations are blocked. Withdrawal *payouts* are not: `request_withdrawal` burns the agUSD as it queues the claim, so pausing the payout would leave the holder with neither the token nor the cash for as long as the switch stayed on. Stopping the flows that create new obligations is what a breaker is for; refusing to honour obligations already on the books is something else. Staking/unstaking continue. Oracle updates continue.
 
-**Admin rotation:** `propose_admin(admin, new_admin)` records a successor and changes nothing; `accept_admin(new_admin)` moves the role and can only be called by the proposed address, authorizing for itself. Two steps rather than one because a single-call setter aimed at an address nobody controls produces the unrecoverable state rotation exists to fix, in one transaction, with no second chance. There is no cancel entry point: a proposal replaces any earlier one, a pending admin can do nothing until it accepts, and an admin withdrawing a proposal proposes itself.
+**Admin rotation:** `propose_admin(admin, new_admin)` records a successor and changes nothing; `accept_admin(new_admin)` moves the role and can only be called by the proposed address, authorizing for itself. Two steps rather than one because a single-call setter aimed at an address nobody controls produces the unrecoverable state rotation exists to fix, in one transaction, with no second chance. There is no cancel entry point: a proposal replaces any earlier one, a pending admin can do nothing until it accepts, and an admin withdrawing a proposal proposes itself. Every contract also exposes `pending_admin()`, so a proposal in flight is readable by anyone rather than only by the two addresses involved.
 
 **Upgrade path:** V1 contracts are immutable. Upgrades require redeployment + migration. V2 may introduce controlled upgrade proxy with timelock.
 
