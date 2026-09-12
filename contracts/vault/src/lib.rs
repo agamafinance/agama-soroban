@@ -1379,16 +1379,26 @@ impl Vault {
         e.storage().instance().get(&Cfg::WrittenOff).unwrap_or(0)
     }
 
-    /// The denominator `reserve_floor_bps` is a share of: net assets plus
-    /// everything ever written off.
+    /// The denominator `reserve_floor_bps` is a share of: accounted cash, plus
+    /// what is out at a pool, plus everything ever written off, less what the
+    /// withdrawal queue is owed.
     ///
-    /// Under a protocol that has never taken a loss this is exactly
-    /// `get_net_assets`, which is the ordinary case and the one the deployed
-    /// configuration is sized against. After a loss the two part company, and
-    /// the floor keeps asking for a buffer against the book as it was rather
-    /// than the book as it is. That is the conservative direction and it is
-    /// also the correct one: agUSD redeems one for one, so a default does not
-    /// reduce by one stroop what the Vault owes.
+    /// It is not `get_net_assets` and it is deliberately not, on both terms.
+    /// Net assets read the real token balance, which counts cash the books
+    /// cannot explain; see `accounted_free_reserves` for why that is unsound
+    /// here and for the fuzzer that established it. Net assets also fall when
+    /// `record_writedown` is called with no cash moving anywhere, so a floor
+    /// measured against them is a floor its own caller can shrink at will,
+    /// which is why `recognised_losses` is added back. After a loss the floor
+    /// keeps asking for a buffer against the book as it was rather than as it
+    /// is. That is the conservative direction and also the correct one: agUSD
+    /// redeems one for one, so a default does not reduce by one stroop what
+    /// the Vault owes.
+    ///
+    /// `Engine::floor_base` is a different number. It still builds from
+    /// `free_reserves`, so it reads higher by any unaccounted cash and comes
+    /// out more permissive; `settle_allocation` re-checks on this one in the
+    /// same transaction, so the gap costs a revert rather than a release.
     pub fn floor_base(e: Env) -> Result<i128, VaultError> {
         if !e.storage().instance().has(&Cfg::Engine) {
             return Err(VaultError::NotInitialized);
