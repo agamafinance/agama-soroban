@@ -1226,6 +1226,126 @@ impl AllocationEngine {
         Ok(amount)
     }
 
+
+    /// Book a recovery against cash that is already in the Vault, for a pool
+    /// whose adapter can no longer deliver it.
+    ///
+    /// `recover` sweeps the adapter and books what it swept, in one call, and
+    /// that is the path. The gap is on the far side of it. The adapter's
+    /// `recover_surplus` may also be taken by the adapter's own admin, which
+    /// exists so that an adapter stuck to superseded counterparties can be
+    /// unstuck without a working Engine. Taken that way the cash reaches the
+    /// Vault and no book moves, which the adapter calls the conservative
+    /// direction: true of the money, false of the consequences. The adapter's
+    /// surplus is now zero, so `recover` answers `NothingToRecover` and the
+    /// whole call reverts, and `record_recovery` is reachable from nowhere
+    /// else. The write-down that sweep was going to release then stays on
+    /// `recognised_losses` for the life of the Vault, freezing the floor's
+    /// share of it as permanently undeployable reserves, and stays on the
+    /// pool's concentration charge for the life of the Engine. The operator can
+    /// lower the floor or widen the global caps to work around it, which is a
+    /// parameter change standing in for a correction.
+    ///
+    /// So the sweep and the booking come apart, and this is the booking alone.
+    /// It asserts nothing. The amount is bounded by the Vault's own unaccounted
+    /// balance, exactly as it is when `recover` supplies it, and `floor_base`
+    /// is unchanged where the recovery lands against a loss and rises where it
+    /// exceeds one, exactly as it is when `recover` supplies it. What a
+    /// write-down cannot buy, this cannot buy back.
+    ///
+    /// It grants no authority that did not already exist, and the third review
+    /// is why that is worth stating rather than assuming. An admin can send
+    /// USDC to an adapter and sweep it through `recover` today, and the
+    /// headroom that buys back is exactly the headroom their own dollars just
+    /// bought. Where the cash came from was already irrelevant to the
+    /// arithmetic. This takes the adapter out of a path the adapter was not the
+    /// thing securing.
+    ///
+    /// There is no counterparty check here, for the reason `write_down` does
+    /// not have one: nothing moves through the adapter, and an adapter left
+    /// behind by a `set_vault` is precisely the case this has to keep serving,
+    /// because it is the one whose charge nothing else can release.
+    ///
+    /// What it does take, and `recover` does not, is the pool as a parameter.
+    /// In `recover` the pool decides which adapter is swept, so the cash and
+    /// the attribution come from the same place and the caller cannot separate
+    /// them. Here the cash is already in the Vault and unattributed by
+    /// construction, because being unable to say where it came from is the
+    /// whole reason this call exists. So which pool gets its concentration
+    /// charge back is something the admin asserts, and there is nothing
+    /// on-chain to check it against.
+    ///
+    /// Worth stating rather than leaving to be found. The global loss book and
+    /// the Vault's both move by exactly the cash that arrived whatever pool is
+    /// named, so solvency does not rest on the assertion being honest. The
+    /// per-pool concentration charge does: a recovery booked against the wrong
+    /// pool frees a cap for a pool whose loss did not come home. That is not a
+    /// privilege escalation, since `set_caps` already lets this same admin
+    /// widen the same limit outright, and it is not something a guard could
+    /// fix, since there is no fact here to check the claim against. It is a
+    /// disclosure. `a_booked_recovery_releases_the_cap_of_whichever_pool_the_admin_names`
+    /// is the case, so it is a property of the suite rather than a claim in a
+    /// comment.
+    /// Removed once, and back for a reason that is checkable rather than an
+    /// opinion. An invariant fuzzer showed it could lower `floor_base` in four
+    /// operations: a donation straight to the Vault, an allocation, a
+    /// write-down, a booking. The base read the real token balance then, so
+    /// unannounced cash raised it the moment it landed, and booking the same
+    /// cash afterwards lowered `recognised_losses` by the same amount with no
+    /// further cash moving. One dollar, counted on arrival and spent again on
+    /// booking.
+    ///
+    /// The base is `booked_reserves` based now, and both halves are neutral
+    /// under it. An unannounced arrival moves no term. A booking moves
+    /// `booked_reserves` up by exactly what it moves `recognised_losses` down,
+    /// and both sit in the base, so their sum does not change. The defect was a
+    /// property of the basis rather than of this call, and the basis is gone.
+    /// The fuzzer drives this operation again, with the base invariant switched
+    /// on for it, so the claim is checked on every run rather than argued here.
+
+    pub fn book_recovery(
+        e: Env,
+        admin: Address,
+        pool_id: Address,
+        amount: i128,
+    ) -> Result<(), EngineError> {
+        Self::require_admin(&e, &admin)?;
+        if amount <= 0 {
+            return Err(EngineError::InvalidAmount);
+        }
+        if !Self::pool_map(&e).contains_key(pool_id.clone()) {
+            return Err(EngineError::PoolNotRegistered);
+        }
+        let vault_address = Self::vault(e.clone())?;
+        let vault = VaultClient::new(&e, &vault_address);
+        if vault.admin() != admin {
+            return Err(EngineError::AdminMismatch);
+        }
+
+        vault.record_recovery(&admin, &amount);
+
+        // The same two counters `recover` moves, reduced by the same rule, so
+        // that a recovery booked this way and a recovery swept through the
+        // adapter leave the Engine in states that cannot be told apart.
+        let charged = Self::written_off_pool(e.clone(), pool_id.clone());
+        let released = if amount < charged { amount } else { charged };
+        Self::write_written_off_pool(&e, &pool_id, charged - released);
+
+        let total = Self::written_off(e.clone());
+        let applied = if amount < total { amount } else { total };
+        Self::write_written_off(&e, total - applied);
+        Self::bump_instance(&e);
+
+        Recovered {
+            pool: pool_id,
+            amount,
+            released,
+            written_off: total - applied,
+        }
+        .publish(&e);
+        Ok(())
+    }
+
     /// Hand the admin role to another address, in two steps.
     ///
     /// This contract had no rotation at all, which made the admin key a single
