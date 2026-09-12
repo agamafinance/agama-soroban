@@ -11,7 +11,7 @@
     "agusd": "CCXEP6QAAYEMFMV2JGBULD2NS6AQB6KQSBHLPPBJSDBCN6HOYIHNQ6H3",
     "staking": "CD3VPDGFTJ6VJ2BW6ZLCJ2MLO72LIM74XSKWZNIDYNJZW3NW7BPG35Y3",
     "vault": "CCPBVZ3WCUTA2OYC2HKYVZUNUV46K47TPKMHSS5IDFYRRPFEDASZNFFD",
-    "allocationEngine": "CAJPGOOYVWYJLUNNPQM645L27KUTYGLM2BTHWT2OVRUNJTVTGZCWSBSG",
+    "allocationEngine": "CCMATPP73XBCT35SSSJREL6DDE3DHN33AUGWWVDSWUNUGTR22ETTSZLW",
     "oracleAdapter": "CBH7NW5LQX5MIELSF5T5EPGFADIHDZMAGNPNJE5NP22FNNVOKSEVFB3N",
     "agusdCore": "CDBIY2KAXTMSS5ZAFNGCMSVCMJMOFGIRMWPYPEDS5JLI5S3WGMCGEX3Z"
   },
@@ -570,6 +570,14 @@
       "address": "CCXCJYWY73QOMLITR2QQEOBFHDFKUQ35BR7VZQ4K3MC5DWZOZO7TO2GP",
       "supersededBy": "staking",
       "reason": "Replaced by scripts/redeploy-staking-follow-agusd.sh, so that staking accepts the agUSD generation deployed alongside the reserve floor change. Its own set_agusd could not do it: the setter refuses once stakes > 0, and stakes is a cumulative count of every stake ever taken which never decrements, so the pointer freezes permanently at the first one even on a contract that is completely empty. That is conservative rather than over-strict, because a pending unstake survives with supply and NAV both at zero and is denominated in assets, so repointing the token underneath it would pay a claim in a token it was never priced against, and the contract cannot enumerate its own pending records to check. The cost is that every agUSD generation forces a staking redeployment for the life of the protocol. It was empty here, so it stranded nobody, and nothing on-chain names this contract."
+    },
+    {
+      "contract": "allocationEngine",
+      "generation": 14,
+      "label": "Allocation Engine, fourteenth deployment",
+      "address": "CAJPGOOYVWYJLUNNPQM645L27KUTYGLM2BTHWT2OVRUNJTVTGZCWSBSG",
+      "supersededBy": "allocationEngine",
+      "reason": "Replaced by scripts/rewire-engine-one-base.sh, so that the Engine and the Vault measure the reserve floor on one base. This Engine builds its base from Vault::free_reserves(), which reads the real token balance, while the Vault had already moved its own floor onto accounted cash. For any USDC that reached the Vault without its books being told, this Engine's base runs higher by that amount and its free-reserves term runs higher too, so asking for floor_bps of the base leaves it more permissive than the Vault by (1 - floor_bps) of that cash, and get_reserve_ratio reports liquidity the Vault would refuse to release. The direction is safe, settle_allocation re-checking in the same transaction and reverting, but a limit enforced in two places against two different numbers is one limit and one decoration. The replacement reads accounted_free_reserves() and floor_base() off the Vault instead of rebuilding them, which also matters for the clamp: the Vault sums the base unclamped and clamps once at the end, and a rebuild that clamps the cash term first drifts the base down a stroop per deallocation. The concentration caps moved with it, because their denominator is total assets and a larger denominator loosens a cap. Nothing else was redeployed: the Vault took the replacement through set_engine and both adapters followed through set_counterparties, empty at the time as that setter requires. It costs one more cross-contract call per allocation, about 180000 instructions, which moves the pool registry's measured worst case from 277 same-bucket pools to 276."
     }
   ],
   "oracleFeedGuards": "The band bounds every report including the first, which a deviation bound cannot reach because a bound on a move needs something to move from. The minimum interval is measured in ledger time between accepted values, not in the timestamps the reporter supplies, because the reporter chooses those. The reference point is persistent, so it cannot expire out from under the checks that read it.",
