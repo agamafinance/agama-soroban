@@ -543,7 +543,30 @@ The Allocation Engine enforces the reserve floor as a contract-level invariant, 
 
 Net assets are free reserves plus everything booked as deployed, and free reserves are the Vault's idle USDC less what the withdrawal queue is owed. `allocate()` computes what the Vault would be left holding once the release settles and reverts if that is below `floor_bps` of the base, so the check happens in the same transaction as the transfer and a refused allocation moves no funds and books no exposure.
 
-**The base is not net assets, and the difference is the point.** `floor_base` is net assets *plus cumulative recognised losses*, because `record_writedown` lowers net assets with no cash moving anywhere, so a floor measured against them is a floor whose absolute size its own caller can lower at will. Allocating to the floor and then writing the position off, over and over, walked the whole of the reserves out of a Vault a slice at a time with every individual call inside the limit. `written_off` on the Engine and `recognised_losses` on the Vault never fall, so the base is invariant under a write-down exactly as it is under an allocation, and that invariance is what makes the floor hold across calls rather than only within one. For a protocol that has never taken a loss the two numbers are identical, which is the ordinary case and the one the deployed configuration is sized against. The three concentration caps keep net assets as their denominator, because a larger base loosens a cap and tightens a floor, and the write-off term belongs only where it tightens.
+**The base is not net assets, and it is not the balance either.** `floor_base` is
+`booked_reserves + deployed_capital + recognised_losses - outstanding_liabilities`: everything the Vault has
+accounted for from its own flows, plus what is out at a pool, plus what has been written off, less what the queue is
+owed. Two separate findings pushed it here.
+
+It is not net assets because `record_writedown` lowers net assets with no cash moving anywhere, so a floor measured
+against them is a floor whose absolute size its own caller can lower at will. Allocating to the floor and then writing
+the position off, over and over, walked the whole of the reserves out of a Vault a slice at a time with every individual
+call inside the limit. `written_off` on the Engine and `recognised_losses` on the Vault never fall, so the base is
+invariant under a write-down exactly as it is under an allocation.
+
+And it is not the raw balance because `idle_reserves` reads the real token balance, so cash arriving without the books
+being told, a misdirected repayment, an over-payment, an adapter admin's own surplus sweep, a donation, raises the base
+the moment it lands. `record_recovery` books the same cash later and lowers `recognised_losses` as it does, and both
+terms are in the base, so the dollar is counted on arrival and spent again on booking. An invariant fuzzer found that in
+four operations through `Engine::book_recovery`, which was removed for it. Measured on accounted cash, unannounced cash
+counts for nothing until something books it, and booking it moves one term up by exactly what it moves the other down.
+`settle_allocation` measures the same way, for both its liquidity check and its floor check, or the two disagree and an
+allocation stops being neutral on the base. The consequence is deliberate and conservative: capital nobody deposited is
+not deployable until it is booked.
+
+The terms are summed unclamped and the total clamped once, which the same fuzzer also insisted on. Clamping the cash
+term first lets a withdrawal request push it negative while capital is out, and a `deallocate` then raises the clamped
+term by less than it lowers deployed capital, drifting the base down by a stroop per deallocation.
 
 **Free, not gross.** `request_withdrawal` burns the agUSD immediately and leaves the USDC in the Vault until the claim is paid, so between those two moments the money sits on the balance sheet and already belongs to somebody. It appeared in no on-chain quantity at all: not in agUSD supply, which had been burned, not in idle reserves, not in total assets, not in the reserve ratio. Deposit 1000, queue all 1000 for withdrawal, and the Engine would still deploy 400 while `get_reserve_ratio()` reported a healthy 6000 bps, leaving a claim that could not be paid. `Vault::outstanding_liabilities()` is now the running total, `Vault::free_reserves()` is idle reserves net of it, and `Vault::get_net_assets()` is free reserves plus deployed capital. Every limit that asks how much may be deployed reads those.
 
