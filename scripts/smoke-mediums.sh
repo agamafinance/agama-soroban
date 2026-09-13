@@ -377,6 +377,22 @@ N_BASE=$(q0 "$VAULT" floor_base)
 N_TOTAL=$((N_FREE + N_DEP))
 N_CHARGED=$(q0 "$ENGINE" charged_exposure --pool_id "$PC")
 LEG=$((N_TOTAL * POOL_CAP / BPS - N_CHARGED))
+# A pool charged beyond its cap has negative room, and a negative amount is not
+# a small allocation, it is InvalidAmount. The charge is written-off exposure
+# that a write-down deliberately never gives back, so it outlives the book that
+# was large enough to carry it: once the book shrinks, the cap is already
+# exceeded and there is nothing to allocate. Also bounded by what the floor
+# releases, because the cap allowing it does not mean the Vault will release it.
+N_ROOM2=$(( N_FREE - (N_BASE * FLOOR + BPS - 1) / BPS ))
+[ "$LEG" -gt "$N_ROOM2" ] && LEG=$N_ROOM2
+if [ "$LEG" -lt 1 ]; then
+  echo "  the private credit pool is charged $N_CHARGED against a cap of"
+  echo "  $((N_TOTAL * POOL_CAP / BPS)) on a book of $N_TOTAL, and the floor releases"
+  echo "  $N_ROOM2, so there is nothing to allocate and this finding cannot be"
+  echo "  walked through on this book. The charge is written-off exposure, which"
+  echo "  a write-down never gives back; it needs a larger book, not a reset."
+  exit 2
+fi
 echo "  book: $N_TOTAL total assets, base $N_BASE, pc charged $N_CHARGED, so the pool cap allows $LEG more"
 PC_HELD0=$(q0 "$USDC" balance --id "$PC")
 N_WOP0=$(q0 "$ENGINE" written_off_pool --pool_id "$PC")
