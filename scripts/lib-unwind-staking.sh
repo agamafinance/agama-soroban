@@ -41,10 +41,16 @@ unwind_staking() {
   # because the only way out is against a share that no longer exists. Saying so
   # is more use than refusing without saying why.
   if [ "${supply:-0}" = "0" ] && [ "${nav:-0}" != "0" ]; then
-    echo "  there are no shares, so nothing can be unwound. The ${nav} of nav is"
-    echo "  yield distributed with no share outstanding to receive it, and it"
-    echo "  cannot leave: a payout burns a share and there is none."
-    return 2
+    # No shares is a standing start, which is what the suites need. The nav
+    # above zero is yield distributed with nothing outstanding to receive it,
+    # and it cannot be unwound because unwinding burns a share and there is
+    # none. It is not in the way either: the next stake absorbs it, at a rate
+    # the contract reports and the suites read rather than assume. Reported,
+    # and the run continues.
+    echo "  no shares outstanding, so this is a standing start. The ${nav} of nav"
+    echo "  is yield distributed with no share to receive it; it cannot be"
+    echo "  unwound, and the next stake absorbs it."
+    return 0
   fi
 
   if [ "${supply:-0}" = "0" ] || [ "${mine:-0}" != "${supply}" ]; then
