@@ -47,6 +47,7 @@ j() { python3 -c "import json;d=json.load(open('$DEP'));print($1)"; }
 AGUSD=$(j "d['contracts']['agusdCore']")
 STAKING=$(j "d['contracts']['staking']")
 VAULT=$(j "d['contracts']['vault']")
+ENGINE=$(j "d['contracts']['allocationEngine']")
 USDC=$(j "d['contracts']['usdc']")
 COOLDOWN=$(j "d['cooldownSeconds']")
 ADMIN=$(stellar keys address $SRC)
@@ -89,6 +90,14 @@ echo "  sagUSD staking     $STAKING"
 echo "  agusd-core         $AGUSD"
 echo "  vault              $VAULT"
 
+
+# Every suite here assumes a book roughly at rest and none of them establishes
+# one, so the first in a run gets what it expects and the rest get whatever the
+# previous one left. Established once, here, rather than tolerated assertion by
+# assertion. See lib-baseline.sh.
+# shellcheck source=lib-baseline.sh
+. "$(dirname "$0")/lib-baseline.sh"
+normalise_book "$VAULT" "$ENGINE" "$USDC" "$SRC" "$NET" "$ADMIN"
 echo ""
 echo "== WIRING =="
 assert_eq "sagUSD stakes the agUSD the Vault mints" "$(q "$STAKING" agusd)" "$AGUSD"

@@ -185,6 +185,14 @@ build_drifted_stack() { # build_drifted_stack <engine wasm> -> "OLDVAULT NEWVAUL
 
 # ---------------------------------------------------------------------------
 if stage exploit; then
+
+# Every suite here assumes a book roughly at rest and none of them establishes
+# one, so the first in a run gets what it expects and the rest get whatever the
+# previous one left. Established once, here, rather than tolerated assertion by
+# assertion. See lib-baseline.sh.
+# shellcheck source=lib-baseline.sh
+. "$(dirname "$0")/lib-baseline.sh"
+normalise_book "$VAULT" "$ENGINE" "$USDC" "$SRC" "$NET" "$ADMIN"
 echo ""
 echo "== the pre-fix Engine, and the exploit submitted =="
 echo "-- Built from $PRE_FIX_REV, the commit before the fix, so this is the"

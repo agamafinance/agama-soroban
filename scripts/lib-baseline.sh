@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Put the deployment back into the shape every suite here implicitly assumes.
+#
+# These scripts walk end to end against one shared testnet deployment, and each
+# one assumes a book that is roughly at rest: nothing owed to the queue, nothing
+# standing at a pool, the account holding enough USDC to work with. None of them
+# establishes that, so the first suite in a run gets what it expects and the
+# ones after it get whatever the previous one happened to leave. Patching the
+# assertions one at a time makes each suite tolerate one more shape and does not
+# fix the class; establishing the shape once does.
+#
+# Nothing here takes anything from anybody. Settling pays queued claims to their
+# recorded owners. Deallocating returns capital from an adapter to the Vault
+# that adapter already stores. Both are ordinary operator calls.
+#
+#   normalise_book <vault> <engine> <usdc> <source> <network> <admin>
+normalise_book() {
+  local VAULT=$1 ENGINE=$2 USDC=$3 SRC=$4 NET=$5 ADMIN=$6
+  local pools p exp held dep
+
+  _nb_q() { stellar contract invoke --id "$1" --source "$SRC" --network "$NET" --send=no -- "${@:2}" 2>/dev/null | tr -d '"'; }
+  _nb_tx() { stellar contract invoke --id "$1" --source "$SRC" --network "$NET" -- "${@:2}" >/dev/null 2>&1; }
+
+  echo "  normalising the book before this suite reads it"
+
+  # 1. Pay out whatever the queue owes. A deferred claim survives, and should:
+  #    its owner cannot receive the token and the cash stays reserved for them.
+  # shellcheck source=lib-settle-queue.sh
+  . "$(dirname "${BASH_SOURCE[0]}")/lib-settle-queue.sh"
+  settle_queue "$VAULT" "$SRC" "$NET"
+
+  # 2. Bring home anything still standing at a pool. An adapter that holds the
+  #    cash can be deallocated; one that was written down holds nothing and its
+  #    exposure is already zero, so there is nothing to do and nothing to force.
+  dep=$(_nb_q "$VAULT" deployed_capital)
+  if [ "${dep:-0}" != "0" ]; then
+    pools=$(_nb_q "$ENGINE" pools | tr -d '[]"' | tr ',' ' ')
+    for p in $pools; do
+      exp=$(_nb_q "$p" get_exposure)
+      held=$(_nb_q "$USDC" balance --id "$p")
+      [ "${exp:-0}" = "0" ] && continue
+      if [ "${held:-0}" -ge "${exp:-0}" ]; then
+        echo "    deallocating ${exp} from ${p:0:8}"
+        _nb_tx "$ENGINE" deallocate --pool_id "$p" --amount "$exp"
+      else
+        echo "    ${p:0:8} has ${exp} booked and holds ${held}, so it cannot be"
+        echo "    deallocated; that is a written down position, left alone"
+      fi
+    done
+  fi
+
+  echo "    idle $(_nb_q "$VAULT" idle_reserves) booked $(_nb_q "$VAULT" booked_reserves) deployed $(_nb_q "$VAULT" deployed_capital) owed $(_nb_q "$VAULT" outstanding_liabilities)"
+}
