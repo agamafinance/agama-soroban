@@ -47,7 +47,25 @@ num() { echo "$1" | tr -d '"'; }
 assert_eq() { if [ "$(num "$2")" = "$3" ]; then ok "$1 ($2)"; else bad "$1: got $2, want $3"; fi; }
 
 # Read-only: simulated, never submitted, so views cost nothing.
-q()   { stellar contract invoke --id "$1" --source $SRC --network $NET --send=no -- "${@:2}" 2>/dev/null; }
+# A read that comes back empty is not a contract answering with nothing. It
+# happens when something else is submitting from the same account at the same
+# time, which is what running two of these suites at once does: the sequence
+# number collides, calls fail with TxBadSeq, and reads come back blank. One
+# blank poisons everything after it, because the Vault address is itself read
+# from the Engine here, so a single empty answer turns every later assertion
+# into a diff against an empty string and reads like a page of contract
+# defects. Retried before being believed. Running two suites against one
+# account concurrently is still the wrong thing to do; this only stops it
+# looking like a protocol failure when it happens.
+q() {
+  local out i
+  for i in 1 2 3 4; do
+    out=$(stellar contract invoke --id "$1" --source $SRC --network $NET --send=no -- "${@:2}" 2>/dev/null)
+    [ -n "$out" ] && { echo "$out"; return 0; }
+    sleep 2
+  done
+  echo "$out"
+}
 # The Vault under test is the one the Engine points at, read from the Engine
 # rather than from the deployment file. The Engine stores that address at
 # initialize() and has no setter, so it still guards the superseded Vault while
@@ -70,6 +88,9 @@ echo "== ORACLE ADAPTER: push NAV, read it back =="
 # Two minutes behind wall clock, so the report is safely behind ledger time (a
 # future timestamp is refused) while still being strictly after the last one.
 TS=$(( $(date +%s) - 120 ))
+# shellcheck source=lib-oracle-interval.sh
+. "$(dirname "$0")/lib-oracle-interval.sh"
+RATE_LIMITED=0
 push() {
   local hash
   # A feed refuses a value inside its minimum interval, an hour on these two, so
@@ -77,14 +98,15 @@ push() {
   # value stands. That is the rate limit working, and it used to surface here as
   # three assertion failures that look like the oracle not storing what it was
   # given. Say which it is.
-  LAST=$(q "$ORACLE" last_update --feed_id "$1" 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin).get('recorded_at',0))" 2>/dev/null || echo 0)
-  NOW=$(date -u +%s)
-  if [ "${LAST:-0}" != "0" ] && [ $((NOW - LAST)) -lt 3600 ]; then
-    echo "  $1 was last reported $((NOW - LAST))s ago and its minimum interval is 3600s."
-    echo "  A push now is refused and the stored value does not move, so the NAV"
-    echo "  assertions below would compare against the previous value. Wait out the"
-    echo "  interval and re-run; this is the rate limit doing its job."
-    exit 2
+  local elapsed
+  if elapsed=$(feed_is_rate_limited "$ORACLE" "$1" "$SRC" "$NET"); then
+    # This used to end the whole run. The rest of the suite does not depend on
+    # the new value, so ending it meant an hour's wait to check anything at
+    # all, which is what stopped these suites being run one after another.
+    echo "  SKIP  $1 was reported ${elapsed}s ago and its minimum interval is 3600s,"
+    echo "        so a push now is refused and the stored value stands"
+    RATE_LIMITED=1
+    return 0
   fi
   hash=$(tx "$ORACLE" push_nav --reporter "$ADMIN" --feed_id "$1" --nav "$2" --timestamp "$TS")
   echo "  push_nav $1 = $2  tx $hash"
@@ -93,23 +115,42 @@ push() {
 push USDC_USD 10000000
 push PC_NAV 10000000
 push EF_BOND 10250000
-assert_eq "Vault reads its own feed through the adapter" "$(q "$VAULT" get_nav)" "10000000"
+if [ "$RATE_LIMITED" = "0" ]; then
+  assert_eq "Vault reads its own feed through the adapter" "$(q "$VAULT" get_nav)" "10000000"
+else
+  # The pointer is worth checking even when the value is not this run's.
+  assert_eq "Vault reads its own feed through the adapter" \
+    "$(q "$VAULT" get_nav)" "$(num "$(q "$ORACLE" get_nav --feed_id PC_NAV)")"
+fi
 
 echo ""
 echo "== VAULT: reserves and total assets =="
 IDLE=$(num "$(q "$VAULT" idle_reserves)")
 if [ "$IDLE" -lt "$MIN_IDLE" ]; then
   TOPUP=$((MIN_IDLE - IDLE))
-  echo "  topping the Vault up with $TOPUP (7dp) of USDC from the admin"
-  echo "  tx $(tx "$USDC" transfer --from "$ADMIN" --to "$VAULT" --amount "$TOPUP")"
+  # Through deposit rather than a plain transfer. A transfer is the donation
+  # case: the Vault's books never hear about it, so booked_reserves does not
+  # move, the floor's base does not count it and the Engine will not deploy it.
+  # This script used to fund itself in exactly the way the accounting is built
+  # to ignore.
+  echo "  topping the Vault up with $TOPUP (7dp) of USDC, through deposit so the books see it"
+  echo "  tx $(tx "$VAULT" deposit --from "$ADMIN" --amount "$TOPUP")"
   IDLE=$(num "$(q "$VAULT" idle_reserves)")
 fi
 TOTAL=$(num "$(q "$VAULT" get_total_assets)")
 DEPLOYED=$(num "$(q "$ENGINE" total_allocated)")
 echo "  idle=$IDLE deployed=$DEPLOYED total=$TOTAL"
 assert_eq "total assets are idle reserves plus deployed capital" "$TOTAL" "$((IDLE + DEPLOYED))"
-assert_eq "reserve ratio matches idle over total" \
-  "$(q "$ENGINE" get_reserve_ratio)" "$((IDLE * 10000 / TOTAL))"
+# The Engine reads the floor's base and the free cash off the Vault, both
+# measured on what the Vault can account for. Recomputing it from idle_reserves
+# and total assets asserts the old basis and fails the moment a stroop reaches
+# the Vault without its books being told.
+ACCOUNTED=$(num "$(q "$VAULT" accounted_free_reserves)")
+BASE=$(num "$(q "$VAULT" floor_base)")
+echo "  accounted_free=$ACCOUNTED floor_base=$BASE"
+assert_eq "reserve ratio is accounted free reserves over the floor's base" \
+  "$(q "$ENGINE" get_reserve_ratio)" "$((ACCOUNTED * 10000 / BASE))"
+assert_eq "the Engine's base is the Vault's" "$(q "$ENGINE" floor_base)" "$BASE"
 
 echo ""
 echo "== ALLOCATION ENGINE: allocate, then unwind =="
