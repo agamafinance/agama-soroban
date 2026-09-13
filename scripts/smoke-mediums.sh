@@ -428,7 +428,10 @@ if [ "$LEG" -lt 1 ]; then
   echo "    set_pool_cap     tx $(tx "$ENGINE" set_pool_cap --admin "$ADMIN" --pool_id "$PC" --cap_bps "$WANT")"
   RAISED=1
   # Put them back however this section ends, including on a failed assertion.
-  trap 'echo "  restoring caps"; tx "$ENGINE" set_caps --admin "$ADMIN" --pool_cap_bps "$POOL_CAP" --originator_cap_bps "$ORIG_CAP" --jurisdiction_cap_bps "$JUR_CAP" >/dev/null; tx "$ENGINE" set_pool_cap --admin "$ADMIN" --pool_id "$PC" --cap_bps "$POOL_CAP" >/dev/null' EXIT
+  # Releases the suite lock as well as restoring the caps. Bash keeps one EXIT
+  # trap, so this replaces the one the lock installed, and a lock left behind
+  # blocks every run after it.
+  trap 'echo "  restoring caps"; tx "$ENGINE" set_caps --admin "$ADMIN" --pool_cap_bps "$POOL_CAP" --originator_cap_bps "$ORIG_CAP" --jurisdiction_cap_bps "$JUR_CAP" >/dev/null; tx "$ENGINE" set_pool_cap --admin "$ADMIN" --pool_id "$PC" --cap_bps "$POOL_CAP" >/dev/null; release_suite_lock' EXIT
   N_CHARGED=$(q0 "$ENGINE" charged_exposure --pool_id "$PC")
   LEG=$(( N_TOTAL * WANT / BPS - N_CHARGED ))
   [ "$LEG" -gt "$N_ROOM2" ] && LEG=$N_ROOM2
