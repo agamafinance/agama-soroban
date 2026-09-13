@@ -60,9 +60,20 @@
 //! The base is measured on `booked_reserves` now, and the mechanism is gone
 //! with the basis: an unannounced arrival moves no term of the base, and a
 //! booking moves `booked_reserves` up by exactly what it moves
-//! `recognised_losses` down. `book_recovery` is back, and it is inside the
-//! bullet rather than excluded from it, so the fuzzer gets to falsify the
-//! claim on every run instead of a comment asserting it.
+//! `recognised_losses` down. `book_recovery` is back and inside the bullet
+//! rather than excluded from it.
+//!
+//! That is worth stating carefully, because it is easy to claim more for it
+//! than it earns. The randomised suite reaches this shape rarely: instrumented
+//! over 1500 cases it books successfully 204 times and reaches the defect's own
+//! shape, a recognised loss and unannounced cash together, once. At the
+//! committed 64 cases it will usually not reach it at all. A property nobody
+//! reaches is not a property anybody checked. So the evidence for this one is
+//! `the_four_operations_that_removed_book_recovery_no_longer_lower_the_base`,
+//! which writes the shrunk counterexample out by hand and computes the old
+//! basis alongside the new one, asserting that the old basis still falls by the
+//! amount booked and the new one does not move. The suite's job here is to look
+//! for the shapes nobody thought to write down, which is a different job.
 //!
 //! Deferred claims, the path where the token itself refuses a payout, are
 //! outside what this suite can reach: the mock USDC used here never refuses a
@@ -552,6 +563,91 @@ proptest! {
 /// and it is stronger than the one this test used to make. It used to assert
 /// that a donation raised the base and that nothing could then spend it, which
 /// accepted the double count and only removed the second half of it.
+/// The exact sequence that removed `Engine::book_recovery`, run by hand.
+///
+/// The randomised suite reaches this shape too rarely to be the evidence. It
+/// needs a write-down and unannounced cash to coexist and then an amount that
+/// fits, and measured over 1500 cases it gets there once: 204 successful
+/// bookings, one of them with a recognised loss on the book. At the committed
+/// 64 cases it will usually not get there at all. A property nobody reaches is
+/// not a property anybody checked, so the case that mattered is written out.
+///
+/// Four operations, as the shrunk counterexample had them: a donation straight
+/// to the Vault, an allocation, a write-down, a booking. Under the old basis
+/// the base read the real token balance, so the donation raised it on arrival
+/// and the booking lowered `recognised_losses` with no further cash moving,
+/// and the base ended below where it stood in between. The test computes that
+/// old number alongside the new one, so it states the difference rather than
+/// asserting the fix and trusting the reader.
+#[test]
+fn the_four_operations_that_removed_book_recovery_no_longer_lower_the_base() {
+    let state = setup();
+
+    // Funded, then deployed, so there is something to write down.
+    let user = state.users[0].clone();
+    state.usdc.faucet(&user, &(1_000 * USDC));
+    state.vault.deposit(&user, &(1_000 * USDC));
+    let loss = 200 * USDC;
+    state
+        .engine
+        .allocate(&state.admin, &state.ef_pool_id, &loss);
+    state
+        .engine
+        .write_down(&state.admin, &state.ef_pool_id, &loss, &symbol_short!("FUZZ"));
+    assert_eq!(state.vault.recognised_losses(), loss, "no loss to recover");
+
+    // 1. The donation. Cash arrives and nothing tells the books.
+    let donor = Address::generate(&state.e);
+    state.usdc.faucet(&donor, &loss);
+    soroban_sdk::token::TokenClient::new(&state.e, &state.usdc_id)
+        .transfer(&donor, &state.vault_id, &loss);
+
+    let base_after_donation = state.vault.floor_base();
+    let old_basis_after_donation = old_basis(&state);
+
+    // 2. The booking, which is the step that used to take it back out.
+    state
+        .engine
+        .book_recovery(&state.admin, &state.ef_pool_id, &loss);
+
+    let base_after_booking = state.vault.floor_base();
+    let old_basis_after_booking = old_basis(&state);
+
+    // The old basis really does fall here, which is why the call was removed.
+    assert!(
+        old_basis_after_booking < old_basis_after_donation,
+        "the old basis did not fall, so this test is no longer reproducing the defect: \
+         {} then {}",
+        old_basis_after_donation,
+        old_basis_after_booking
+    );
+    assert_eq!(
+        old_basis_after_donation - old_basis_after_booking,
+        loss,
+        "the old basis fell by something other than the amount booked"
+    );
+
+    // And the accounted one does not move at all: booked_reserves rises by
+    // exactly what recognised_losses falls by, and both sit in the base.
+    assert_eq!(
+        base_after_booking, base_after_donation,
+        "the accounted base moved on a booking that is supposed to be neutral"
+    );
+    assert_eq!(
+        state.vault.recognised_losses(),
+        0,
+        "the loss was not released"
+    );
+}
+
+/// `floor_base` as it was computed before it moved onto accounted cash: free
+/// reserves read off the real token balance, plus what is deployed, plus what
+/// has been written off. Here so the test above can show the difference rather
+/// than describe it.
+fn old_basis(state: &FuzzState) -> i128 {
+    state.vault.free_reserves() + state.vault.deployed_capital() + state.vault.recognised_losses()
+}
+
 #[test]
 fn cash_the_vault_cannot_account_for_does_not_move_the_floors_base() {
     let state = setup();
