@@ -84,7 +84,25 @@ num() { echo "$1" | tr -d '"'; }
 assert_eq() { if [ "$(num "$2")" = "$(num "$3")" ]; then ok "$1 ($(num "$2"))"; else bad "$1: got $(num "$2"), want $(num "$3")"; fi; }
 assert_ne() { if [ "$(num "$2")" != "$(num "$3")" ]; then ok "$1"; else bad "$1: both are $(num "$2")"; fi; }
 
-q()  { stellar contract invoke --id "$1" --source $SRC --network $NET --send=no -- "${@:2}" 2>/dev/null; }
+# A read that comes back empty is not a contract answering with nothing. It
+# happens when something else is submitting from the same account at the same
+# time, which is what running two of these suites at once does: the sequence
+# number collides, calls fail with TxBadSeq, and reads come back blank. One
+# blank poisons everything after it, because the Vault address is itself read
+# from the Engine here, so a single empty answer turns every later assertion
+# into a diff against an empty string and reads like a page of contract
+# defects. Retried before being believed. Running two suites against one
+# account concurrently is still the wrong thing to do; this only stops it
+# looking like a protocol failure when it happens.
+q() {
+  local out i
+  for i in 1 2 3 4; do
+    out=$(stellar contract invoke --id "$1" --source $SRC --network $NET --send=no -- "${@:2}" 2>/dev/null)
+    [ -n "$out" ] && { echo "$out"; return 0; }
+    sleep 2
+  done
+  echo "$out"
+}
 q0() { q "$@" | tr -d '"'; }
 tx() { stellar contract invoke --id "$1" --source $SRC --network $NET -- "${@:2}" 2>&1 \
          | grep -oE '[0-9a-f]{64}' | head -1; }

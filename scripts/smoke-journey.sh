@@ -81,7 +81,25 @@ num() { echo "$1" | tr -d '"'; }
 assert_eq() { if [ "$(num "$2")" = "$3" ]; then ok "$1 ($2)"; else bad "$1: got $2, want $3"; fi; }
 
 # Read-only: simulated, never submitted, so views cost nothing.
-q()  { stellar contract invoke --id "$1" --source $SRC --network $NET --send=no -- "${@:2}" 2>/dev/null; }
+# A read that comes back empty is not a contract answering with nothing. It
+# happens when something else is submitting from the same account at the same
+# time, which is what running two of these suites at once does: the sequence
+# number collides, calls fail with TxBadSeq, and reads come back blank. One
+# blank poisons everything after it, because the Vault address is itself read
+# from the Engine here, so a single empty answer turns every later assertion
+# into a diff against an empty string and reads like a page of contract
+# defects. Retried before being believed. Running two suites against one
+# account concurrently is still the wrong thing to do; this only stops it
+# looking like a protocol failure when it happens.
+q() {
+  local out i
+  for i in 1 2 3 4; do
+    out=$(stellar contract invoke --id "$1" --source $SRC --network $NET --send=no -- "${@:2}" 2>/dev/null)
+    [ -n "$out" ] && { echo "$out"; return 0; }
+    sleep 2
+  done
+  echo "$out"
+}
 # State changing: submitted, and the transaction hash is echoed.
 tx() { stellar contract invoke --id "$1" --source $SRC --network $NET -- "${@:2}" 2>&1 \
          | grep -oE '[0-9a-f]{64}' | head -1; }
@@ -237,27 +255,29 @@ assert_eq "total supply did not move" "$(q "$AGUSD" total_supply)" "$SUPPLY0"
 # they are wrong the moment another script has used the same staking contract,
 # which produces a page of diffs that read like contract defects and are not.
 #
-# So it says so instead. Unwinding is the operator's call rather than something a
-# smoke script should do behind their back: the shares belong to somebody.
+# It used to stop here and leave the unwinding to the operator, on the grounds
+# that the shares belong to somebody. That holds when they do, and it was also
+# why these suites could not be run one after another: the previous one leaves
+# its own position behind. So it unwinds, and only in the case where doing so
+# strands nobody, which is this account holding every share in existence. See
+# lib-unwind-staking.sh.
 echo ""
 echo "== preconditions =="
-PRE_FAIL=0
-for pair in "staking supply:$(num "$(q "$STAKING" total_supply)")" \
-            "staking nav:$(num "$(q "$STAKING" nav)")"; do
-  n=${pair%%:*}; v=${pair#*:}
-  if [ "$v" = "0" ]; then echo "  $n = 0"; else echo "  $n = $v, and this script needs it empty"; PRE_FAIL=1; fi
-done
-if [ "$PRE_FAIL" != "0" ]; then
-  echo ""
-  echo "  This walks a user through from a standing start, so it needs the staking"
-  echo "  contract empty. To clear it: request_unstake for the whole share balance,"
-  echo "  wait out the cooldown, then claim. The shares belong to whoever holds them,"
-  echo "  so that is a decision rather than something this script should take."
-  exit 2
-fi
+# shellcheck source=lib-unwind-staking.sh
+. "$(dirname "$0")/lib-unwind-staking.sh"
+unwind_staking "$STAKING" "$SRC" "$NET" "$ADMIN" || exit 2
 echo ""
 echo "== 1. DEPOSIT: USDC in, agUSD out 1:1 =="
 U0=$(num "$(q "$USDC" balance --id "$ADMIN")")
+if [ "$U0" -lt "$DEPOSIT" ]; then
+  # Short here is usually not short. The suites before this one deposit USDC and
+  # hold the agUSD, so the value is in the Vault with this account holding the
+  # claim on it. Settling and redeeming are ordinary calls on its own position.
+  # shellcheck source=lib-ensure-usdc.sh
+  . "$(dirname "$0")/lib-ensure-usdc.sh"
+  ensure_usdc "$VAULT" "$USDC" "$AGUSD" "$DEPOSIT" "$SRC" "$NET" "$ADMIN" || true
+  U0=$(num "$(q "$USDC" balance --id "$ADMIN")")
+fi
 if [ "$U0" -lt "$DEPOSIT" ]; then
   echo "  the admin holds $U0 (7dp) of USDC and the deposit is $DEPOSIT"
   echo "  top up at https://faucet.circle.com (USDC / Stellar Testnet) for $ADMIN"
@@ -316,14 +336,34 @@ harvest_refusal /tmp/agama-refusal-floor.txt "$EF" "$HARVEST_FLOOR" "$OVER_FLOOR
 echo ""
 echo "== 4. ORACLE: push a NAV, read it back through the Vault =="
 TS=$(( $(date +%s) - 120 ))
+# shellcheck source=lib-oracle-interval.sh
+. "$(dirname "$0")/lib-oracle-interval.sh"
+RATE_LIMITED=0
 push() {
+  local elapsed
+  if elapsed=$(feed_is_rate_limited "$ORACLE" "$1" "$SRC" "$NET"); then
+    # A refused push leaves the stored value where it was, so asserting the new
+    # one here would report the rate limit as the oracle failing to store what
+    # it was given. Skipped with the reason rather than failed, and the run
+    # carries on: the rest of this journey does not depend on the new value.
+    echo "  SKIP  $1 was reported ${elapsed}s ago and its minimum interval is 3600s,"
+    echo "        so a push now is refused and the stored value stands"
+    RATE_LIMITED=1
+    return 0
+  fi
   echo "  push_nav $1 = $2  tx $(tx "$ORACLE" push_nav --reporter "$ADMIN" --feed_id "$1" --nav "$2" --timestamp "$TS")"
   assert_eq "get_nav($1) reads back what was pushed" "$(q "$ORACLE" get_nav --feed_id "$1")" "$2"
 }
 push USDC_USD 10000000
 push PC_NAV 10100000   # a 1% revaluation of the private credit book, inside the feed's 500 bps bound
 push EF_BOND 10260000
-assert_eq "the Vault reads its own feed ($FEED) through the adapter" "$(q "$VAULT" get_nav)" "10100000"
+if [ "$RATE_LIMITED" = "0" ]; then
+  assert_eq "the Vault reads its own feed ($FEED) through the adapter" "$(q "$VAULT" get_nav)" "10100000"
+else
+  # The pointer is still worth checking even when the value is not this run's.
+  assert_eq "the Vault reads its own feed ($FEED) through the adapter" \
+    "$(q "$VAULT" get_nav)" "$(num "$(q "$ORACLE" get_nav --feed_id "$FEED")")"
+fi
 
 echo ""
 echo "== 5. YIELD: the sagUSD exchange rate rises =="

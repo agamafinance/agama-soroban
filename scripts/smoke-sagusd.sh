@@ -61,7 +61,25 @@ assert_gt() {
 }
 
 # Read-only: simulated, never submitted, so views cost nothing.
-q()  { stellar contract invoke --id "$1" --source $SRC --network $NET --send=no -- "${@:2}" 2>/dev/null; }
+# A read that comes back empty is not a contract answering with nothing. It
+# happens when something else is submitting from the same account at the same
+# time, which is what running two of these suites at once does: the sequence
+# number collides, calls fail with TxBadSeq, and reads come back blank. One
+# blank poisons everything after it, because the Vault address is itself read
+# from the Engine here, so a single empty answer turns every later assertion
+# into a diff against an empty string and reads like a page of contract
+# defects. Retried before being believed. Running two suites against one
+# account concurrently is still the wrong thing to do; this only stops it
+# looking like a protocol failure when it happens.
+q() {
+  local out i
+  for i in 1 2 3 4; do
+    out=$(stellar contract invoke --id "$1" --source $SRC --network $NET --send=no -- "${@:2}" 2>/dev/null)
+    [ -n "$out" ] && { echo "$out"; return 0; }
+    sleep 2
+  done
+  echo "$out"
+}
 # State changing: submitted, and the transaction hash is echoed.
 tx() { stellar contract invoke --id "$1" --source $SRC --network $NET -- "${@:2}" 2>&1 \
          | grep -oE '[0-9a-f]{64}' | head -1; }
@@ -98,14 +116,19 @@ assert_eq "share_price is the same view under the older name" \
 # This measures share issuance and the exchange rate from a standing start, so
 # it needs the staking contract empty. Another script leaving shares in it turns
 # every rate assertion below into a diff that reads like a pricing bug and is
-# not. Unwinding is the operator's call: the shares belong to somebody.
-if [ "$(num "$(q "$STAKING" total_supply)")" != "0" ] || [ "$(num "$(q "$STAKING" nav)")" != "0" ]; then
-  echo ""
-  echo "  the staking contract is not empty: supply $(num "$(q "$STAKING" total_supply)"), nav $(num "$(q "$STAKING" nav)")"
-  echo "  This measures issuance and the rate from a standing start. To clear it:"
-  echo "  request_unstake the whole share balance, wait out the cooldown, claim."
-  exit 2
-fi
+# not.
+#
+# It used to stop here and say unwinding was the operator's call. That is right
+# when the shares belong to somebody, and it was also the reason these suites
+# could not be run one after another: the previous one leaves its own position
+# behind. So it unwinds, but only when this account holds every share in
+# existence, which is the case where doing it strands nobody. See
+# lib-unwind-staking.sh.
+echo ""
+echo "== PRECONDITION: staking empty =="
+# shellcheck source=lib-unwind-staking.sh
+. "$(dirname "$0")/lib-unwind-staking.sh"
+unwind_staking "$STAKING" "$SRC" "$NET" "$ADMIN" || exit 2
 
 echo ""
 echo "== PREFLIGHT: agUSD to stake and to distribute =="
@@ -115,6 +138,15 @@ echo "  the admin holds $HAVE agUSD and needs $NEED"
 if [ "${HAVE:-0}" -lt "$NEED" ]; then
   SHORT=$((NEED - HAVE))
   U=$(num "$(q "$USDC" balance --id "$ADMIN")")
+  if [ "${U:-0}" -lt "$SHORT" ]; then
+    # The shortfall is minted from USDC, and the USDC may itself be sitting in
+    # the Vault as this account's own agUSD from an earlier suite. Settle and
+    # redeem before deciding the faucet is the answer.
+    # shellcheck source=lib-ensure-usdc.sh
+    . "$(dirname "$0")/lib-ensure-usdc.sh"
+    ensure_usdc "$VAULT" "$USDC" "$AGUSD" "$SHORT" "$SRC" "$NET" "$ADMIN" || true
+    U=$(num "$(q "$USDC" balance --id "$ADMIN")")
+  fi
   if [ "${U:-0}" -lt "$SHORT" ]; then
     echo "  the admin holds $U (7dp) of USDC and needs $SHORT to mint the shortfall"
     echo "  top up at https://faucet.circle.com (USDC / Stellar Testnet) for $ADMIN"

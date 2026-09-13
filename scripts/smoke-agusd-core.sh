@@ -62,7 +62,25 @@ num() { echo "$1" | tr -d '"'; }
 assert_eq() { if [ "$(num "$2")" = "$3" ]; then ok "$1 ($2)"; else bad "$1: got $2, want $3"; fi; }
 
 # Read-only: simulated, never submitted, so views cost nothing.
-q()  { stellar contract invoke --id "$1" --source $SRC --network $NET --send=no -- "${@:2}" 2>/dev/null; }
+# A read that comes back empty is not a contract answering with nothing. It
+# happens when something else is submitting from the same account at the same
+# time, which is what running two of these suites at once does: the sequence
+# number collides, calls fail with TxBadSeq, and reads come back blank. One
+# blank poisons everything after it, because the Vault address is itself read
+# from the Engine here, so a single empty answer turns every later assertion
+# into a diff against an empty string and reads like a page of contract
+# defects. Retried before being believed. Running two suites against one
+# account concurrently is still the wrong thing to do; this only stops it
+# looking like a protocol failure when it happens.
+q() {
+  local out i
+  for i in 1 2 3 4; do
+    out=$(stellar contract invoke --id "$1" --source $SRC --network $NET --send=no -- "${@:2}" 2>/dev/null)
+    [ -n "$out" ] && { echo "$out"; return 0; }
+    sleep 2
+  done
+  echo "$out"
+}
 # State changing: submitted, and the transaction hash is echoed.
 tx() { stellar contract invoke --id "$1" --source $SRC --network $NET -- "${@:2}" 2>&1 \
          | grep -oE '[0-9a-f]{64}' | head -1; }
@@ -133,6 +151,17 @@ echo "== DEPOSIT: USDC in, agUSD out 1:1 =="
 SUPPLY_BEFORE=$(num "$(q "$AGUSD_CORE" total_supply)")
 IDLE_BEFORE=$(num "$(q "$VAULT" idle_reserves)")
 U0=$(num "$(q "$USDC" balance --id "$ADMIN")")
+if [ "$U0" -lt "$DEPOSIT" ]; then
+  # A short balance here usually is not a short balance. An earlier run queues
+  # a withdrawal and does not settle it, so the USDC is in the Vault owed to
+  # this very account, which then reads zero and stops. Settling pays whichever
+  # claim is at the head to its recorded owner and is permissionless, so it
+  # takes nothing from anybody.
+  # shellcheck source=lib-ensure-usdc.sh
+  . "$(dirname "$0")/lib-ensure-usdc.sh"
+  ensure_usdc "$VAULT" "$USDC" "$AGUSD_CORE" "$DEPOSIT" "$SRC" "$NET" "$ADMIN" || true
+  U0=$(num "$(q "$USDC" balance --id "$ADMIN")")
+fi
 if [ "$U0" -lt "$DEPOSIT" ]; then
   echo "  the admin holds $U0 (7dp) of USDC and the deposit is $DEPOSIT"
   echo "  top up at https://faucet.circle.com (USDC / Stellar Testnet) for $ADMIN"
