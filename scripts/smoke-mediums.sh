@@ -369,7 +369,20 @@ print(x)
 PY
 )
 if [ "${NEED:-0}" -gt 0 ]; then
-  echo "    deposit $NEED   tx $(tx "$VAULT" deposit --from "$ADMIN" --amount "$NEED")"
+  # The account has to be able to reach it. Settling and redeeming come first,
+  # because the value is usually in the Vault as this account's own agUSD from
+  # an earlier suite rather than gone; and if it still cannot reach it, the
+  # deposit is what it can manage rather than a request the token refuses. A
+  # refused deposit used to print a hash and the run carried on believing the
+  # book had grown.
+  # shellcheck source=lib-ensure-usdc.sh
+  . "$(dirname "$0")/lib-ensure-usdc.sh"
+  ensure_usdc "$VAULT" "$USDC" "$AGUSD" "$NEED" "$SRC" "$NET" "$ADMIN" || true
+  HAVE=$(q0 "$USDC" balance --id "$ADMIN")
+  [ "${HAVE:-0}" -lt "$NEED" ] && NEED=$HAVE
+  if [ "${NEED:-0}" -gt 0 ]; then
+    echo "    deposit $NEED   tx $(tx "$VAULT" deposit --from "$ADMIN" --amount "$NEED")"
+  fi
 fi
 N_FREE=$(q0 "$VAULT" accounted_free_reserves)
 N_DEP=$(q0 "$VAULT" deployed_capital)
