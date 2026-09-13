@@ -32,10 +32,16 @@ _acquire_suite_lock() {
     return 1
   fi
   echo "pid $$ at $(date -u +%H:%M:%S)" > "$lock/owner"
-  # Released however the script ends, including on a failed assertion.
-  trap 'rm -rf "/tmp/agama-smoke-'"$src"'.lock"' EXIT
+  _SUITE_LOCK=$lock
+  # Released however the script ends, including on a failed assertion. A script
+  # that needs its own EXIT trap has to call release_suite_lock from it: bash
+  # keeps one trap per signal, so setting another silently replaces this one and
+  # leaves a lock nobody holds, which blocks every run after it. That happened.
+  trap 'release_suite_lock' EXIT
   return 0
 }
+
+release_suite_lock() { [ -n "${_SUITE_LOCK:-}" ] && rm -rf "$_SUITE_LOCK"; return 0; }
 
 normalise_book() {
   local VAULT=$1 ENGINE=$2 USDC=$3 SRC=$4 NET=$5 ADMIN=$6
