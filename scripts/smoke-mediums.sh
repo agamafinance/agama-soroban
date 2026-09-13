@@ -79,6 +79,8 @@ PC=$(j "d['poolAdapters']['private-credit']")
 EF=$(j "d['poolAdapters']['etherfuse']")
 FLOOR=$(j "d['engineConfig']['reserveFloorBps']")
 POOL_CAP=$(j "d['engineConfig']['poolCapBps']")
+ORIG_CAP=$(j "d['engineConfig']['originatorCapBps']")
+JUR_CAP=$(j "d['engineConfig']['jurisdictionCapBps']")
 
 # The newest superseded generation that still carries the bug, chosen by asking
 # the ledger rather than by counting entries in a file: the deployment record
@@ -398,13 +400,42 @@ LEG=$((N_TOTAL * POOL_CAP / BPS - N_CHARGED))
 # releases, because the cap allowing it does not mean the Vault will release it.
 N_ROOM2=$(( N_FREE - (N_BASE * FLOOR + BPS - 1) / BPS ))
 [ "$LEG" -gt "$N_ROOM2" ] && LEG=$N_ROOM2
+RAISED=0
 if [ "$LEG" -lt 1 ]; then
-  echo "  the private credit pool is charged $N_CHARGED against a cap of"
-  echo "  $((N_TOTAL * POOL_CAP / BPS)) on a book of $N_TOTAL, and the floor releases"
-  echo "  $N_ROOM2, so there is nothing to allocate and this finding cannot be"
-  echo "  walked through on this book. The charge is written-off exposure, which"
-  echo "  a write-down never gives back; it needs a larger book, not a reset."
-  exit 2
+  # The pool is charged past its cap, so there is no room to fill it and the
+  # refusal that follows would be the cap answering about the wrong thing. The
+  # charge is written-off exposure and a write-down deliberately never gives it
+  # back, so it outlives the book that was large enough to carry it.
+  #
+  # The cap is raised for the walk and put back after, which is setup and not a
+  # loophole: what this section demonstrates is that a write-down does not
+  # reopen a cap, and that is a statement about charged against live exposure at
+  # whatever the cap happens to be. Being at the cap is the precondition, and on
+  # a small book raising it is the only way to reach it. smoke-hardening takes
+  # the Engine to 100% and back for the same kind of reason.
+  WANT=$(( (N_CHARGED + N_ROOM2) * BPS / N_TOTAL + 100 ))
+  [ "$WANT" -gt "$BPS" ] && WANT=$BPS
+  if [ "$N_ROOM2" -lt 1 ]; then
+    echo "  the floor releases $N_ROOM2, so there is nothing to deploy whatever the"
+    echo "  cap says. This needs a larger book."
+    exit 2
+  fi
+  echo "  the pool is charged $N_CHARGED against a cap of $((N_TOTAL * POOL_CAP / BPS))"
+  echo "  on a book of $N_TOTAL, so there is no room to fill it. Raising the cap to"
+  echo "  $WANT bps for the walk and restoring it after; being at the cap is the"
+  echo "  precondition and the claim is about charged against live exposure."
+  echo "    set_caps $WANT   tx $(tx "$ENGINE" set_caps --admin "$ADMIN" --pool_cap_bps "$WANT" --originator_cap_bps "$WANT" --jurisdiction_cap_bps "$WANT")"
+  echo "    set_pool_cap     tx $(tx "$ENGINE" set_pool_cap --admin "$ADMIN" --pool_id "$PC" --cap_bps "$WANT")"
+  RAISED=1
+  # Put them back however this section ends, including on a failed assertion.
+  trap 'echo "  restoring caps"; tx "$ENGINE" set_caps --admin "$ADMIN" --pool_cap_bps "$POOL_CAP" --originator_cap_bps "$ORIG_CAP" --jurisdiction_cap_bps "$JUR_CAP" >/dev/null; tx "$ENGINE" set_pool_cap --admin "$ADMIN" --pool_id "$PC" --cap_bps "$POOL_CAP" >/dev/null' EXIT
+  N_CHARGED=$(q0 "$ENGINE" charged_exposure --pool_id "$PC")
+  LEG=$(( N_TOTAL * WANT / BPS - N_CHARGED ))
+  [ "$LEG" -gt "$N_ROOM2" ] && LEG=$N_ROOM2
+  if [ "$LEG" -lt 1 ]; then
+    echo "  still nothing to allocate after raising the cap; this needs a larger book."
+    exit 2
+  fi
 fi
 echo "  book: $N_TOTAL total assets, base $N_BASE, pc charged $N_CHARGED, so the pool cap allows $LEG more"
 PC_HELD0=$(q0 "$USDC" balance --id "$PC")
