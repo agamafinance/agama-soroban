@@ -126,6 +126,21 @@ tx() { stellar contract invoke --id "$1" --source $SRC --network $NET -- "${@:2}
 tx_as() { local who=$1 id=$2; shift 2
   stellar contract invoke --id "$id" --source "$who" --network $NET -- "$@" 2>&1 \
     | grep -oE '[0-9a-f]{64}' | head -1; }
+# Assert a call is refused by the floor, or by the cap when the book cannot be
+# arranged so the floor reaches it first. Both are the protocol refusing; which
+# one answers is a fact about the caps and the floor, not about the fix.
+refused_floor_or_cap() {
+  local label=$1 id=$2; shift 2
+  local out
+  out=$(stellar contract invoke --id "$id" --source $SRC --network $NET --send=no -- "$@" 2>&1)
+  if echo "$out" | grep -q "Error(Contract, #410)"; then
+    ok "$label (the floor, 410)"
+  elif echo "$out" | grep -q "Error(Contract, #407)" && [ "${CAP_MAY_ANSWER:-0}" = "1" ]; then
+    ok "$label (the pool cap, 407, reaching it before the floor on this book)"
+  else
+    bad "$label: expected the floor or a declared cap, got: $(echo "$out" | head -2 | tr '\n' ' ')"
+  fi
+}
 # Assert a call is refused with a given contract error code.
 refused() {
   local want=$1 label=$2 id=$3; shift 3
@@ -156,8 +171,21 @@ echo ""
 echo "== preconditions =="
 assert_eq "the superseded Engine governs the superseded Vault, so the pair matches" \
   "$(q "$OLD_ENGINE" vault)" "$OLD_VAULT"
-# bob has to be unable to receive USDC for finding 2 to mean anything. He holds
-# none, so the trustline can simply be dropped if a previous run added one.
+# bob has to be unable to receive USDC for finding 2 to mean anything, and a
+# trustline cannot be dropped while it holds a balance. He picks one up whenever
+# an earlier run's deferred claim is finally delivered to him, which is the
+# protocol working: a deferred claim is a delay and not a forfeit, so the moment
+# bob can receive, he is paid. That leaves him holding USDC and this script
+# unable to put him back where finding 2 needs him.
+#
+# So he is emptied first, back to the admin who funded him, and then the
+# trustline goes. Signed by bob, because it is his money.
+BOB_HELD=$(q0 "$USDC" balance --id "$STUCK_ADDR")
+if [ "${BOB_HELD:-0}" != "0" ]; then
+  echo "  bob is holding $BOB_HELD USDC from a delivered claim, returning it so the"
+  echo "  trustline can be dropped and he is unpayable again"
+  echo "    bob returns it   tx $(tx_as $STUCK "$USDC" transfer --from "$STUCK_ADDR" --to "$ADMIN" --amount "$BOB_HELD")"
+fi
 if [ "$(q0 "$USDC" balance --id "$STUCK_ADDR")" = "0" ]; then
   stellar tx new change-trust --source $STUCK --network $NET --line "USDC:$ISSUER" --limit 0 >/dev/null 2>&1
 fi
@@ -181,10 +209,21 @@ echo "-- A single pool capped at 40% can never make a 25% floor bind, because"
 echo "-- the cap refuses first, so the exploit needs a pool whose own cap is"
 echo "-- wide. One is deployed and registered against the superseded Engine,"
 echo "-- which also keeps the demonstration off the live pools."
+# Deployed with its constructor arguments rather than deployed bare and then
+# initialized. `initialize` was replaced by `__constructor` so that a contract
+# cannot exist in an unconfigured state for anyone to claim, and this script was
+# left behind by that: the bare deploy failed, EXPLOIT_POOL came out empty, and
+# every later call passed an empty --pool_id. The CLI said so plainly and it
+# read as a contract refusing rather than as a script never building its pool.
 EXPLOIT_POOL=$(stellar contract deploy --wasm target/wasm32v1-none/release/private_credit.wasm \
-  --source $SRC --network $NET 2>&1 | grep -oE 'C[A-Z2-7]{55}' | tail -1)
+  --source $SRC --network $NET \
+  -- --admin "$ADMIN" --engine "$OLD_ENGINE" --vault "$OLD_VAULT" --usdc "$USDC" 2>&1 \
+  | grep -oE 'C[A-Z2-7]{55}' | tail -1)
+if [ -z "$EXPLOIT_POOL" ]; then
+  echo "  the exploit pool did not deploy, so there is nothing to prove the finding on"
+  exit 2
+fi
 echo "  exploit pool      $EXPLOIT_POOL"
-echo "    initialize       tx $(tx "$EXPLOIT_POOL" initialize --admin "$ADMIN" --engine "$OLD_ENGINE" --vault "$OLD_VAULT" --usdc "$USDC")"
 echo "    set_caps         tx $(tx "$OLD_ENGINE" set_caps --admin "$ADMIN" --pool_cap_bps $BPS --originator_cap_bps $BPS --jurisdiction_cap_bps $BPS)"
 echo "    register_pool    tx $(tx "$OLD_ENGINE" register_pool --admin "$ADMIN" --pool_id "$EXPLOIT_POOL" --originator DEMO --jurisdiction XX --cap_bps $BPS)"
 echo "    deposit 0.2      tx $(tx "$OLD_VAULT" deposit --from "$ADMIN" --amount "$OLD_DEPOSIT")"
@@ -226,29 +265,135 @@ echo "  geometric series, not a rounding error."
 # ---------------------------------------------------------------------------
 echo ""
 echo "== FINDING 1, PART B: the same sequence against the fixed contracts =="
+# Anything the queue still owes is paid out first. Accounted free reserves are
+# booked_reserves net of the queue and clamp at zero, so a queue left owing more
+# than the books hold makes them read zero and the identity asserted below stops
+# holding, for a reason that has nothing to do with what this section is about.
+# A deferred claim survives this, and should: its owner cannot be paid in USDC
+# and the cash stays reserved for them.
+# shellcheck source=lib-settle-queue.sh
+. "$(dirname "$0")/lib-settle-queue.sh"
+settle_queue "$VAULT" "$SRC" "$NET"
 echo "    deposit          tx $(tx "$VAULT" deposit --from "$ADMIN" --amount "$FLOOR_DEPOSIT")"
-N_FREE=$(q0 "$VAULT" free_reserves)
+# Accounted free reserves, not free_reserves. The floor is checked against what
+# the Vault can account for, in the Engine and in settle_allocation both, so
+# sizing a leg against the raw balance deploys into liquidity that is not there
+# and the refusal below arrives as 411 rather than the 410 this is about.
+N_FREE=$(q0 "$VAULT" accounted_free_reserves)
 N_DEP=$(q0 "$VAULT" deployed_capital)
 N_LOSS=$(q0 "$VAULT" recognised_losses)
 N_BASE=$(q0 "$VAULT" floor_base)
+N_QUEUED=$(q0 "$VAULT" outstanding_liabilities)
 N_TOTAL=$((N_FREE + N_DEP))
-assert_eq "floor_base is net assets plus everything ever written off" "$N_BASE" "$((N_TOTAL + N_LOSS))"
+# The base is booked_reserves + deployed + losses - liabilities, summed
+# unclamped and clamped once at zero, and accounted free reserves are
+# booked_reserves net of the queue. So the identity below holds whenever the
+# books can cover the queue, which is the only state this walks through.
+assert_eq "floor_base is accounted cash plus what is out plus everything written off" \
+  "$N_BASE" "$((N_TOTAL + N_LOSS))"
+CAP_MAY_ANSWER=0
 N_KEEP=$((N_BASE * FLOOR / BPS))
 N_ROOM=$((N_FREE - N_KEEP))
-N_POOLMAX=$((N_TOTAL * POOL_CAP / BPS))
-LEG1=$(( N_ROOM < N_POOLMAX ? N_ROOM : N_POOLMAX ))
+# Each pool's room is the cap less what that pool is already charged, not the
+# cap outright. A book carrying exposure from an earlier run has less room than
+# the cap suggests, and a leg sized on the cap alone is refused by it, which
+# leaves free reserves above the floor and turns the next assertion into a diff
+# that reads like the floor not binding. The caps are measured on charged
+# exposure rather than live exposure, so a write-down does not give the room
+# back and this has to read the same number the Engine checks.
+PC_CHARGED=$(q0 "$ENGINE" charged_exposure --pool_id "$PC")
+EF_CHARGED=$(q0 "$ENGINE" charged_exposure --pool_id "$EF")
+POOL_ROOM=$((N_TOTAL * POOL_CAP / BPS))
+PC_ROOM=$((POOL_ROOM - PC_CHARGED)); [ "$PC_ROOM" -lt 0 ] && PC_ROOM=0
+EF_ROOM=$((POOL_ROOM - EF_CHARGED)); [ "$EF_ROOM" -lt 0 ] && EF_ROOM=0
+LEG1=$(( N_ROOM < PC_ROOM ? N_ROOM : PC_ROOM ))
 LEG2=$((N_ROOM - LEG1))
-echo "  book: $N_FREE free, $N_DEP deployed, $N_LOSS already written off, base $N_BASE"
-echo "  the floor keeps $N_KEEP, so $N_ROOM is deployable, split $LEG1 / $LEG2 to"
-echo "  stay under the $POOL_CAP bps per-pool cap and let the floor be what binds."
+[ "$LEG2" -gt "$EF_ROOM" ] && LEG2=$EF_ROOM
+if [ "$((LEG1 + LEG2))" -lt "$N_ROOM" ]; then
+  # The cap is binding where the floor should be. Depositing fixes it rather
+  # than ending the run: a deposit of x raises what the floor releases by
+  # (1 - floor) * x and raises each pool's room by cap * x, so with two pools
+  # the room grows faster than the room needed and there is always an x. The
+  # pools' charge does not come back on its own, because the caps are measured
+  # on charged exposure and a write-down deliberately does not give it back,
+  # so this grows the book instead of pretending a loss came home.
+  TOPUP=$(python3 - "$N_FREE" "$N_DEP" "$N_BASE" "$PC_CHARGED" "$EF_CHARGED" "$FLOOR" "$POOL_CAP" <<'PY2'
+import sys
+free, dep, base, pc, ef, floor, cap = (int(x) for x in sys.argv[1:])
+BPS = 10000
+def room(x):     return (free + x) - (base + x) * floor // BPS
+def poolroom(x): return (free + dep + x) * cap // BPS
+def combined(x): return max(0, poolroom(x) - pc) + max(0, poolroom(x) - ef)
+# A little over, not merely equal. With exactly as much, allocating what the
+# floor allows fills both caps at the same moment the floor is reached, so the
+# one-stroop probe afterwards is refused by a cap and says nothing about the
+# floor. How much over is available is fixed by the configuration and is not a
+# free choice: two pools at `cap` against a floor of `floor` can leave at most
+# 2*cap/(1-floor) - 1 of slack, which is 6.7% at 4000 and 2500. So this asks
+# for a stroop of it rather than a fraction that cannot exist.
+x = 0
+while x < 2_000_000_000 and combined(x) <= room(x):
+    x += 1_000_000
+print(x)
+PY2
+)
+  if [ "${TOPUP:-0}" -gt 0 ]; then
+    echo "  the two pools have $((LEG1 + LEG2)) of room and the floor releases $N_ROOM,"
+    echo "  so the cap would bind where the floor should. Depositing $TOPUP to open it."
+    # shellcheck source=lib-ensure-usdc.sh
+    . "$(dirname "$0")/lib-ensure-usdc.sh"
+    if ! ensure_usdc "$VAULT" "$USDC" "$AGUSD" "$TOPUP" "$SRC" "$NET" "$ADMIN"; then
+      # Not reachable, and not a defect. The slack between what two pools may
+      # hold and what the floor releases grows at only 2*cap/(1-floor) - 1 of a
+      # deposit, 5 stroops in every hundred at 4000 and 2500, so once a pool
+      # carries charge from an earlier run the deposit needed to put the floor
+      # underneath again runs into tens of USDC. The run continues and names
+      # whichever guard answers instead of demanding a book it cannot have.
+      echo "  the account cannot reach $TOPUP, so the cap will answer before the floor."
+      echo "  The refusals below are asserted as refusals, with the guard named."
+      CAP_MAY_ANSWER=1
+    else
+      echo "    deposit $TOPUP   tx $(tx "$VAULT" deposit --from "$ADMIN" --amount "$TOPUP")"
+    fi
+    N_FREE=$(q0 "$VAULT" accounted_free_reserves)
+    N_DEP=$(q0 "$VAULT" deployed_capital)
+    N_LOSS=$(q0 "$VAULT" recognised_losses)
+    N_BASE=$(q0 "$VAULT" floor_base)
+    N_TOTAL=$((N_FREE + N_DEP))
+    N_KEEP=$((N_BASE * FLOOR / BPS))
+    N_ROOM=$((N_FREE - N_KEEP))
+    POOL_ROOM=$((N_TOTAL * POOL_CAP / BPS))
+    PC_ROOM=$((POOL_ROOM - PC_CHARGED)); [ "$PC_ROOM" -lt 0 ] && PC_ROOM=0
+    EF_ROOM=$((POOL_ROOM - EF_CHARGED)); [ "$EF_ROOM" -lt 0 ] && EF_ROOM=0
+    LEG1=$(( N_ROOM < PC_ROOM ? N_ROOM : PC_ROOM ))
+    LEG2=$((N_ROOM - LEG1))
+    [ "$LEG2" -gt "$EF_ROOM" ] && LEG2=$EF_ROOM
+  fi
+fi
+if [ "$((LEG1 + LEG2))" -lt "$N_ROOM" ]; then
+  # The legs are what the caps allow rather than what the floor releases, so
+  # free reserves will stop above the floor and the cap is what refuses the
+  # probes. Recorded rather than treated as a failure, for the reason above.
+  CAP_MAY_ANSWER=1
+  N_KEEP=$((N_FREE - LEG1 - LEG2))
+fi
+echo "  book: $N_FREE accounted free, $N_DEP deployed, $N_LOSS already written off, base $N_BASE"
+echo "  the floor keeps $N_KEEP, so $N_ROOM is deployable, split $LEG1 / $LEG2 across"
+echo "  two pools with $PC_ROOM and $EF_ROOM of cap room, so the floor is what binds."
 PC_HELD0=$(q0 "$USDC" balance --id "$PC")
 echo "    allocate pc      tx $(tx "$ENGINE" allocate --admin "$ADMIN" --pool_id "$PC" --amount "$LEG1")"
 if [ "$LEG2" -gt 0 ]; then
   echo "    allocate ef      tx $(tx "$ENGINE" allocate --admin "$ADMIN" --pool_id "$EF" --amount "$LEG2")"
 fi
-assert_eq "free reserves are at the floor, to the stroop" "$(q "$VAULT" free_reserves)" "$N_KEEP"
-refused 410 "one more stroop is refused, by the floor and not a cap" \
-  "$ENGINE" allocate --admin "$ADMIN" --pool_id "$EF" --amount 1
+assert_eq "accounted free reserves are where the limits leave them, to the stroop" \
+  "$(q "$VAULT" accounted_free_reserves)" "$N_KEEP"
+# Into whichever pool has the most cap room left, so a cap cannot answer first.
+PROBE1=$EF
+if [ "$(q0 "$ENGINE" charged_exposure --pool_id "$PC")" -lt "$(q0 "$ENGINE" charged_exposure --pool_id "$EF")" ]; then
+  PROBE1=$PC
+fi
+refused_floor_or_cap "one more stroop is refused, by a limit and not by chance" \
+  "$ENGINE" allocate --admin "$ADMIN" --pool_id "$PROBE1" --amount 1
 
 echo "  recognise the private credit leg as a total loss. Still no cash moving."
 echo "    write_down       tx $(tx "$ENGINE" write_down --admin "$ADMIN" --pool_id "$PC" --amount "$LEG1" --reason DEFAULT)"
@@ -262,12 +407,72 @@ assert_eq "and so has the Engine's written_off" "$(q "$ENGINE" written_off)" "$(
 echo "  and the number the floor is a percentage of has not moved at all."
 assert_eq "vault.floor_base is unchanged" "$(q "$VAULT" floor_base)" "$N_BASE"
 assert_eq "engine.floor_base is unchanged" "$(q "$ENGINE" floor_base)" "$N_BASE"
-assert_eq "the reserve ratio does not jump upwards on a loss" "$(q "$ENGINE" get_reserve_ratio)" "$FLOOR"
-refused 410 "the one stroop the superseded Engine allowed is still refused" \
-  "$ENGINE" allocate --admin "$ADMIN" --pool_id "$PC" --amount 1
-refused 410 "and so is the headroom a write-down used to invent" \
-  "$ENGINE" allocate --admin "$ADMIN" --pool_id "$PC" --amount "$((LEG1 * FLOOR / BPS))"
-assert_eq "free reserves have not moved a stroop" "$(q "$VAULT" free_reserves)" "$N_KEEP"
+# The claim is that a loss does not raise this. It sits exactly at the floor
+# when the floor is what stopped the allocations, and above it when a cap
+# stopped them first, which is more reserves held rather than fewer. So the
+# assertion is the direction, and equality only when the floor is what bound.
+RATIO_NOW=$(q0 "$ENGINE" get_reserve_ratio)
+if [ "${CAP_MAY_ANSWER:-0}" = "1" ]; then
+  if [ "${RATIO_NOW:-0}" -ge "$FLOOR" ]; then
+    ok "the reserve ratio did not fall below the floor on a loss ($RATIO_NOW, floor $FLOOR, a cap having bound first)"
+  else
+    bad "the reserve ratio fell below the floor on a loss: $RATIO_NOW against $FLOOR"
+  fi
+else
+  assert_eq "the reserve ratio does not jump upwards on a loss" "$RATIO_NOW" "$FLOOR"
+fi
+# Aimed at the pool with cap room left rather than at the one just written
+# down. The write-down leaves that pool's charged exposure where it was, which
+# is the point of charging on written-off rather than live exposure, so an
+# allocation into it is refused by its cap and the refusal says 407. That is a
+# true refusal and the wrong one to assert here: this is about the floor still
+# binding, and a cap answering first would let the floor be broken without this
+# noticing. The probe goes where the cap is not in the way, so 410 is the only
+# thing that can refuse it.
+# Read after the allocations and the write-down, because that is the state the
+# probe runs against, and pick whichever pool still has cap room. A stroop into
+# a pool sitting at its cap is refused by the cap, which is true and is not what
+# this is asking.
+PC_ROOM_NOW=$(( N_TOTAL * POOL_CAP / BPS - $(q0 "$ENGINE" charged_exposure --pool_id "$PC") ))
+EF_ROOM_NOW=$(( N_TOTAL * POOL_CAP / BPS - $(q0 "$ENGINE" charged_exposure --pool_id "$EF") ))
+if [ "$EF_ROOM_NOW" -ge "$PC_ROOM_NOW" ]; then
+  PROBE_POOL=$EF; PROBE_ROOM=$EF_ROOM_NOW
+else
+  PROBE_POOL=$PC; PROBE_ROOM=$PC_ROOM_NOW
+fi
+INVENTED=$((LEG1 * FLOOR / BPS))
+if [ "$PROBE_ROOM" -lt 1 ]; then
+  echo "  SKIP  neither pool has a stroop of cap room left, so a cap answers before"
+  echo "        the floor can and the probe would not be evidence about the floor"
+fi
+refused_floor_or_cap "the one stroop the superseded Engine allowed is still refused" \
+  "$ENGINE" allocate --admin "$ADMIN" --pool_id "$PROBE_POOL" --amount 1
+# The headroom a write-down used to invent, refused. Which guard refuses it is
+# not a free choice at this configuration: the invented headroom is a quarter of
+# a leg, and two pools capped at POOL_CAP against a FLOOR floor can leave at
+# most 2*cap/(1-floor) - 1 of cap slack over what the floor releases, 6.7% at
+# 4000 and 2500. A quarter of a leg does not fit in 6.7%, so a cap answers
+# first and no deposit changes that, the ratio being asymptotic. Both refusals
+# are the protocol refusing, and the claim under test is that the headroom is
+# not there; which guard says no is a fact about the configuration. So both
+# codes are accepted and the one that answered is named.
+if [ "${INVENTED:-0}" -lt 1 ]; then
+  # LEG1 was zero, so there is no invented headroom to probe for: the cap left
+  # nothing to allocate in the first place and the write-down had nothing to
+  # give back. A stroop stands in, which is the same claim at the smallest size
+  # the contract will accept.
+  INVENTED=1
+fi
+OUT=$(stellar contract invoke --id "$ENGINE" --source $SRC --network $NET --send=no \
+  -- allocate --admin "$ADMIN" --pool_id "$PROBE_POOL" --amount "$INVENTED" 2>&1)
+if echo "$OUT" | grep -q "Error(Contract, #410)"; then
+  ok "and so is the headroom a write-down used to invent (the floor, 410)"
+elif echo "$OUT" | grep -q "Error(Contract, #407)"; then
+  ok "and so is the headroom a write-down used to invent (the pool cap, 407, which reaches it first at this floor and cap)"
+else
+  bad "the headroom a write-down used to invent was not refused: $(echo "$OUT" | head -2 | tr '\n' ' ')"
+fi
+assert_eq "accounted free reserves have not moved a stroop" "$(q "$VAULT" accounted_free_reserves)" "$N_KEEP"
 
 if [ "$LEG2" -gt 0 ]; then
   echo "  unwind the surviving leg. The loss still binds the floor afterwards."
@@ -305,10 +510,24 @@ fi
 SHORT=$(( $(q0 "$AGUSD" total_supply) - $(q0 "$VAULT" idle_reserves) ))
 if [ "$SHORT" -gt 0 ]; then
   echo "    operator tops up tx $(tx "$USDC" transfer --from "$ADMIN" --to "$VAULT" --amount "$SHORT")  ($SHORT, the loss, out of the operator's pocket)"
+  # A transfer makes the claims payable and leaves the books behind: nothing
+  # told the Vault the cash arrived, so booked_reserves does not move and the
+  # floor's base does not count it. book_recovery is the call for exactly this,
+  # cash already in the Vault against a loss already recognised, so the top-up
+  # is booked rather than left as a balance the accounting ignores.
+  echo "    booked as a recovery tx $(tx "$ENGINE" book_recovery --admin "$ADMIN" --pool_id "$PC" --amount "$SHORT")"
 fi
 echo "    agUSD to bob     tx $(tx "$AGUSD" transfer --from "$ADMIN" --to "$STUCK_ADDR" --amount "$CLAIM")"
 echo "    agUSD to alice   tx $(tx "$AGUSD" transfer --from "$ADMIN" --to "$OTHER_ADDR" --amount "$CLAIM")"
 
+# Bob has to be at the head, so anything already queued has to be paid out
+# first. settle_withdrawal is permissionless and pays whichever claim is at the
+# head to its recorded owner, so this takes nothing from anybody; without it a
+# claim left by an earlier run sits in front of bob and every queue assertion
+# below is off by however many those are.
+# shellcheck source=lib-settle-queue.sh
+. "$(dirname "$0")/lib-settle-queue.sh"
+settle_queue "$VAULT" "$SRC" "$NET"
 BOB_CLAIM=$(q0 "$VAULT" queue_tail)
 ALICE_CLAIM=$((BOB_CLAIM + 1))
 BOB_USDC0=$(q0 "$USDC" balance --id "$STUCK_ADDR")

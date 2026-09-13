@@ -161,8 +161,12 @@ echo "  allocate $AMOUNT to the Etherfuse adapter  tx $(tx "$ENGINE" allocate --
 assert_eq "adapter booked the exposure" "$(q "$EF" get_exposure)" "$((EXP0 + AMOUNT))"
 assert_eq "Vault released exactly that much USDC" "$(q "$VAULT" idle_reserves)" "$((IDLE - AMOUNT))"
 assert_eq "total assets are unchanged by an allocation" "$(q "$VAULT" get_total_assets)" "$TOTAL"
+# Against accounted free reserves over the floor's base, which is what the
+# Engine divides. An allocation leaves the base where it was, moving booked
+# down and deployed up by the same amount, so BASE read before the release is
+# still the denominator after it.
 assert_eq "reserve ratio fell to match" \
-  "$(q "$ENGINE" get_reserve_ratio)" "$(((IDLE - AMOUNT) * 10000 / TOTAL))"
+  "$(q "$ENGINE" get_reserve_ratio)" "$(((ACCOUNTED - AMOUNT) * 10000 / BASE))"
 
 echo "  deallocate $AMOUNT  tx $(tx "$ENGINE" deallocate --pool_id "$EF" --amount "$AMOUNT")"
 assert_eq "exposure is back where it started" "$(q "$EF" get_exposure)" "$EXP0"

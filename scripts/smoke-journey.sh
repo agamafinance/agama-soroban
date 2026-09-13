@@ -321,8 +321,12 @@ assert_eq "the adapter booked the exposure" "$(q "$PC" get_exposure)" "$PC_ALLOC
 assert_eq "the Vault released exactly that much" \
   "$(q "$VAULT" idle_reserves)" "$((TOTAL - PC_ALLOC))"
 assert_eq "an allocation does not change total assets" "$(q "$VAULT" get_total_assets)" "$TOTAL"
+# Against accounted free reserves over the floor's base, which is what the
+# Engine divides, rather than against the raw balance over total assets. The
+# base does not move on an allocation, so it is read once here.
+J_BASE=$(num "$(q "$VAULT" floor_base)")
 assert_eq "the reserve ratio fell to match" "$(q "$ENGINE" get_reserve_ratio)" \
-  "$(( (TOTAL - PC_ALLOC) * 10000 / TOTAL ))"
+  "$(( $(num "$(q "$VAULT" accounted_free_reserves)") * 10000 / J_BASE ))"
 
 # Both refusals are prepared here, while an allocation to Etherfuse still
 # simulates cleanly. The reserve floor one cannot be prepared later: once the
