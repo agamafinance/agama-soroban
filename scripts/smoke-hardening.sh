@@ -140,9 +140,6 @@ echo "  vault unaccounted cash at start  $UNACCOUNTED_BEFORE"
 
 echo ""
 echo "== VAULT: deposit, and the numbers the limits are measured on =="
-IDLE0=$(q0 "$VAULT" idle_reserves)
-LIAB0=$(q0 "$VAULT" outstanding_liabilities)
-AG0=$(q0 "$AGUSD" balance --id "$ADMIN")
 WALLET=$(q0 "$USDC" balance --id "$ADMIN")
 # Deposit everything the admin has, in whole tenths of a USDC, so the working
 # capital is whatever the account actually holds rather than a hardcoded number
@@ -163,6 +160,13 @@ if [ "$DEPOSIT" -lt $((3 * CLAIM_AMOUNT)) ]; then
   echo "  it needs at least $((3 * CLAIM_AMOUNT)); top the account up and re-run."
   exit 1
 fi
+# Read after the top-up and not before it. Reaching the balance can mean
+# redeeming agUSD, which burns supply and moves the Vault's idle reserves, so a
+# snapshot taken first is stale by exactly what it took to get here and every
+# assertion below is off by that amount.
+IDLE0=$(q0 "$VAULT" idle_reserves)
+LIAB0=$(q0 "$VAULT" outstanding_liabilities)
+AG0=$(q0 "$AGUSD" balance --id "$ADMIN")
 echo "  deposit $DEPOSIT  tx $(tx "$VAULT" deposit --from "$ADMIN" --amount "$DEPOSIT")"
 assert_eq "agUSD minted one for one" "$(q "$AGUSD" balance --id "$ADMIN")" "$((AG0 + DEPOSIT))"
 assert_eq "idle reserves rose by the deposit" "$(q "$VAULT" idle_reserves)" "$((IDLE0 + DEPOSIT))"
@@ -224,20 +228,48 @@ assert_eq "the head of the queue is the claim we made" "$(q "$VAULT" queue_head)
 # Submitted, and signed by alice. She owns no claim and holds no role: if the
 # entry point were not genuinely permissionless this transaction would fail,
 # and if it let the caller choose the recipient she would have the money.
+OWED_BEFORE=$(q0 "$VAULT" outstanding_liabilities)
 echo "  settle_withdrawal, signed by $OTHER  tx $(tx_other "$VAULT" settle_withdrawal)"
 assert_eq "the recorded owner was paid" "$(q "$USDC" balance --id "$ADMIN")" "$((BEFORE + CLAIM_AMOUNT))"
 CLAIM_OWNER=$(q "$VAULT" get_claim --claim_id "$CLAIM" | python3 -c 'import json,sys;print(json.load(sys.stdin)["owner"])')
 assert_eq "the claim still records its own owner, not the caller" "$CLAIM_OWNER" "$ADMIN"
 assert_eq "the queue advanced" "$(q "$VAULT" queue_head)" "$((CLAIM + 1))"
-assert_eq "and the liability is discharged" "$(q "$VAULT" outstanding_liabilities)" "0"
-refused 315 "settling an empty queue says so" "$VAULT" settle_withdrawal
+# Discharged by this claim's amount, not necessarily to zero. A claim whose
+# owner cannot be paid in USDC is marked deferred and stays counted, which is
+# the queue treating a delay as a delay rather than a forfeit, and an earlier
+# suite leaves exactly one of those behind on purpose. So the assertion is the
+# movement rather than the total.
+assert_eq "and the liability is discharged" "$(q "$VAULT" outstanding_liabilities)" \
+  "$((OWED_BEFORE - CLAIM_AMOUNT))"
+DEFERRED=$(q0 "$VAULT" outstanding_liabilities)
+if [ "${DEFERRED:-0}" = "0" ]; then
+  refused 315 "settling an empty queue says so" "$VAULT" settle_withdrawal
+else
+  echo "  SKIP  $DEFERRED is still owed on a deferred claim, whose owner cannot"
+  echo "        receive USDC, so the queue is not empty and cannot say it is"
+fi
 
 echo ""
 echo "== FINDING 5: a credit loss can be recognised =="
+# Measured on accounted free reserves and on what the pool has room for. The
+# raw balance overstates both: it counts cash the books cannot explain, which
+# the Engine will not deploy, and what the queue still owes on a deferred
+# claim, which belongs to somebody. And a pool carrying charge from an earlier
+# run has less room than its cap.
 IDLE=$(q0 "$VAULT" idle_reserves)
-# Inside the private credit adapter's own 40% cap, measured on what is free now
-# that the claim has been paid.
-ALLOC=$(( IDLE * POOL_CAP / 10000 ))
+H_FREE=$(q0 "$VAULT" accounted_free_reserves)
+H_BASE=$(q0 "$VAULT" floor_base)
+H_TOTAL=$(( H_FREE + $(q0 "$VAULT" deployed_capital) ))
+H_ROOM=$(( H_FREE - H_BASE * FLOOR / 10000 ))
+H_POOL=$(( H_TOTAL * POOL_CAP / 10000 - $(q0 "$ENGINE" charged_exposure --pool_id "$PC") ))
+ALLOC=$(( H_ROOM < H_POOL ? H_ROOM : H_POOL ))
+[ "$ALLOC" -lt 0 ] && ALLOC=0
+if [ "$ALLOC" -lt 1 ]; then
+  echo "  neither the floor nor the private credit cap leaves anything to deploy"
+  echo "  ($H_ROOM under the floor, $H_POOL under the cap), so this finding cannot"
+  echo "  be walked through on this book."
+  exit 2
+fi
 echo "  allocate $ALLOC to private credit  tx $(tx "$ENGINE" allocate --admin "$ADMIN" --pool_id "$PC" --amount "$ALLOC")"
 assert_eq "the Engine booked it" "$(q "$ENGINE" get_exposure --pool_id "$PC")" "$ALLOC"
 assert_eq "the adapter booked it" "$(q "$PC" get_exposure)" "$ALLOC"
