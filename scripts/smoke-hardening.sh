@@ -69,7 +69,25 @@ num() { echo "$1" | tr -d '"'; }
 assert_eq() { if [ "$(num "$2")" = "$3" ]; then ok "$1 ($2)"; else bad "$1: got $2, want $3"; fi; }
 
 # Read-only: simulated, never submitted.
-q() { stellar contract invoke --id "$1" --source $SRC --network $NET --send=no -- "${@:2}" 2>/dev/null; }
+# A read that comes back empty is not a contract answering with nothing. It
+# happens when something else is submitting from the same account at the same
+# time, which is what running two of these suites at once does: the sequence
+# number collides, calls fail with TxBadSeq, and reads come back blank. One
+# blank poisons everything after it, because the Vault address is itself read
+# from the Engine here, so a single empty answer turns every later assertion
+# into a diff against an empty string and reads like a page of contract
+# defects. Retried before being believed. Running two suites against one
+# account concurrently is still the wrong thing to do; this only stops it
+# looking like a protocol failure when it happens.
+q() {
+  local out i
+  for i in 1 2 3 4; do
+    out=$(stellar contract invoke --id "$1" --source $SRC --network $NET --send=no -- "${@:2}" 2>/dev/null)
+    [ -n "$out" ] && { echo "$out"; return 0; }
+    sleep 2
+  done
+  echo "$out"
+}
 # State changing: submitted, and the transaction hash is echoed.
 tx() { stellar contract invoke --id "$1" --source $SRC --network $NET -- "${@:2}" 2>&1 \
          | grep -oE '[0-9a-f]{64}' | head -1; }
@@ -130,6 +148,16 @@ WALLET=$(q0 "$USDC" balance --id "$ADMIN")
 # capital is whatever the account actually holds rather than a hardcoded number
 # that goes stale the first time a run costs something.
 DEPOSIT=$(( WALLET / 1000000 * 1000000 ))
+if [ "$DEPOSIT" -lt $((3 * CLAIM_AMOUNT)) ]; then
+  # Short here is usually the value sitting in the Vault as this account's own
+  # agUSD from an earlier suite, rather than an empty account. Settle what the
+  # queue owes and redeem the shortfall before deciding a top-up is needed.
+  # shellcheck source=lib-ensure-usdc.sh
+  . "$(dirname "$0")/lib-ensure-usdc.sh"
+  ensure_usdc "$VAULT" "$USDC" "$AGUSD" "$((3 * CLAIM_AMOUNT))" "$SRC" "$NET" "$ADMIN" || true
+  WALLET=$(q0 "$USDC" balance --id "$ADMIN")
+  DEPOSIT=$(( WALLET / 1000000 * 1000000 ))
+fi
 if [ "$DEPOSIT" -lt $((3 * CLAIM_AMOUNT)) ]; then
   echo "  the admin holds $WALLET USDC (7dp), which is not enough to run this."
   echo "  it needs at least $((3 * CLAIM_AMOUNT)); top the account up and re-run."
