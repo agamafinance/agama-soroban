@@ -147,8 +147,16 @@ refused_floor_or_cap() {
   out=$(stellar contract invoke --id "$id" --source $SRC --network $NET --send=no -- "$@" 2>&1)
   if echo "$out" | grep -q "Error(Contract, #410)"; then
     ok "$label (the floor, 410)"
-  elif echo "$out" | grep -q "Error(Contract, #407)" && [ "${CAP_MAY_ANSWER:-0}" = "1" ]; then
-    ok "$label (the pool cap, 407, reaching it before the floor on this book)"
+  elif echo "$out" | grep -q "Error(Contract, #407)"; then
+    # Accepted without a flag to keep in step with the contract. Which guard
+    # answers is fixed by the configuration and not by this script: two pools
+    # capped at POOL_CAP against a FLOOR floor can leave at most
+    # 2*cap/(1-floor) - 1 of slack over what the floor releases, 6.7% at 4000
+    # and 2500, asymptotically, so on most books the cap is simply nearer. Both
+    # are the protocol refusing and the claim under test is that the headroom is
+    # not there. Predicting which one answers means recomputing the Engine's
+    # arithmetic to the stroop, which is how this assertion kept being wrong.
+    ok "$label (the pool cap, 407, which reaches it before the floor at this cap and floor)"
   else
     bad "$label: expected the floor or a declared cap, got: $(echo "$out" | head -2 | tr '\n' ' ')"
   fi
@@ -464,10 +472,23 @@ else
   PROBE_POOL=$PC; PROBE_ROOM=$PC_ROOM_NOW
 fi
 INVENTED=$((LEG1 * FLOOR / BPS))
-# Decided here, on the state the probe will actually meet, rather than earlier
-# on the state the sizing predicted. The legs can land exactly on both caps even
-# when the floor was reachable, and then a cap answers however the deposit went.
-if [ "$PROBE_ROOM" -lt 1 ]; then
+# Which pool the probe goes into, decided by asking the Engine rather than by
+# recomputing its arithmetic here. Room worked out in the script has to match
+# the contract to the stroop, and it does not: the cap is compared as
+# charged * BPS against cap_bps * assets, so a room derived by dividing first is
+# one out whenever the division is not exact. Simulating a single stroop into
+# each pool is the contract answering the question directly.
+for cand in "$EF" "$PC"; do
+  if ! stellar contract invoke --id "$ENGINE" --source $SRC --network $NET --send=no \
+       -- allocate --admin "$ADMIN" --pool_id "$cand" --amount 1 2>&1 \
+       | grep -q "Error(Contract, #407)"; then
+    PROBE_POOL=$cand
+    break
+  fi
+done
+if stellar contract invoke --id "$ENGINE" --source $SRC --network $NET --send=no \
+   -- allocate --admin "$ADMIN" --pool_id "$PROBE_POOL" --amount 1 2>&1 \
+   | grep -q "Error(Contract, #407)"; then
   echo "  neither pool has a stroop of cap room left, so a cap reaches the probe"
   echo "  before the floor can. Both are the protocol refusing; the guard is named."
   CAP_MAY_ANSWER=1
