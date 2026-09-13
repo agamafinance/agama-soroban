@@ -34,6 +34,19 @@ unwind_staking() {
 
   mine=$(_us_q "$STAKING" balance --id "$ADMIN")
   echo "  staking holds supply ${supply:-?}, nav ${nav:-?}, of which this account holds ${mine:-?}"
+
+  # No shares and a nav above zero is yield distributed with nothing to receive
+  # it. There is nothing to unwind: shares are what unwinding burns, and that
+  # agUSD is stuck the way the Vault's own equity is stuck, for the same reason,
+  # because the only way out is against a share that no longer exists. Saying so
+  # is more use than refusing without saying why.
+  if [ "${supply:-0}" = "0" ] && [ "${nav:-0}" != "0" ]; then
+    echo "  there are no shares, so nothing can be unwound. The ${nav} of nav is"
+    echo "  yield distributed with no share outstanding to receive it, and it"
+    echo "  cannot leave: a payout burns a share and there is none."
+    return 2
+  fi
+
   if [ "${supply:-0}" = "0" ] || [ "${mine:-0}" != "${supply}" ]; then
     echo "  this account does not hold the whole supply, so the shares belong to"
     echo "  somebody else and unwinding them is not this script's decision."

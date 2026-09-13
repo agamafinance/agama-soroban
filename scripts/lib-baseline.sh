@@ -49,5 +49,16 @@ normalise_book() {
     done
   fi
 
+  # 3. Unpause. Deposits, requests and allocations are all refused while the
+  #    breaker is on, so a run that pauses and then fails to turn it back off
+  #    leaves every later suite failing at its first deposit. That happened:
+  #    an unpause was refused, the transaction helper printed a hash anyway,
+  #    and the next run read as a broken Vault rather than a paused one.
+  if [ "$(_nb_q "$VAULT" is_paused)" = "true" ]; then
+    echo "    the Vault is paused, from a run that did not turn the breaker back off"
+    _nb_tx "$VAULT" set_paused --admin "$ADMIN" --paused false
+    echo "    paused now: $(_nb_q "$VAULT" is_paused)"
+  fi
+
   echo "    idle $(_nb_q "$VAULT" idle_reserves) booked $(_nb_q "$VAULT" booked_reserves) deployed $(_nb_q "$VAULT" deployed_capital) owed $(_nb_q "$VAULT" outstanding_liabilities)"
 }
