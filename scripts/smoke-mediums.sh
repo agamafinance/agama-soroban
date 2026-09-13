@@ -287,6 +287,24 @@ assert_eq "and the Engine reads its exposure as nothing at all" "$(q "$OLD_ENGIN
 
 O_TOTAL2=$((O_TOTAL - O_CAP))
 O_CAP2=$((O_TOTAL2 * EX_CAP / BPS))
+# Capped at what the superseded Vault can actually release. It is a retired
+# contract whose book is whatever earlier runs left in it, and the cap read off
+# total assets can easily exceed its free reserves, in which case the second
+# allocation is refused for liquidity and the exploit looks like it did not
+# work. The exploit does not need a particular size: it needs the pool to end
+# up holding more than the cap it was capped at, and any second leg above zero
+# does that, because the first one already took the whole cap.
+O_FREE_NOW=$(q0 "$OLD_VAULT" free_reserves)
+if [ "$O_CAP2" -gt "${O_FREE_NOW:-0}" ]; then
+  echo "  the superseded Vault has $O_FREE_NOW free against a cap of $O_CAP2, so the"
+  echo "  second leg is what it can release rather than what the cap allows."
+  O_CAP2=$O_FREE_NOW
+fi
+if [ "${O_CAP2:-0}" -lt 1 ]; then
+  echo "  SKIP  the superseded Vault has nothing left to release, so the second"
+  echo "        allocation cannot be made and the reset cannot be demonstrated"
+  echo "        on it this run. Its book is whatever earlier runs left."
+else
 echo "  the cap reads as satisfied, so the same pool can be filled again."
 O_TX=$(tx "$OLD_ENGINE" allocate --admin "$ADMIN" --pool_id "$EXPLOIT_POOL" --amount "$O_CAP2")
 echo "    allocate $O_CAP2   tx $O_TX  <-- SUBMITTED, and it should not have been"
@@ -294,6 +312,7 @@ assert_gt "the pool now holds more than its cap of the book it was capped agains
   "$(q "$USDC" balance --id "$EXPLOIT_POOL")" "$((O_BOOK * EX_CAP / BPS))"
 echo "  Repeating the loop takes the rest. Every call individually inside the cap,"
 echo "  and the real concentration behind one originator bounded by nothing."
+fi
 
 # ---------------------------------------------------------------------------
 echo ""
@@ -302,8 +321,15 @@ echo "== M1, PART B: the same sequence against the fixed contracts =="
 # whatever the book is already carrying. Depositing X raises free reserves and
 # the floor's base by X, so it raises the floor's headroom by 0.75X and the
 # cap's by 0.4X, and there is always an X that puts the cap underneath.
+# Measured on accounted free reserves and not on free_reserves. The Engine
+# checks a release against what the Vault can account for, so sizing this
+# against the raw balance overstates the room by whatever reached the Vault
+# without its books being told, and the allocation that was supposed to be
+# stopped by the cap gets stopped by liquidity instead, with error 411 where
+# 407 was expected. The refusal is then the floor wearing the cap's name, which
+# is exactly what this sizing exists to prevent.
 N_CHARGED0=$(q0 "$ENGINE" charged_exposure --pool_id "$PC")
-NEED=$(python3 - "$(q0 "$VAULT" free_reserves)" "$(q0 "$VAULT" deployed_capital)" \
+NEED=$(python3 - "$(q0 "$VAULT" accounted_free_reserves)" "$(q0 "$VAULT" deployed_capital)" \
   "$(q0 "$VAULT" floor_base)" "$N_CHARGED0" "$FLOOR" "$POOL_CAP" <<'PY'
 import sys
 free, dep, base, charged, floor, cap = (int(x) for x in sys.argv[1:])
@@ -325,7 +351,7 @@ PY
 if [ "${NEED:-0}" -gt 0 ]; then
   echo "    deposit $NEED   tx $(tx "$VAULT" deposit --from "$ADMIN" --amount "$NEED")"
 fi
-N_FREE=$(q0 "$VAULT" free_reserves)
+N_FREE=$(q0 "$VAULT" accounted_free_reserves)
 N_DEP=$(q0 "$VAULT" deployed_capital)
 N_BASE=$(q0 "$VAULT" floor_base)
 N_TOTAL=$((N_FREE + N_DEP))
@@ -337,8 +363,14 @@ N_WOP0=$(q0 "$ENGINE" written_off_pool --pool_id "$PC")
 echo "    allocate $LEG    tx $(tx "$ENGINE" allocate --admin "$ADMIN" --pool_id "$PC" --amount "$LEG")"
 refused 407 "the pool is full: one more stroop is refused by the cap" \
   "$ENGINE" allocate --admin "$ADMIN" --pool_id "$PC" --amount 1
-assert_eq "charged exposure equals live exposure while nothing is written off" \
-  "$(q "$ENGINE" charged_exposure --pool_id "$PC")" "$(q "$ENGINE" get_exposure --pool_id "$PC")"
+# charged_exposure is live exposure plus what that pool has written off and not
+# recovered. The two coincide only on a pool that has never taken a loss, and
+# this one carries losses from earlier runs, so the invariant is asserted rather
+# than the coincidence: that difference is the whole reason a write-down cannot
+# reopen a cap.
+assert_eq "charged exposure is live exposure plus what this pool has written off" \
+  "$(q "$ENGINE" charged_exposure --pool_id "$PC")" \
+  "$(( $(q0 "$ENGINE" get_exposure --pool_id "$PC") + $(q0 "$ENGINE" written_off_pool --pool_id "$PC") ))"
 
 echo "  write the position off. Same call, same absence of cash movement."
 echo "    write_down       tx $(tx "$ENGINE" write_down --admin "$ADMIN" --pool_id "$PC" --amount "$LEG" --reason DEFAULT)"
@@ -501,8 +533,29 @@ for pair in "vault:$VAULT:vault.wasm" "agusd:$AGUSD:agusd_core.wasm" \
   loc=$(shasum -a 256 "target/wasm32v1-none/release/$wasm" 2>/dev/null | cut -d' ' -f1)
   if [ -n "$on" ] && [ "$on" = "$loc" ]; then
     ok "$name on the ledger is byte for byte what this tree builds"
+  elif python3 -c "
+import json, sys
+d = json.load(open('$DEP'))
+sys.exit(0 if any(e['contract'] == '$name' or e['contract'].endswith('.$name')
+                  for e in d.get('pendingRedeployment', [])) else 1)
+" 2>/dev/null; then
+    # A divergence the record declares is a statement with a reason attached,
+    # and this check has no business overruling it. It does have business
+    # checking that the declaration is not covering a code change, so the
+    # sections are compared rather than the module hash: Soroban puts doc
+    # comments in contractspecv0, so correcting a comment moves the hash while
+    # the code section stays identical. That is a different fact from the code
+    # having changed, and only one of the two is allowed here.
+    DIFFS=$(python3 scripts/wasm-sections.py /tmp/agama-onchain.wasm 2>/dev/null | sort > /tmp/agama-sec-on.txt;
+            python3 scripts/wasm-sections.py "target/wasm32v1-none/release/$wasm" 2>/dev/null | sort > /tmp/agama-sec-loc.txt;
+            comm -3 /tmp/agama-sec-on.txt /tmp/agama-sec-loc.txt | awk -F'|' '{print $1 "/" $2}' | sort -u | tr '\n' ' ')
+    if echo "$DIFFS" | grep -q '^10/\|[^0-9]10/'; then
+      bad "$name is declared as pending redeployment, but the difference reaches the code section"
+    else
+      ok "$name differs and the record declares it, outside the code section ($DIFFS)"
+    fi
   else
-    bad "$name differs: ledger ${on:0:16} against local ${loc:0:16}"
+    bad "$name differs and nothing declares it: ledger ${on:0:16} against local ${loc:0:16}"
   fi
 done
 
