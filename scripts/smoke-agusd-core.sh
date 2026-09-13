@@ -127,6 +127,14 @@ echo "  usdc                 $USDC"
 echo "  allocation-engine    $ENGINE"
 echo "  staking (sagUSD)     $STAKING"
 
+
+# Every suite here assumes a book roughly at rest and none of them establishes
+# one, so the first in a run gets what it expects and the rest get whatever the
+# previous one left. Established once, here, rather than tolerated assertion by
+# assertion. See lib-baseline.sh.
+# shellcheck source=lib-baseline.sh
+. "$(dirname "$0")/lib-baseline.sh"
+normalise_book "$VAULT" "$ENGINE" "$USDC" "$SRC" "$NET" "$ADMIN"
 echo ""
 echo "== WIRING: the Vault mints the token that names the Vault =="
 assert_eq "the Vault's agUSD is agusd-core" "$(q "$VAULT" agusd)" "$AGUSD_CORE"
