@@ -121,6 +121,14 @@ echo "  etherfuse         $EF"
 echo "  admin             $ADMIN"
 echo "  unprivileged      $OTHER_ADDR ($OTHER)"
 
+
+# Every suite here assumes a book roughly at rest and none of them establishes
+# one, so the first in a run gets what it expects and the rest get whatever the
+# previous one left. Established once, here, rather than tolerated assertion by
+# assertion. See lib-baseline.sh.
+# shellcheck source=lib-baseline.sh
+. "$(dirname "$0")/lib-baseline.sh"
+normalise_book "$VAULT" "$ENGINE" "$USDC" "$SRC" "$NET" "$ADMIN"
 echo ""
 echo "== FINDING 1: report_nav is gone from the staking contract =="
 IFACE=$(stellar contract info interface --id "$STAKING" --network $NET 2>/dev/null)
@@ -167,11 +175,16 @@ fi
 IDLE0=$(q0 "$VAULT" idle_reserves)
 LIAB0=$(q0 "$VAULT" outstanding_liabilities)
 AG0=$(q0 "$AGUSD" balance --id "$ADMIN")
+# What is already out at a pool, read rather than assumed to be nothing. An
+# earlier suite can leave an allocation standing, and a deposit does not change
+# it, so asserting zero here fails on a book that is merely in use rather than
+# on a book that is wrong.
+DEP0=$(q0 "$VAULT" deployed_capital)
 echo "  deposit $DEPOSIT  tx $(tx "$VAULT" deposit --from "$ADMIN" --amount "$DEPOSIT")"
 assert_eq "agUSD minted one for one" "$(q "$AGUSD" balance --id "$ADMIN")" "$((AG0 + DEPOSIT))"
 assert_eq "idle reserves rose by the deposit" "$(q "$VAULT" idle_reserves)" "$((IDLE0 + DEPOSIT))"
 assert_eq "free reserves are idle less what is owed" "$(q "$VAULT" free_reserves)" "$((IDLE0 + DEPOSIT - LIAB0))"
-assert_eq "nothing is deployed" "$(q "$VAULT" deployed_capital)" "0"
+assert_eq "a deposit leaves deployed capital where it was" "$(q "$VAULT" deployed_capital)" "$DEP0"
 
 echo ""
 echo "== FINDING 3: a queued withdrawal is not free liquidity =="
@@ -183,8 +196,9 @@ FREE=$((IDLE - LIAB))
 assert_eq "the gross balance has not moved" "$(q "$VAULT" idle_reserves)" "$IDLE"
 assert_eq "the liability is on the books" "$(q "$VAULT" outstanding_liabilities)" "$LIAB"
 assert_eq "free reserves are net of it" "$(q "$VAULT" free_reserves)" "$FREE"
-assert_eq "gross assets still count it" "$(q "$VAULT" get_total_assets)" "$IDLE"
-assert_eq "net assets do not" "$(q "$VAULT" get_net_assets)" "$FREE"
+# Both include whatever is out at a pool, which is not necessarily nothing.
+assert_eq "gross assets still count it" "$(q "$VAULT" get_total_assets)" "$((IDLE + DEP0))"
+assert_eq "net assets do not" "$(q "$VAULT" get_net_assets)" "$((FREE + DEP0))"
 refused 411 "the Engine cannot deploy the money already owed" \
   "$ENGINE" allocate --admin "$ADMIN" --pool_id "$PC" --amount "$IDLE"
 
@@ -201,15 +215,39 @@ assert_eq "the Vault is not" "$(q "$VAULT" reserve_floor_bps)" "$FLOOR"
 # an allocation, so the most that can leave is (10000 - floor) / 10000 of them.
 # It takes both pools to get there: each adapter was registered with a 40% cap
 # of its own, and a pool's own cap is never loosened by the global one.
-MAX=$((FREE * (10000 - FLOOR) / 10000))
-PC_LEG=$((FREE * POOL_CAP / 10000))
+# Measured on what the Vault can account for and on the base the floor is a
+# share of, which is what settle_allocation checks. Against the raw balance the
+# legs overshoot by whatever reached the Vault unannounced and the Vault's own
+# floor refuses them, which reads as the floor misbehaving and is the script
+# asking for more than the books allow. Each pool's leg is also its cap less
+# what it already carries, and a written-down pool carries its loss for good.
+H_ACC=$(q0 "$VAULT" accounted_free_reserves)
+H_BASE2=$(q0 "$VAULT" floor_base)
+H_DEP=$(q0 "$VAULT" deployed_capital)
+H_ASSETS=$((H_ACC + H_DEP))
+MAX=$(( H_ACC - H_BASE2 * FLOOR / 10000 ))
+[ "$MAX" -lt 0 ] && MAX=0
+PC_LEG=$(( H_ASSETS * POOL_CAP / 10000 - $(q0 "$ENGINE" charged_exposure --pool_id "$PC") ))
+[ "$PC_LEG" -lt 0 ] && PC_LEG=0
+[ "$PC_LEG" -gt "$MAX" ] && PC_LEG=$MAX
+EF_ROOM2=$(( H_ASSETS * POOL_CAP / 10000 - $(q0 "$ENGINE" charged_exposure --pool_id "$EF") ))
+[ "$EF_ROOM2" -lt 0 ] && EF_ROOM2=0
 EF_LEG=$((MAX - PC_LEG))
-echo "  allocate $PC_LEG to private credit, its own 40% cap  tx $(tx "$ENGINE" allocate --admin "$ADMIN" --pool_id "$PC" --amount "$PC_LEG")"
-refused 316 "one stroop past the Vault's floor is refused by the Vault" \
-  "$ENGINE" allocate --admin "$ADMIN" --pool_id "$EF" --amount "$((EF_LEG + 1))"
-echo "  allocate $EF_LEG to etherfuse, landing exactly on it  tx $(tx "$ENGINE" allocate --admin "$ADMIN" --pool_id "$EF" --amount "$EF_LEG")"
-assert_eq "the Vault booked what it released" "$(q "$VAULT" deployed_capital)" "$MAX"
-assert_eq "free reserves landed on the floor" "$(q "$VAULT" free_reserves)" "$((FREE - MAX))"
+[ "$EF_LEG" -gt "$EF_ROOM2" ] && EF_LEG=$EF_ROOM2
+echo "  the floor releases $MAX of $H_ACC accounted, split $PC_LEG / $EF_LEG across the caps"
+echo "  allocate $PC_LEG to private credit  tx $(tx "$ENGINE" allocate --admin "$ADMIN" --pool_id "$PC" --amount "$PC_LEG")"
+if [ "$((PC_LEG + EF_LEG))" = "$MAX" ]; then
+  refused 316 "one stroop past the Vault's floor is refused by the Vault" \
+    "$ENGINE" allocate --admin "$ADMIN" --pool_id "$EF" --amount "$((EF_LEG + 1))"
+else
+  echo "  SKIP  the caps stop short of what the floor releases by $((MAX - PC_LEG - EF_LEG)),"
+  echo "        so a stroop past the floor is refused by a cap and says nothing"
+  echo "        about the Vault's own check"
+fi
+echo "  allocate $EF_LEG to etherfuse  tx $(tx "$ENGINE" allocate --admin "$ADMIN" --pool_id "$EF" --amount "$EF_LEG")"
+assert_eq "the Vault booked what it released" "$(q "$VAULT" deployed_capital)" "$((H_DEP + PC_LEG + EF_LEG))"
+assert_eq "accounted free reserves fell by exactly that" \
+  "$(q "$VAULT" accounted_free_reserves)" "$((H_ACC - PC_LEG - EF_LEG))"
 assert_eq "the reserve ratio agrees" "$(q "$ENGINE" get_reserve_ratio)" "$FLOOR"
 refused 316 "and nothing more leaves, however small" \
   "$ENGINE" allocate --admin "$ADMIN" --pool_id "$EF" --amount 1

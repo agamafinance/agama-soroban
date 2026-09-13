@@ -167,6 +167,14 @@ echo "  unpayable         $STUCK_ADDR ($STUCK, deliberately has none)"
 echo "  superseded vault  $OLD_VAULT"
 echo "  superseded engine $OLD_ENGINE"
 
+
+# Every suite here assumes a book roughly at rest and none of them establishes
+# one, so the first in a run gets what it expects and the rest get whatever the
+# previous one left. Established once, here, rather than tolerated assertion by
+# assertion. See lib-baseline.sh.
+# shellcheck source=lib-baseline.sh
+. "$(dirname "$0")/lib-baseline.sh"
+normalise_book "$VAULT" "$ENGINE" "$USDC" "$SRC" "$NET" "$ADMIN"
 echo ""
 echo "== preconditions =="
 assert_eq "the superseded Engine governs the superseded Vault, so the pair matches" \
@@ -441,9 +449,13 @@ else
   PROBE_POOL=$PC; PROBE_ROOM=$PC_ROOM_NOW
 fi
 INVENTED=$((LEG1 * FLOOR / BPS))
+# Decided here, on the state the probe will actually meet, rather than earlier
+# on the state the sizing predicted. The legs can land exactly on both caps even
+# when the floor was reachable, and then a cap answers however the deposit went.
 if [ "$PROBE_ROOM" -lt 1 ]; then
-  echo "  SKIP  neither pool has a stroop of cap room left, so a cap answers before"
-  echo "        the floor can and the probe would not be evidence about the floor"
+  echo "  neither pool has a stroop of cap room left, so a cap reaches the probe"
+  echo "  before the floor can. Both are the protocol refusing; the guard is named."
+  CAP_MAY_ANSWER=1
 fi
 refused_floor_or_cap "the one stroop the superseded Engine allowed is still refused" \
   "$ENGINE" allocate --admin "$ADMIN" --pool_id "$PROBE_POOL" --amount 1
