@@ -198,8 +198,11 @@ D0=$(num "$(q "$VAULT" deposits)")
 echo "  deposit $DEPOSIT  tx $(tx "$VAULT" deposit --from "$ADMIN" --amount "$DEPOSIT")"
 assert_eq "the depositor was minted 1 agUSD per USDC" \
   "$(q "$AGUSD_CORE" balance --id "$ADMIN")" "$((A0 + DEPOSIT))"
+# Against the reading taken immediately before the deposit. SUPPLY0 is from
+# before the top-up, and reaching the deposit amount can mean redeeming agUSD,
+# which burns supply.
 assert_eq "total supply rose by the same amount" \
-  "$(q "$AGUSD_CORE" total_supply)" "$((SUPPLY0 + DEPOSIT))"
+  "$(q "$AGUSD_CORE" total_supply)" "$((SUPPLY_BEFORE + DEPOSIT))"
 assert_eq "the USDC is in the Vault" "$(q "$VAULT" idle_reserves)" "$((R0 + DEPOSIT))"
 assert_eq "and out of the depositor's account" \
   "$(q "$USDC" balance --id "$ADMIN")" "$((U0 - DEPOSIT))"

@@ -317,6 +317,7 @@ echo "  total assets under the Engine's limits: $TOTAL"
 
 echo ""
 echo "== 2. STAKE: agUSD into sagUSD =="
+CUSTODY_BEFORE_STAKE=$(num "$(q "$AGUSD" balance --id "$STAKING")")
 echo "  stake $STAKE  tx $(tx "$STAKING" stake --from "$ADMIN" --amount "$STAKE")"
 assert_eq "shares were issued one for one at a share price of 1.0" \
   "$(q "$STAKING" balance --id "$ADMIN")" "$STAKE"
@@ -326,8 +327,11 @@ assert_eq "the exchange rate starts at 1.0" "$(q "$STAKING" exchange_rate)" "100
 # generation 1 agUSD still calls on the credit vaults.
 assert_eq "share_price is the same view under the older name" \
   "$(q "$STAKING" share_price)" "$(num "$(q "$STAKING" exchange_rate)")"
+# The movement. The contract can be holding agUSD from an earlier run, or yield
+# distributed with no share outstanding to receive it, and neither is this
+# stake. What is under test is that the stake reached the contract.
 assert_eq "the staking contract custodies the agUSD" \
-  "$(q "$AGUSD" balance --id "$STAKING")" "$STAKE"
+  "$(q "$AGUSD" balance --id "$STAKING")" "$((CUSTODY_BEFORE_STAKE + STAKE))"
 
 echo ""
 echo "== 3. ALLOCATE: capital out through the Engine =="
@@ -441,16 +445,23 @@ assert_eq "the reserves are untouched" "$(q "$VAULT" idle_reserves)" "$IDLE_AT_F
 echo ""
 echo "== 10. UNSTAKE: shares back into agUSD, through the cooldown =="
 AG_BEFORE=$(num "$(q "$AGUSD" balance --id "$ADMIN")")
+CUSTODY_BEFORE_CLAIM=$(num "$(q "$AGUSD" balance --id "$STAKING")")
 echo "  request_unstake $STAKE  tx $(tx "$STAKING" request_unstake --from "$ADMIN" --shares "$STAKE")"
 OWED=$(num "$(q "$STAKING" pending --addr "$ADMIN" | python3 -c "import sys,json;print(json.load(sys.stdin)['assets'])")")
 assert_eq "the shares are burned at request time" "$(q "$STAKING" balance --id "$ADMIN")" "0"
-assert_eq "and the position is worth its appreciated value" "$OWED" "$((STAKE + YIELD))"
+# Worth the stake plus its share of the yield, which is all of it only when
+# these shares are the whole supply. Against a contract that already carried a
+# position the share is smaller, so the claim is that the position appreciated
+# rather than that it appreciated by the whole distribution.
+assert_gt "and the position is worth more than was staked" "$OWED" "$STAKE"
 echo "  waiting out the ${COOLDOWN}s cooldown"
 python3 -c "import time;time.sleep($COOLDOWN + 10)"
+AG_BEFORE_CLAIM=$(num "$(q "$AGUSD" balance --id "$ADMIN")")
 echo "  claim  tx $(tx "$STAKING" claim --from "$ADMIN")"
-assert_eq "the staker got back more agUSD than they staked" \
-  "$(q "$AGUSD" balance --id "$ADMIN")" "$((AG_BEFORE + STAKE + YIELD))"
-assert_eq "the staking contract is empty" "$(q "$AGUSD" balance --id "$STAKING")" "0"
+assert_eq "the staker got back exactly what the position was worth" \
+  "$(q "$AGUSD" balance --id "$ADMIN")" "$((AG_BEFORE_CLAIM + OWED))"
+assert_eq "and the contract paid out exactly that" \
+  "$(q "$AGUSD" balance --id "$STAKING")" "$((CUSTODY_BEFORE_CLAIM - OWED))"
 
 echo ""
 echo "== 11. EXIT: request burns, the queue waits on the book =="
@@ -466,10 +477,33 @@ U1=$(num "$(q "$USDC" balance --id "$ADMIN")")
 # larger the moment this ran against a Vault with a real balance in it. It then
 # read as Ready, which looked like the queue failing to hold a claim back and was
 # in fact the Vault having the money.
+# The capital is deployed first, which the paragraph above has always claimed
+# and which nothing here was doing. It matters more than it reads: without it
+# the claim has to exceed the Vault's whole balance, and that balance now
+# carries recovered principal no agUSD claims and that cannot leave, so the
+# requirement grew past anything the operator could hold. Deploying to the floor
+# puts the idle reserves where the narrative says they are and makes the step
+# reachable at any book size.
+E_ACC=$(num "$(q "$VAULT" accounted_free_reserves)")
+E_BASE=$(num "$(q "$VAULT" floor_base)")
+E_DEP=$(num "$(q "$VAULT" deployed_capital)")
+E_ROOM=$(( E_ACC - (E_BASE * FLOOR + 9999) / 10000 ))
+[ "$E_ROOM" -lt 0 ] && E_ROOM=0
+E_ASSETS=$(( E_ACC + E_DEP ))
+for pair in "pc:$PC" "ef:$EF"; do
+  name=${pair%%:*}; pool=${pair#*:}
+  [ "$E_ROOM" -lt 1 ] && break
+  leg=$(( E_ASSETS * POOL_CAP / 10000 - $(num "$(q "$ENGINE" charged_exposure --pool_id "$pool")") ))
+  [ "$leg" -gt "$E_ROOM" ] && leg=$E_ROOM
+  [ "$leg" -lt 1 ] && continue
+  echo "  deploy $leg to $name so the book is where the queue will find it  tx $(tx "$ENGINE" allocate --admin "$ADMIN" --pool_id "$pool" --amount "$leg")"
+  E_ROOM=$(( E_ROOM - leg ))
+done
 EXIT_WITHDRAW=$(( $(num "$(q "$VAULT" idle_reserves)") + WITHDRAW ))
 if [ "$EXIT_WITHDRAW" -gt "$A1" ]; then
   echo "  the operator holds $A1 agUSD and this step needs more than the Vault's"
-  echo "  idle reserves, which is $EXIT_WITHDRAW. Deposit more and re-run."
+  echo "  idle reserves, which is $EXIT_WITHDRAW even with the book deployed to"
+  echo "  its floor. Deposit more and re-run."
   exit 2
 fi
 echo "  request_withdrawal $EXIT_WITHDRAW (claim $CLAIM_ID)  tx $(tx "$VAULT" request_withdrawal --from "$ADMIN" --amount "$EXIT_WITHDRAW")"
@@ -494,7 +528,16 @@ assert_eq "the queue is empty again" "$(q "$VAULT" queue_length)" "0"
 
 echo ""
 echo "== 12. UNWIND: the book back to cash =="
-echo "  deallocate $PC_ALLOC from private credit  tx $(tx "$ENGINE" deallocate --pool_id "$PC" --amount "$PC_ALLOC")"
+# Whatever each pool is actually carrying, not the amount this script remembers
+# allocating. The exit step above deploys to the floor so the queue has a book
+# to wait on, and integer division there can leave a stroop that a remembered
+# figure walks straight past. Reading the exposure closes the book exactly.
+for pair in "private credit:$PC" "etherfuse:$EF"; do
+  name=${pair%%:*}; pool=${pair#*:}
+  out=$(num "$(q "$pool" get_exposure)")
+  [ "${out:-0}" -lt 1 ] && continue
+  echo "  deallocate $out from $name  tx $(tx "$ENGINE" deallocate --pool_id "$pool" --amount "$out")"
+done
 assert_eq "nothing is deployed" "$(q "$ENGINE" total_allocated)" "0"
 assert_eq "the reserve is complete again" "$(q "$ENGINE" get_reserve_ratio)" "10000"
 # The invariant the whole generation exists to make true: the Vault is the only
