@@ -82,8 +82,20 @@ q() {
   echo "$out"
 }
 # State changing: submitted, and the transaction hash is echoed.
-tx() { stellar contract invoke --id "$1" --source $SRC --network $NET -- "${@:2}" 2>&1 \
-         | grep -oE '[0-9a-f]{64}' | head -1; }
+# A transaction that failed must not print a transaction hash. This scraped the
+# first 64 hex characters out of combined stdout and stderr, and a failure
+# prints diagnostic events full of them, so a refused call came back looking
+# exactly like a successful one. The script then carried on against a state
+# that had not changed, and the failure surfaced three assertions later as a
+# number nobody could explain. It says "failed" and the contract error now.
+tx() {
+  local out
+  if out=$(stellar contract invoke --id "$1" --source $SRC --network $NET -- "${@:2}" 2>&1); then
+    echo "$out" | grep -oE '[0-9a-f]{64}' | head -1
+  else
+    echo "FAILED $(echo "$out" | tr '\n' ' ' | grep -oE '#[0-9]+|TxBadSeq|tx_[A-Z_]+' | head -1)"
+  fi
+}
 # A call that has to be refused, and refused for the stated reason. Simulated
 # only: a refused call is meant to move nothing, so there is nothing to submit.
 # Contract errors surface in simulation, which is what these all are.
@@ -175,6 +187,11 @@ if [ "$U0" -lt "$DEPOSIT" ]; then
   echo "  top up at https://faucet.circle.com (USDC / Stellar Testnet) for $ADMIN"
   exit 2
 fi
+# Read after the top-up above, not before it. Reaching the deposit amount can
+# mean redeeming agUSD, which burns supply and moves the Vault's reserves, so a
+# snapshot taken earlier is stale by exactly what the top-up cost.
+SUPPLY_BEFORE=$(num "$(q "$AGUSD_CORE" total_supply)")
+IDLE_BEFORE=$(num "$(q "$VAULT" idle_reserves)")
 A0=$(num "$(q "$AGUSD_CORE" balance --id "$ADMIN")")
 R0=$(num "$(q "$VAULT" idle_reserves)")
 D0=$(num "$(q "$VAULT" deposits)")

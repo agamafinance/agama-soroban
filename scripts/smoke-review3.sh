@@ -104,8 +104,20 @@ q() {
   echo "$out"
 }
 q0() { q "$@" | tr -d '"'; }
-tx() { stellar contract invoke --id "$1" --source $SRC --network $NET -- "${@:2}" 2>&1 \
-         | grep -oE '[0-9a-f]{64}' | head -1; }
+# A transaction that failed must not print a transaction hash. This scraped the
+# first 64 hex characters out of combined stdout and stderr, and a failure
+# prints diagnostic events full of them, so a refused call came back looking
+# exactly like a successful one. The script then carried on against a state
+# that had not changed, and the failure surfaced three assertions later as a
+# number nobody could explain. It says "failed" and the contract error now.
+tx() {
+  local out
+  if out=$(stellar contract invoke --id "$1" --source $SRC --network $NET -- "${@:2}" 2>&1); then
+    echo "$out" | grep -oE '[0-9a-f]{64}' | head -1
+  else
+    echo "FAILED $(echo "$out" | tr '\n' ' ' | grep -oE '#[0-9]+|TxBadSeq|tx_[A-Z_]+' | head -1)"
+  fi
+}
 refused() {
   local want=$1 label=$2 id=$3; shift 3
   local out

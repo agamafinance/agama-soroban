@@ -82,8 +82,20 @@ q() {
   echo "$out"
 }
 # State changing: submitted, and the transaction hash is echoed.
-tx() { stellar contract invoke --id "$1" --source $SRC --network $NET -- "${@:2}" 2>&1 \
-         | grep -oE '[0-9a-f]{64}' | head -1; }
+# A transaction that failed must not print a transaction hash. This scraped the
+# first 64 hex characters out of combined stdout and stderr, and a failure
+# prints diagnostic events full of them, so a refused call came back looking
+# exactly like a successful one. The script then carried on against a state
+# that had not changed, and the failure surfaced three assertions later as a
+# number nobody could explain. It says "failed" and the contract error now.
+tx() {
+  local out
+  if out=$(stellar contract invoke --id "$1" --source $SRC --network $NET -- "${@:2}" 2>&1); then
+    echo "$out" | grep -oE '[0-9a-f]{64}' | head -1
+  else
+    echo "FAILED $(echo "$out" | tr '\n' ' ' | grep -oE '#[0-9]+|TxBadSeq|tx_[A-Z_]+' | head -1)"
+  fi
+}
 
 echo "== deployment under test =="
 echo "  sagUSD staking     $STAKING"
@@ -209,19 +221,29 @@ OWED=$(num "$(q "$STAKING" pending --addr "$ADMIN" \
   | python3 -c "import sys,json;print(json.load(sys.stdin)['assets'])")")
 assert_eq "the shares are burned at request time" "$(q "$STAKING" balance --id "$ADMIN")" "0"
 assert_gt "and the position is worth more than was staked" "$OWED" "$STAKE"
-if [ -z "$(tx "$STAKING" claim --from "$ADMIN")" ]; then
-  ok "the cooldown holds: claim is refused before it elapses"
-else
-  bad "claim paid out before the cooldown elapsed"
-fi
+# tx() reports a refusal as FAILED with the contract error rather than as an
+# empty string, so that a call that did nothing cannot be mistaken for one that
+# worked. This check reads that marker; it used to read emptiness, which meant
+# the day the helper started saying why, a refused claim looked like a paid one.
+case "$(tx "$STAKING" claim --from "$ADMIN")" in FAILED*|"")
+    ok "the cooldown holds: claim is refused before it elapses" ;;
+  *)
+    bad "claim paid out before the cooldown elapsed" ;;
+esac
 echo "  waiting out the ${COOLDOWN}s cooldown"
 python3 -c "import time;time.sleep($COOLDOWN + 10)"
+# Read immediately before the claim rather than before the request. Everything
+# between the two is a step that can move agUSD, and a snapshot taken at the
+# start of the sequence is stale by whatever happened in it; the movement is
+# what this asserts.
+A_BEFORE_CLAIM=$(num "$(q "$AGUSD" balance --id "$ADMIN")")
+CUSTODY_BEFORE_CLAIM=$(num "$(q "$AGUSD" balance --id "$STAKING")")
 echo "  claim  tx $(tx "$STAKING" claim --from "$ADMIN")"
 assert_eq "the staker got back the appreciated value" \
-  "$(q "$AGUSD" balance --id "$ADMIN")" "$((A1 + OWED))"
+  "$(q "$AGUSD" balance --id "$ADMIN")" "$((A_BEFORE_CLAIM + OWED))"
 assert_gt "which is more agUSD than was staked" "$((OWED))" "$STAKE"
-assert_eq "the contract is back to holding what it started with" \
-  "$(q "$AGUSD" balance --id "$STAKING")" "$CUSTODY0"
+assert_eq "the contract paid out exactly what it owed" \
+  "$(q "$AGUSD" balance --id "$STAKING")" "$((CUSTODY_BEFORE_CLAIM - OWED))"
 assert_eq "and the rate is back to par with no shares outstanding" \
   "$(q "$STAKING" exchange_rate)" "10000000"
 

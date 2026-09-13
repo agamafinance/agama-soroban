@@ -89,8 +89,20 @@ q() {
   echo "$out"
 }
 # State changing: submitted, and the transaction hash is echoed.
-tx() { stellar contract invoke --id "$1" --source $SRC --network $NET -- "${@:2}" 2>&1 \
-         | grep -oE '[0-9a-f]{64}' | head -1; }
+# A transaction that failed must not print a transaction hash. This scraped the
+# first 64 hex characters out of combined stdout and stderr, and a failure
+# prints diagnostic events full of them, so a refused call came back looking
+# exactly like a successful one. The script then carried on against a state
+# that had not changed, and the failure surfaced three assertions later as a
+# number nobody could explain. It says "failed" and the contract error now.
+tx() {
+  local out
+  if out=$(stellar contract invoke --id "$1" --source $SRC --network $NET -- "${@:2}" 2>&1); then
+    echo "$out" | grep -oE '[0-9a-f]{64}' | head -1
+  else
+    echo "FAILED $(echo "$out" | tr '\n' ' ' | grep -oE '#[0-9]+|TxBadSeq|tx_[A-Z_]+' | head -1)"
+  fi
+}
 # State changing, signed by the unprivileged identity.
 tx_other() { stellar contract invoke --id "$1" --source $OTHER --network $NET -- "${@:2}" 2>&1 \
          | grep -oE '[0-9a-f]{64}' | head -1; }
@@ -225,7 +237,13 @@ H_ACC=$(q0 "$VAULT" accounted_free_reserves)
 H_BASE2=$(q0 "$VAULT" floor_base)
 H_DEP=$(q0 "$VAULT" deployed_capital)
 H_ASSETS=$((H_ACC + H_DEP))
-MAX=$(( H_ACC - H_BASE2 * FLOOR / 10000 ))
+# What the floor keeps, rounded up. The contract asks that free reserves times
+# 10000 be at least floor_bps times the base, so when the quarter is not whole
+# the integer division here keeps one stroop too few and the leg computed from
+# it is one stroop too many. The Vault then refuses, correctly, and it reads as
+# the floor misbehaving.
+H_KEEP=$(( (H_BASE2 * FLOOR + 9999) / 10000 ))
+MAX=$(( H_ACC - H_KEEP ))
 [ "$MAX" -lt 0 ] && MAX=0
 PC_LEG=$(( H_ASSETS * POOL_CAP / 10000 - $(q0 "$ENGINE" charged_exposure --pool_id "$PC") ))
 [ "$PC_LEG" -lt 0 ] && PC_LEG=0
@@ -298,7 +316,7 @@ IDLE=$(q0 "$VAULT" idle_reserves)
 H_FREE=$(q0 "$VAULT" accounted_free_reserves)
 H_BASE=$(q0 "$VAULT" floor_base)
 H_TOTAL=$(( H_FREE + $(q0 "$VAULT" deployed_capital) ))
-H_ROOM=$(( H_FREE - H_BASE * FLOOR / 10000 ))
+H_ROOM=$(( H_FREE - (H_BASE * FLOOR + 9999) / 10000 ))
 H_POOL=$(( H_TOTAL * POOL_CAP / 10000 - $(q0 "$ENGINE" charged_exposure --pool_id "$PC") ))
 ALLOC=$(( H_ROOM < H_POOL ? H_ROOM : H_POOL ))
 [ "$ALLOC" -lt 0 ] && ALLOC=0
@@ -390,7 +408,13 @@ HELD0=$(q0 "$AGUSD" balance --id "$STAKING")
 STAKE=$CLAIM_AMOUNT
 echo "  stake $STAKE           tx $(tx "$STAKING" stake --from "$ADMIN" --amount "$STAKE")"
 assert_eq "the NAV rose by the stake" "$(q "$STAKING" nav)" "$((NAV0 + STAKE))"
-assert_eq "and it is the agUSD actually held" "$(q "$STAKING" nav)" "$((HELD0 + STAKE))"
+# The movement, not the total. nav is what this contract is accountable for and
+# the balance is what it holds, and the two part company the moment anybody
+# transfers agUSD to it directly, which nothing forbids and which is the same
+# unannounced arrival the Vault's own accounting is built to ignore. What is
+# under test is that a stake moves both by the same amount.
+assert_eq "and the agUSD actually held rose by the same" \
+  "$(q "$AGUSD" balance --id "$STAKING")" "$((HELD0 + STAKE))"
 echo "  distribute_yield $WRITE_OFF  tx $(tx "$STAKING" distribute_yield --amount "$WRITE_OFF")"
 assert_eq "the NAV rose by exactly what arrived" "$(q "$STAKING" nav)" "$((NAV0 + STAKE + WRITE_OFF))"
 assert_eq "and the agUSD is really there" "$(q "$AGUSD" balance --id "$STAKING")" "$((HELD0 + STAKE + WRITE_OFF))"
