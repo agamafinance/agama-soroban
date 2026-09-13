@@ -183,6 +183,7 @@ echo ""
 echo "== 1. STAKE: agUSD into sagUSD =="
 A0=$(num "$(q "$AGUSD" balance --id "$ADMIN")")
 SHARES0=$(num "$(q "$STAKING" total_shares)")
+NAV0=$(num "$(q "$STAKING" nav)")
 CUSTODY0=$(num "$(q "$AGUSD" balance --id "$STAKING")")
 RATE0=$(num "$(q "$STAKING" exchange_rate)")
 echo "  stake $STAKE  tx $(tx "$STAKING" stake --from "$ADMIN" --amount "$STAKE")"
@@ -193,7 +194,19 @@ assert_eq "the staking contract custodies the agUSD" \
   "$(q "$AGUSD" balance --id "$STAKING")" "$((CUSTODY0 + STAKE))"
 assert_eq "and it left the staker's account" \
   "$(q "$AGUSD" balance --id "$ADMIN")" "$((A0 - STAKE))"
-assert_eq "staking does not move the rate" "$(q "$STAKING" exchange_rate)" "$RATE0"
+# A stake buys shares at the rate showing, so it leaves the rate where it was.
+# The one exception is a contract with no shares and a nav above zero, yield
+# distributed with nothing outstanding to receive it: the first stake back in
+# absorbs it, and the rate rises by exactly that. Asserted rather than skipped,
+# because it is arithmetic and not an excuse.
+NAV_NOW=$(num "$(q "$STAKING" nav)")
+SHARES_NOW=$(num "$(q "$STAKING" total_shares)")
+if [ "$SHARES0" = "0" ] && [ "$NAV0" != "0" ]; then
+  assert_eq "the first stake back in absorbs the orphaned yield" \
+    "$(q "$STAKING" exchange_rate)" "$((NAV_NOW * 10000000 / SHARES_NOW))"
+else
+  assert_eq "staking does not move the rate" "$(q "$STAKING" exchange_rate)" "$RATE0"
+fi
 
 echo ""
 echo "== 2. DISTRIBUTE_YIELD: the exchange rate rises =="

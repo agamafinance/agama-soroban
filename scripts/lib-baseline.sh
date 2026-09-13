@@ -14,9 +14,34 @@
 # that adapter already stores. Both are ordinary operator calls.
 #
 #   normalise_book <vault> <engine> <usdc> <source> <network> <admin>
+# Only one suite at a time, per source account.
+#
+# Two of these running together submit from the same account and collide on its
+# sequence number: calls fail with TxBadSeq, reads come back empty, and one
+# empty read poisons everything after it because the Vault address is itself
+# read from the Engine. It looks exactly like a protocol failure and is not.
+# It has happened twice, both times by running one suite while a whole chain was
+# still going in the background, so it is a lock rather than a warning.
+_acquire_suite_lock() {
+  local src=$1 lock="/tmp/agama-smoke-$1.lock" holder
+  if ! mkdir "$lock" 2>/dev/null; then
+    holder=$(cat "$lock/owner" 2>/dev/null || echo "unknown")
+    echo "  another suite is already running against $src (started by $holder)." >&2
+    echo "  Two at once collide on the account's sequence number and both report" >&2
+    echo "  failures that are not real. Wait for it, or remove $lock if it is stale." >&2
+    return 1
+  fi
+  echo "pid $$ at $(date -u +%H:%M:%S)" > "$lock/owner"
+  # Released however the script ends, including on a failed assertion.
+  trap 'rm -rf "/tmp/agama-smoke-'"$src"'.lock"' EXIT
+  return 0
+}
+
 normalise_book() {
   local VAULT=$1 ENGINE=$2 USDC=$3 SRC=$4 NET=$5 ADMIN=$6
   local pools p exp held dep
+
+  _acquire_suite_lock "$SRC" || exit 3
 
   _nb_q() { stellar contract invoke --id "$1" --source "$SRC" --network "$NET" --send=no -- "${@:2}" 2>/dev/null | tr -d '"'; }
   _nb_tx() { stellar contract invoke --id "$1" --source "$SRC" --network "$NET" -- "${@:2}" >/dev/null 2>&1; }
