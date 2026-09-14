@@ -33,7 +33,8 @@
 #   5. the Engine moves before the Vault points back at it, because
 #      Vault::set_engine requires the Engine to already govern this Vault
 #   6. the adapters follow, then the registry is rebuilt on them
-#   7. staking takes the new token, which it can only do while empty
+#   7. staking is redeployed on the new token, because its set_agusd guard
+#      freezes at the first stake and cannot be thawed by emptying it
 #   8. a full round trip on the result, or none of it is worth anything
 #
 # The block above is the first run's motivation. Every later run has its own,
@@ -168,7 +169,22 @@ echo "    request_withdrawal  claim $CLAIM"
 echo "    claim_withdrawal    tx $(tx "$OLD_VAULT" claim_withdrawal --from "$ADMIN" --claim_id "$CLAIM")"
 fi
 assert_eq "the old agUSD retires at zero supply" "$(q0 "$OLD_AGUSD" total_supply)" "0"
-assert_eq "and the old Vault at zero idle" "$(q0 "$OLD_VAULT" idle_reserves)" "0"
+# Not zero. The first run of this could assert zero because every stroop in that
+# Vault had agUSD behind it. This one holds USDC that does not: recovered
+# capital, booked but never minted against. USDC leaves a Vault through
+# settle_allocation, which reaches an adapter that only ever sends back to the
+# Vault it stores, and through a payout bounded by the agUSD burned to create
+# the claim. There is no third path, deliberately, because a Vault that can pay
+# equity out to an admin is a Vault an admin can empty. So that surplus stays
+# where it is, permanently, and the honest thing is to measure it and write it
+# down rather than assert a zero that is not true.
+STRANDED=$(q0 "$OLD_VAULT" idle_reserves)
+echo "    the old Vault keeps $STRANDED it has no agUSD to release against"
+# What is left has to be exactly what the Vault thinks is left. If the balance
+# and the books disagree at the moment of retirement, the number written into
+# the record as stranded is the wrong number, and nobody would ever find out.
+assert_eq "and its books agree with its balance on what is left" \
+  "$(q0 "$OLD_VAULT" booked_reserves)" "$STRANDED"
 assert_eq "with nothing owed to anybody" "$(q0 "$OLD_VAULT" outstanding_liabilities)" "0"
 
 echo ""
@@ -219,8 +235,26 @@ echo "    register pc         tx $(tx "$ENGINE" register_pool --admin "$ADMIN" -
   --originator "$PC_ORIG" --jurisdiction "$PC_JUR" --cap_bps "$POOL_CAP")"
 echo "    register ef         tx $(tx "$ENGINE" register_pool --admin "$ADMIN" --pool_id "$EF" \
   --originator "$EF_ORIG" --jurisdiction "$EF_JUR" --cap_bps "$POOL_CAP")"
-echo "    staking.set_agusd   tx $(tx "$STAKING" set_agusd --admin "$ADMIN" --agusd "$AGUSD")"
-assert_eq "staking accepts the new token" "$(q0 "$STAKING" agusd)" "$AGUSD"
+# Not set_agusd. That setter cannot succeed here and never could: its guard
+# reads a cumulative stake counter, not the current balance, and its own
+# documentation says why. Unwinding to zero is not the same thing as never
+# having taken custody, and the pending queue can be non-empty while the share
+# supply is nil. So the token pointer freezes at the first stake and never
+# thaws. That is the right property for stakers, and it means a new agUSD
+# generation costs a staking generation, every time. The ten generations before
+# this one were all replaced rather than repointed; only this script believed
+# otherwise, asserted it, and failed.
+OLD_STAKING=$STAKING
+OLD_STAKING_HASH=$(stellar contract fetch --id "$OLD_STAKING" --network "$NET" 2>/dev/null | shasum -a 256 | cut -d' ' -f1)
+STAKING=$(stellar contract deploy --wasm "$WASM/staking.wasm" --source "$SRC" --network "$NET" -- \
+  --admin "$ADMIN" --agusd "$AGUSD" \
+  --cooldown_seconds "$(q0 "$OLD_STAKING" cooldown)" \
+  --decimal "$(q0 "$OLD_STAKING" decimals)" \
+  --name "$(q "$OLD_STAKING" name | tr -d '"')" \
+  --symbol "$(q "$OLD_STAKING" symbol | tr -d '"')" 2>&1 | tail -1)
+echo "    staking redeployed  $STAKING"
+assert_eq "the replacement names the new token" "$(q0 "$STAKING" agusd)" "$AGUSD"
+assert_eq "and it has taken no custody" "$(q0 "$STAKING" stakes)" "0"
 
 echo ""
 echo "=============================================================="
@@ -247,9 +281,14 @@ done
 
 echo ""
 echo "==> writing $DEP"
-python3 - "$DEP" "$VAULT" "$OLD_VAULT" "$AGUSD" "$OLD_AGUSD" "$MIGRATION_REASON" <<'PY'
+OLD_VAULT_HASH=$(stellar contract fetch --id "$OLD_VAULT" --network "$NET" 2>/dev/null | shasum -a 256 | cut -d' ' -f1)
+OLD_AGUSD_HASH=$(stellar contract fetch --id "$OLD_AGUSD" --network "$NET" 2>/dev/null | shasum -a 256 | cut -d' ' -f1)
+python3 - "$DEP" "$VAULT" "$OLD_VAULT" "$AGUSD" "$OLD_AGUSD" "$MIGRATION_REASON" \
+  "${STRANDED:-0}" "$OLD_VAULT_HASH" "$OLD_AGUSD_HASH" \
+  "${STAKING:-}" "${OLD_STAKING:-}" "${OLD_STAKING_HASH:-}" <<'PY'
 import json, sys
-path, vault, old_vault, agusd, old_agusd, REASON = sys.argv[1:]
+(path, vault, old_vault, agusd, old_agusd, REASON, stranded, vhash, ahash,
+ staking, old_staking, staking_hash) = sys.argv[1:]
 dep = json.load(open(path))
 history = dep.get('superseded', [])
 ORD = ['first','second','third','fourth','fifth','sixth','seventh','eighth','ninth','tenth',
@@ -257,9 +296,15 @@ ORD = ['first','second','third','fourth','fifth','sixth','seventh','eighth','nin
 for contract, address, label in (('vault', old_vault, 'Vault Contract'),
                                  ('agusdCore', old_agusd, 'agUSD (`contracts/agusd-core`)')):
     gen = 1 + sum(1 for e in history if e['contract'] == contract)
-    history.append({'contract': contract, 'generation': gen,
-                    'label': '%s, %s deployment' % (label, ORD[gen - 1]),
-                    'address': address, 'supersededBy': contract, 'reason': REASON})
+    entry = {'contract': contract, 'generation': gen,
+             'label': '%s, %s deployment' % (label, ORD[gen - 1]),
+             'address': address, 'supersededBy': contract, 'reason': REASON}
+    # Read off the ledger before the pointers move, so the record's own
+    # repeated-reason check has something to discriminate on besides prose.
+    h = vhash if contract == 'vault' else ahash
+    if h:
+        entry['wasmHash'] = h
+    history.append(entry)
     # Refusing a reason copied from the generation before, because that is the
     # mistake this argument exists to prevent, and it is silent otherwise.
     prev = [e for e in history[:-1] if e['contract'] == contract]
@@ -268,8 +313,42 @@ for contract, address, label in (('vault', old_vault, 'Vault Contract'),
                  'the two is wrong' % (contract, prev[-1]['generation']))
 dep['contracts']['vault'] = vault
 dep['contracts']['agusdCore'] = agusd
+if staking and old_staking and staking != old_staking:
+    gen = 1 + sum(1 for e in history if e['contract'] == 'staking')
+    entry = {'contract': 'staking', 'generation': gen,
+             'label': 'sagUSD staking, %s deployment' % ORD[gen - 1],
+             'address': old_staking, 'supersededBy': 'staking',
+             'reason': 'Replaced because agUSD moved and set_agusd cannot follow it: the '
+                       'guard reads a cumulative stake counter rather than the current '
+                       'balance, deliberately, so the token pointer freezes at the first '
+                       'stake and never thaws. Emptied first, so nothing was stranded in '
+                       'it. ' + REASON}
+    if staking_hash:
+        entry['wasmHash'] = staking_hash
+    history.append(entry)
+    dep['contracts']['staking'] = staking
 dep['superseded'] = history
 dep.pop('pendingRedeployment', None)
+# The gap this migration closes was declared. Leaving the declaration behind
+# would be a false statement in the other direction, and check-deployment-record
+# fails on exactly that, so it goes with the gap.
+ahead = [e for e in dep.get('sourceAheadOfLedger', []) if e['contract'] != 'vault']
+if ahead:
+    dep['sourceAheadOfLedger'] = ahead
+else:
+    dep.pop('sourceAheadOfLedger', None)
+if int(stranded) > 0:
+    dep['strandedInRetiredVaults'] = dep.get('strandedInRetiredVaults', [])
+    dep['strandedInRetiredVaults'].append({
+        'vault': old_vault,
+        'amount': int(stranded),
+        'note': 'USDC left in this Vault after every holder redeemed, with no agUSD '
+                'outstanding to release it against. Recovered capital, booked but never '
+                'minted against. It cannot be withdrawn: USDC leaves a Vault only through '
+                'settle_allocation, which reaches an adapter that sends only back to the '
+                'Vault it stores, and through a payout bounded by the agUSD burned to '
+                'create the claim. There is no path to an admin, deliberately, so this is '
+                'the price of a Vault generation rather than an oversight.'})
 json.dump(dep, open(path, 'w'), indent=2); open(path, 'a').write('\n')
 print(json.dumps({'vault': vault, 'agusdCore': agusd}, indent=2))
 PY
