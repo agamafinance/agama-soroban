@@ -193,6 +193,67 @@ fn delivered_yield_closes_the_agusd_pointer_even_with_no_stakers() {
     assert_eq!(f.vault.agusd(), f.ag.address);
 }
 
+/// Where yield delivered with no shares outstanding ends up.
+///
+/// The test above establishes that a distribution with no stakers is deliberate
+/// and that it closes the agUSD pointer. It stops there, and the interesting
+/// half is what happens to the value afterwards, because that nav has no share
+/// to belong to and `request_unstake` refuses with `NoSupply` so nobody can
+/// take it directly.
+///
+/// The next stake takes all of it. `stake` mints at par whenever supply is
+/// zero, so a staker of one stroop becomes the whole supply of a pool worth the
+/// orphaned nav plus their stroop, and unstaking pays them the lot. That is not
+/// a theft, and it is worth being precise about why: the nav had no claimant
+/// before they arrived, `request_unstake` had already refused everyone, and
+/// whoever stakes next owns the pool by definition. Nobody with a claim loses
+/// anything.
+///
+/// It is an asymmetry rather than a leak: a one stroop staker and a thousand
+/// agUSD staker collect the same orphaned amount, and the one who collects is
+/// whoever notices first. Pinned rather than fixed, because every fix is worse.
+/// Refusing the distribution would undo the pointer freeze the test above
+/// exists for. Zeroing the nav would destroy agUSD the contract actually holds.
+/// This is here so a change that turned it into something with a victim, an
+/// orphaned nav reachable without becoming the whole supply, fails a test.
+#[test]
+fn yield_with_no_shares_goes_to_whoever_stakes_next() {
+    let f = setup();
+    let orphaned = 1_000 * ONE;
+    fund_agusd(&f, &f.admin, orphaned);
+    f.vault.distribute_yield(&orphaned);
+    assert_eq!(f.vault.total_shares(), 0);
+    assert_eq!(f.vault.nav(), orphaned);
+
+    // Nobody can reach it directly: there is no share to price against.
+    let alice = Address::generate(&f.e);
+    assert_eq!(
+        f.vault.try_request_unstake(&alice, &1),
+        Err(Ok(StakingError::NoSupply))
+    );
+
+    // And the rate says one, because a rate per share needs a share.
+    assert_eq!(f.vault.exchange_rate(), ONE);
+
+    // One stroop in, and the pool is theirs.
+    fund_agusd(&f, &alice, 1);
+    let shares = f.vault.stake(&alice, &1);
+    assert_eq!(shares, 1, "a stake with no supply mints at par");
+    assert_eq!(f.vault.total_shares(), 1);
+    assert_eq!(f.vault.nav(), orphaned + 1);
+
+    // Which the rate now reports honestly, all of it against one share.
+    assert_eq!(f.vault.exchange_rate(), (orphaned + 1) * ONE);
+
+    let owed = f.vault.request_unstake(&alice, &1);
+    assert_eq!(
+        owed,
+        orphaned + 1,
+        "the first staker after an orphaned distribution collects it entirely"
+    );
+    assert_eq!(f.vault.nav(), 0, "and nothing is left stranded behind them");
+}
+
 #[test]
 fn allocations_roundtrip() {
     let f = setup();
