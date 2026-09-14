@@ -268,6 +268,43 @@ for name, addr, wasm in [
     print(f'{name}|{addr}|{wasm}')
 ")
 
+  # The loop above compares the contracts somebody remembered to put in its
+  # list. That list is written by hand, so an address can sit outside the claim
+  # this pass makes simply by never having been added, which is how six credit
+  # vaults, generation 1 agUSD and the USDC contract came to be uncompared
+  # without anyone deciding they should be. Enumerating the record closes that:
+  # every address it names is either compared above or named in notCompared with
+  # a reason, and anything in neither fails here.
+  echo ""
+  echo "==> no address in this record sits outside that comparison unannounced"
+  while IFS='|' read -r path addr state; do
+    [ -n "$path" ] || continue
+    case "$state" in
+      compared)  ok "$path was compared above" ;;
+      declared)  echo "  NOTE  $path is declared as not compared" ;;
+      *)         bad "$path ($addr) is in the record, was not compared, and nothing declares why" ;;
+    esac
+  done < <(python3 -c "
+import json
+d = json.load(open('deployments/testnet.json'))
+compared = {'contracts.vault', 'contracts.agusdCore', 'contracts.staking',
+            'contracts.allocationEngine', 'contracts.oracleAdapter',
+            'poolAdapters.private-credit', 'poolAdapters.etherfuse'}
+declared = set(d.get('notCompared', {}))
+seen = []
+for group in ('contracts', 'poolAdapters', 'creditVaults'):
+    for k, v in d.get(group, {}).items():
+        seen.append(('%s.%s' % (group, k), v))
+for path, addr in seen:
+    if path in compared:
+        state = 'compared'
+    elif path in declared or ('%s.*' % path.split('.')[0]) in declared:
+        state = 'declared'
+    else:
+        state = 'missing'
+    print('%s|%s|%s' % (path, addr, state))
+")
+
   echo ""
   echo "==> the recorded wasmHash of a retired contract is what the ledger holds"
   # Offline the repeated-reason check trusts these hashes. Here they get read
