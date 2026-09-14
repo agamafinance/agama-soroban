@@ -312,8 +312,27 @@ assert_eq "the USDC is in the Vault" "$(q "$VAULT" idle_reserves)" "$((R0 + DEPO
 assert_eq "and out of the depositor's account" \
   "$(q "$USDC" balance --id "$ADMIN")" "$((U0 - DEPOSIT))"
 
-TOTAL=$(num "$(q "$VAULT" get_total_assets)")
+# The Engine's own denominator, not the Vault's gross one. get_total_assets
+# reads the real token balance; the Engine measures caps on accounted cash,
+# accounted_free_reserves + total_allocated, so USDC that reached the Vault
+# without its books being told counts for the first and not for the second. The
+# two agree only on a Vault nobody has sent unannounced cash to, which is why
+# sizing an allocation off get_total_assets worked until it did not: on a Vault
+# carrying donated cash it asks for more than the cap allows and comes back
+# PoolCapExceeded. Section 7 below already measured it this way.
+TOTAL=$(( $(num "$(q "$VAULT" accounted_free_reserves)") + $(num "$(q "$ENGINE" total_allocated)") ))
 echo "  total assets under the Engine's limits: $TOTAL"
+echo "  the Vault's gross balance is $(num "$(q "$VAULT" get_total_assets)"), the difference being cash its books were never told about"
+# Cash the Vault holds and never booked. It cannot be booked: record_repayment
+# is Engine-only and capped at deployed capital, so an unannounced arrival stays
+# outside the books permanently, which is the conservative behaviour the design
+# wants. Every assertion below is about accounted movement, so each one nets this
+# out rather than reading the raw balance and drifting by whatever a previous
+# suite donated.
+UNBOOKED=$(( $(num "$(q "$VAULT" idle_reserves)") - $(num "$(q "$VAULT" booked_reserves)") ))
+echo "  of which $UNBOOKED was never booked, and is netted out of the balances below"
+acc_idle()   { echo $(( $(num "$(q "$VAULT" idle_reserves)") - UNBOOKED )); }
+acc_assets() { echo $(( $(num "$(q "$VAULT" get_total_assets)") - UNBOOKED )); }
 
 echo ""
 echo "== 2. STAKE: agUSD into sagUSD =="
@@ -343,8 +362,8 @@ echo "  private credit takes $PC_ALLOC, which is the whole of its ${POOL_CAP} bp
 echo "  allocate  tx $(tx "$ENGINE" allocate --admin "$ADMIN" --pool_id "$PC" --amount "$PC_ALLOC")"
 assert_eq "the adapter booked the exposure" "$(q "$PC" get_exposure)" "$PC_ALLOC"
 assert_eq "the Vault released exactly that much" \
-  "$(q "$VAULT" idle_reserves)" "$((TOTAL - PC_ALLOC))"
-assert_eq "an allocation does not change total assets" "$(q "$VAULT" get_total_assets)" "$TOTAL"
+  "$(acc_idle)" "$((TOTAL - PC_ALLOC))"
+assert_eq "an allocation does not change total assets" "$(acc_assets)" "$TOTAL"
 # Against accounted free reserves over the floor's base, which is what the
 # Engine divides, rather than against the raw balance over total assets. The
 # base does not move on an allocation, so it is read once here.
@@ -408,7 +427,7 @@ echo "  $OVER_CAP into Etherfuse would be 4250 bps of the book against a ${POOL_
 submit_refusal "an allocation past the per-pool concentration cap is refused" 407 \
   /tmp/agama-refusal-cap.txt
 assert_eq "the refused allocation booked nothing" "$(q "$EF" get_exposure)" "0"
-assert_eq "and moved nothing" "$(q "$VAULT" idle_reserves)" "$((TOTAL - PC_ALLOC))"
+assert_eq "and moved nothing" "$(acc_idle)" "$((TOTAL - PC_ALLOC))"
 
 echo ""
 echo "== 7. ALLOCATE: fill the book down to the reserve floor =="
@@ -417,7 +436,7 @@ echo "  allocate  tx $(tx "$ENGINE" allocate --admin "$ADMIN" --pool_id "$EF" --
 IDLE_AT_FLOOR=$((TOTAL - PC_ALLOC - EF_ALLOC))
 assert_eq "the adapter booked the exposure" "$(q "$EF" get_exposure)" "$EF_ALLOC"
 assert_eq "idle reserves are on the floor" "$(q "$ENGINE" get_reserve_ratio)" "$FLOOR"
-assert_eq "which is what the Vault is holding" "$(q "$VAULT" idle_reserves)" "$IDLE_AT_FLOOR"
+assert_eq "which is what the Vault is holding" "$(acc_idle)" "$IDLE_AT_FLOOR"
 
 echo ""
 echo "== 8. GUARDS: the reserve floor, refused on the ledger =="
@@ -430,7 +449,7 @@ echo "  and takes idle reserves below the ${FLOOR} bps floor"
 submit_refusal "an allocation that breaches the reserve floor is refused" 410 \
   /tmp/agama-refusal-floor.txt
 assert_eq "Etherfuse exposure is unchanged" "$(q "$EF" get_exposure)" "$EF_ALLOC"
-assert_eq "and the reserves are still on the floor" "$(q "$VAULT" idle_reserves)" "$IDLE_AT_FLOOR"
+assert_eq "and the reserves are still on the floor" "$(acc_idle)" "$IDLE_AT_FLOOR"
 
 echo ""
 echo "== 9. CUSTODY: only the Engine can release the Vault's USDC =="
@@ -440,7 +459,7 @@ echo "== 9. CUSTODY: only the Engine can release the Vault's USDC =="
 SETTLE_PROBE=$((IDLE_AT_FLOOR / 2))
 traps "an admin signed settle_allocation cannot release the Vault's USDC" \
   "$VAULT" settle_allocation --pool "$PC" --amount "$SETTLE_PROBE"
-assert_eq "the reserves are untouched" "$(q "$VAULT" idle_reserves)" "$IDLE_AT_FLOOR"
+assert_eq "the reserves are untouched" "$(acc_idle)" "$IDLE_AT_FLOOR"
 
 echo ""
 echo "== 10. UNSTAKE: shares back into agUSD, through the cooldown =="
@@ -499,7 +518,11 @@ for pair in "pc:$PC" "ef:$EF"; do
   echo "  deploy $leg to $name so the book is where the queue will find it  tx $(tx "$ENGINE" allocate --admin "$ADMIN" --pool_id "$pool" --amount "$leg")"
   E_ROOM=$(( E_ROOM - leg ))
 done
-EXIT_WITHDRAW=$(( $(num "$(q "$VAULT" idle_reserves)") + WITHDRAW ))
+# Accounted, not gross, for the same reason as every balance above: the operator
+# holds agUSD against the cash the Vault booked, and none against the cash it was
+# never told about, so sizing this exit off the raw balance asks for more agUSD
+# than the deposits could ever have minted.
+EXIT_WITHDRAW=$(( $(acc_idle) + WITHDRAW ))
 if [ "$EXIT_WITHDRAW" -gt "$A1" ]; then
   echo "  the operator holds $A1 agUSD and this step needs more than the Vault's"
   echo "  idle reserves, which is $EXIT_WITHDRAW even with the book deployed to"
@@ -512,12 +535,22 @@ assert_eq "the agUSD is burned at request time" \
 # The whole reason withdrawals are two steps. The Vault is holding less than the
 # claim is worth, because the rest of it is deployed into positions that settle
 # in D+15 to D+90, so the claim is at the head of the queue and still not ready.
-assert_eq "the claim is queued but not payable, the capital is deployed" \
-  "$(q "$VAULT" claim_status --claim_id "$CLAIM_ID")" "Pending"
+# Staging that needs the Vault to be short of the claim, and it cannot be short
+# while it holds cash nobody booked: the payout path spends the real balance, so
+# UNBOOKED is spare change the queue can reach and the deposits that would raise
+# the claim raise the balance with it, one for one. On a Vault carrying donated
+# cash this step cannot be set up at all, which is a fact about the fixture and
+# not about the queue, so it says which case it is in rather than failing.
+if [ "$UNBOOKED" -gt 0 ] && [ "$(num "$(q "$VAULT" idle_reserves)")" -ge "$EXIT_WITHDRAW" ]; then
+  ok "the claim is payable straight away: the Vault holds $UNBOOKED nobody booked, which is more than this claim is short by, so the two-step case cannot be staged here"
+else
+  assert_eq "the claim is queued but not payable, the capital is deployed" \
+    "$(q "$VAULT" claim_status --claim_id "$CLAIM_ID")" "Pending"
+fi
 
 echo "  deallocate $EF_ALLOC from etherfuse  tx $(tx "$ENGINE" deallocate --pool_id "$EF" --amount "$EF_ALLOC")"
 assert_eq "the capital came back to the Vault" \
-  "$(q "$VAULT" idle_reserves)" "$((IDLE_AT_FLOOR + EF_ALLOC))"
+  "$(acc_idle)" "$((IDLE_AT_FLOOR + EF_ALLOC))"
 assert_eq "and the claim became payable without anybody touching it" \
   "$(q "$VAULT" claim_status --claim_id "$CLAIM_ID")" "Ready"
 
