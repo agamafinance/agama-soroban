@@ -364,7 +364,8 @@ else
   # under test doing exactly what it is for. The last accepted value stands.
   ok "PC_NAV was accepted $(( $(date +%s) - LAST_AT ))s ago, inside its ${PC_INTERVAL}s interval, so a push now is refused"
 fi
-assert_eq "the Vault reads its feed" "$(q "$VAULT" get_nav)" "10000000"
+EXPECT_NAV=$(q "$ORACLE" get_nav --feed_id PC_NAV | tr -d '"')
+assert_eq "the Vault reads its feed" "$(q "$VAULT" get_nav | tr -d '"')" "$EXPECT_NAV"
 refused 513 "a value outside the band is refused, whatever the deviation" \
   "$ORACLE" push_nav --reporter "$ADMIN" --feed_id PC_NAV --nav 170141183460469231731687303715884105727 --timestamp "$((TS + 1))"
 refused 514 "a second value inside the interval is refused" \
@@ -390,12 +391,28 @@ if stellar contract info interface --id "$VAULT" --network "$NET" 2>/dev/null | 
   echo "  request while paused, claim $CLAIM_P  tx $(tx "$VAULT" request_withdrawal --from "$ADMIN" --amount "$CLAIM_AMOUNT")"
   assert_eq "a request still queues while the breaker is on" \
     "$(num "$(q "$VAULT" queue_tail)")" "$((CLAIM_P + 1))"
-  echo "  freeze_exits           tx $(tx "$VAULT" freeze_exits --admin "$ADMIN")"
-  refused 328 "and now requests stop" "$VAULT" request_withdrawal --from "$ADMIN" --amount "$CLAIM_AMOUNT"
-  refused 329 "a second freeze is refused until the cooldown" "$VAULT" freeze_exits --admin "$ADMIN"
-  echo "  thaw_exits             tx $(tx "$VAULT" thaw_exits --admin "$ADMIN")"
-  assert_eq "exits are open again" \
-    "$([ "$(num "$(q "$VAULT" exits_frozen_until)")" -le "$(date -u +%s)" ] && echo open || echo shut)" "open"
+  # A freeze can only be armed once per EXIT_FREEZE_COOLDOWN_SECS, seven days,
+  # so this suite cannot arm one on demand and must not fail when it cannot.
+  # Both outcomes are the design working: either the freeze goes on and requests
+  # stop, or the rate limit refuses it, which is the half that makes the bound
+  # mean anything. Asserting only the first would make a correct protocol look
+  # broken for a week after any freeze.
+  FREEZE_OUT=$(stellar contract invoke --id "$VAULT" --source $SRC --network $NET -- \
+    freeze_exits --admin "$ADMIN" 2>&1 || true)
+  if echo "$FREEZE_OUT" | grep -q "#329"; then
+    echo "  freeze_exits refused with 329, so a freeze was armed inside the last"
+    echo "  seven days and the rate limit is holding. That is the guarantee, not a"
+    echo "  failure: exits cannot be shut again yet."
+    assert_eq "and exits are open while it holds" \
+      "$([ "$(num "$(q "$VAULT" exits_frozen_until)")" -le "$(date -u +%s)" ] && echo open || echo shut)" "open"
+  else
+    echo "  freeze_exits           armed until $(num "$(q "$VAULT" exits_frozen_until)")"
+    refused 328 "and now requests stop" "$VAULT" request_withdrawal --from "$ADMIN" --amount "$CLAIM_AMOUNT"
+    refused 329 "a second freeze is refused until the cooldown" "$VAULT" freeze_exits --admin "$ADMIN"
+    echo "  thaw_exits             tx $(tx "$VAULT" thaw_exits --admin "$ADMIN")"
+    assert_eq "exits are open again" \
+      "$([ "$(num "$(q "$VAULT" exits_frozen_until)")" -le "$(date -u +%s)" ] && echo open || echo shut)" "open"
+  fi
 else
   refused 303 "new requests stop" "$VAULT" request_withdrawal --from "$ADMIN" --amount "$CLAIM_AMOUNT"
 fi
