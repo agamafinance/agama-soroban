@@ -72,8 +72,27 @@ ALLOWED = {
    "share_price reports a figure, no decision is taken on it",
 }
 
-for f in sorted(glob.glob('contracts/*/src/lib.rs')):
-    name = f.replace('contracts/', '').replace('/src/lib.rs', '')
+# Which files to read is derived from the workspace, not written out here.
+# The first version of this script globbed contracts/*/src/lib.rs, which silently
+# left out adapters/* and crates/token, and a scope written by hand is the exact
+# failure this whole family of checks exists to prevent. Nothing was hiding in
+# them, but that is luck, not coverage.
+members = []
+for line in io.open('Cargo.toml', encoding='utf-8'):
+    t = line.strip()
+    if t.startswith('"') and t.endswith('",'):
+        members.append(t.strip('",'))
+files = []
+for m in members:
+    files += glob.glob('%s/src/*.rs' % m)
+files = sorted(f for f in files if not f.endswith(('test.rs', 'fuzz.rs')))
+if not files:
+    raise SystemExit('no workspace sources found, so nothing was scanned')
+
+for f in files:
+    name = f.split('/')[-2] if f.endswith('lib.rs') else f
+    if f.endswith('lib.rs'):
+        name = f.rsplit('/src/', 1)[0].split('/')[-1]
     for i, line in enumerate(io.open(f, encoding='utf-8'), 1):
         t = line.strip()
         if t.startswith('//'):
