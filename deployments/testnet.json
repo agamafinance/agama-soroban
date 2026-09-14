@@ -12,7 +12,7 @@
     "staking": "CD3VPDGFTJ6VJ2BW6ZLCJ2MLO72LIM74XSKWZNIDYNJZW3NW7BPG35Y3",
     "vault": "CCPBVZ3WCUTA2OYC2HKYVZUNUV46K47TPKMHSS5IDFYRRPFEDASZNFFD",
     "allocationEngine": "CDYT5BFC2ABBK2QWWUTU4AM6JGFN2BP3XHCUGVEI3O5NCCIBUXC5TUFL",
-    "oracleAdapter": "CBH7NW5LQX5MIELSF5T5EPGFADIHDZMAGNPNJE5NP22FNNVOKSEVFB3N",
+    "oracleAdapter": "CAUOHPPNHUIYQI3KIVPLP75CGWKFBGSXK3RW75UO52PKY3YKQRTWIQUS",
     "agusdCore": "CDBIY2KAXTMSS5ZAFNGCMSVCMJMOFGIRMWPYPEDS5JLI5S3WGMCGEX3Z"
   },
   "creditVaults": {
@@ -586,6 +586,14 @@
       "address": "CCMATPP73XBCT35SSSJREL6DDE3DHN33AUGWWVDSWUNUGTR22ETTSZLW",
       "supersededBy": "allocationEngine",
       "reason": "Replaced by scripts/rewire-engine-one-base.sh to restore book_recovery, which closes M1 of the third adversarial review. This Engine has no way to book a recovery whose cash is already in the Vault. The adapter's recover_surplus may be taken by the adapter's own admin as well as by the Engine, which is how an adapter stuck to superseded counterparties is unstuck without a working Engine, and taken that way the cash reaches the Vault with no book moving: recover then gets NothingToRecover from the adapter and reverts, record_recovery has no other caller, and the write-down sits on recognised_losses and on the pool's concentration charge with nothing able to correct it. book_recovery is recover with the adapter leg removed, bounded by the Vault, which subtracts the balance it can account for from the balance it holds and refuses anything larger, so a recovery stays evidenced rather than asserted. The entry point existed once and was removed because an invariant fuzzer showed it could lower floor_base in four operations while the base read the raw token balance; that basis is gone, both halves are neutral under the accounted base, and the fuzzer now drives the operation with that invariant applied rather than excluded, clean at 1500 cases wide and 300 cases of up to 89 operations. Nothing else was redeployed: the Vault took the replacement through set_engine and both adapters followed through set_counterparties."
+    },
+    {
+      "contract": "oracleAdapter",
+      "generation": 4,
+      "label": "Oracle Adapter, fourth deployment",
+      "address": "CBH7NW5LQX5MIELSF5T5EPGFADIHDZMAGNPNJE5NP22FNNVOKSEVFB3N",
+      "supersededBy": "oracleAdapter",
+      "reason": "Replaced by scripts/redeploy-oracle-exact-bound.sh, because its deviation bound was not the bound it advertised. The check computed the move as (nav - last).abs() * BPS / last.nav and compared that against the feed's deviation_bps. Integer division truncates toward zero, so the computed figure understates the move and anything between the bound and one basis point above it rounded down onto the bound and was accepted. On the private credit feed that is reachable arithmetic rather than a corner: a NAV of 10000000 against a 500 bps bound allows 500000 stroops of movement, and 500001 through 500999 all computed as 500 and passed, so the bound advertised 5 percent and enforced 5.00999 percent. The replacement decides by multiplying, comparing delta * BPS against deviation_bps * last.nav, which is exact and is the discipline every other limit in this protocol already uses: the reserve floor compares free * BPS against floor_bps * base and never divides. The division survives only for the deviation_bps carried in the rejection event, because a number a human reads may round. Nothing else was redeployed: only the Vault names the oracle, through set_oracle, and the pool adapters carry their feed as a constant Symbol rather than an address. The three feeds were registered with the parameters read off the outgoing contract rather than retyped, since register_feed is write once per feed."
     }
   ],
   "oracleFeedGuards": "The band bounds every report including the first, which a deviation bound cannot reach because a bound on a move needs something to move from. The minimum interval is measured in ledger time between accepted values, not in the timestamps the reporter supplies, because the reporter chooses those. The reference point is persistent, so it cannot expire out from under the checks that read it.",
