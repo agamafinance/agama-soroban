@@ -376,7 +376,29 @@ CLAIM2=$(num "$(q "$VAULT" queue_tail)")
 echo "  request_withdrawal $CLAIM_AMOUNT, claim $CLAIM2  tx $(tx "$VAULT" request_withdrawal --from "$ADMIN" --amount "$CLAIM_AMOUNT")"
 echo "  pause                  tx $(tx "$VAULT" set_paused --admin "$ADMIN" --paused true)"
 refused 303 "deposits stop" "$VAULT" deposit --from "$ADMIN" --amount "$CLAIM_AMOUNT"
-refused 303 "new requests stop" "$VAULT" request_withdrawal --from "$ADMIN" --amount "$CLAIM_AMOUNT"
+# Which answer is right here depends on which generation of Vault is deployed,
+# so ask the contract rather than assume. The generation that answers
+# exits_frozen_until has taken withdrawal requests out of this switch: holding
+# them shut is freeze_exits, which is bounded at MAX_EXIT_FREEZE_SECS and rate
+# limited after that, and the plain breaker no longer reaches them. Asserting
+# one of the two unconditionally would make this suite wrong either side of that
+# deployment, which is worse than it being longer.
+if stellar contract info interface --id "$VAULT" --network "$NET" 2>/dev/null | grep -q "fn exits_frozen_until"; then
+  FROZEN=$(num "$(q "$VAULT" exits_frozen_until)")
+  assert_eq "exits are not frozen" "$([ "$FROZEN" -le "$(date -u +%s)" ] && echo open || echo shut)" "open"
+  CLAIM_P=$(num "$(q "$VAULT" queue_tail)")
+  echo "  request while paused, claim $CLAIM_P  tx $(tx "$VAULT" request_withdrawal --from "$ADMIN" --amount "$CLAIM_AMOUNT")"
+  assert_eq "a request still queues while the breaker is on" \
+    "$(num "$(q "$VAULT" queue_tail)")" "$((CLAIM_P + 1))"
+  echo "  freeze_exits           tx $(tx "$VAULT" freeze_exits --admin "$ADMIN")"
+  refused 328 "and now requests stop" "$VAULT" request_withdrawal --from "$ADMIN" --amount "$CLAIM_AMOUNT"
+  refused 329 "a second freeze is refused until the cooldown" "$VAULT" freeze_exits --admin "$ADMIN"
+  echo "  thaw_exits             tx $(tx "$VAULT" thaw_exits --admin "$ADMIN")"
+  assert_eq "exits are open again" \
+    "$([ "$(num "$(q "$VAULT" exits_frozen_until)")" -le "$(date -u +%s)" ] && echo open || echo shut)" "open"
+else
+  refused 303 "new requests stop" "$VAULT" request_withdrawal --from "$ADMIN" --amount "$CLAIM_AMOUNT"
+fi
 BEFORE=$(num "$(q "$USDC" balance --id "$ADMIN")")
 echo "  settle while paused, signed by $OTHER  tx $(tx_other "$VAULT" settle_withdrawal)"
 assert_eq "the claim already queued is still paid" "$(q "$USDC" balance --id "$ADMIN")" "$((BEFORE + CLAIM_AMOUNT))"

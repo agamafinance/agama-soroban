@@ -102,7 +102,7 @@ use mock_usdc::{MockUsdc, MockUsdcClient};
 use private_credit::{PrivateCreditAdapter, PrivateCreditAdapterClient};
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
-use soroban_sdk::testutils::Address as _;
+use soroban_sdk::testutils::{Address as _, Ledger as _};
 use soroban_sdk::{symbol_short, String};
 
 const USDC: i128 = 10_000_000; // 1 USDC at 7 decimals
@@ -124,6 +124,12 @@ enum Op {
     BookRecovery { pool: usize, amount: i128 },
     Donate { amount: i128 },
     SetPaused(bool),
+    FreezeExits,
+    ThawExits,
+    /// Ledger time only ever moves forward. Without it a freeze armed in the
+    /// middle of a sequence would still be on at the end of it, and the whole
+    /// point of the freeze is that it stops being on by itself.
+    AdvanceTime { secs: u64 },
 }
 
 /// Amounts drawn from the boundaries that matter (zero, negative, either side
@@ -159,6 +165,16 @@ fn op_strategy() -> impl Strategy<Value = Op> {
             .prop_map(|(pool, amount)| Op::BookRecovery { pool, amount }),
         2 => amount_strategy().prop_map(|amount| Op::Donate { amount }),
         1 => any::<bool>().prop_map(Op::SetPaused),
+        1 => Just(Op::FreezeExits),
+        1 => Just(Op::ThawExits),
+        2 => prop_oneof![
+            Just(MAX_EXIT_FREEZE_SECS - 1),
+            Just(MAX_EXIT_FREEZE_SECS),
+            Just(MAX_EXIT_FREEZE_SECS + 1),
+            Just(EXIT_FREEZE_COOLDOWN_SECS),
+            1u64..=3 * 24 * 60 * 60,
+        ]
+        .prop_map(|secs| Op::AdvanceTime { secs }),
     ]
 }
 
@@ -380,6 +396,16 @@ fn apply(state: &mut FuzzState, op: &Op) -> PResult {
         Op::SetPaused(paused) => {
             let _ = state.vault.try_set_paused(&state.admin, paused);
         }
+        Op::FreezeExits => {
+            let _ = state.vault.try_freeze_exits(&state.admin);
+        }
+        Op::ThawExits => {
+            let _ = state.vault.try_thaw_exits(&state.admin);
+        }
+        Op::AdvanceTime { secs } => {
+            let now = state.e.ledger().timestamp();
+            state.e.ledger().set_timestamp(now + secs);
+        }
     }
     Ok(())
 }
@@ -395,7 +421,13 @@ fn check_floor_base(state: &FuzzState, op: &Op, before: i128) -> PResult {
         | Op::ClaimWithdrawal { .. }
         | Op::SettleWithdrawal
         | Op::WriteDown { .. }
-        | Op::SetPaused(_) => {
+        | Op::SetPaused(_)
+        // None of the three reads a clock or a switch: the base is booked
+        // reserves plus deployed capital plus recognised losses less
+        // outstanding liabilities, and time moving does not touch any of them.
+        | Op::FreezeExits
+        | Op::ThawExits
+        | Op::AdvanceTime { .. } => {
             prop_assert_eq!(
                 after,
                 before,
@@ -426,6 +458,18 @@ fn check_floor_base(state: &FuzzState, op: &Op, before: i128) -> PResult {
 }
 
 fn check_invariants(state: &FuzzState) -> PResult {
+    // 0. The freeze on withdrawal requests is never further away than one
+    // freeze. This is the whole guarantee: whatever an admin does, and in
+    // whatever order, a holder of agUSD is never more than MAX_EXIT_FREEZE_SECS
+    // from being able to queue an exit. An unbounded freeze would be a state
+    // this contract can reach, not a policy somebody promises to follow, so it
+    // is checked here rather than described anywhere.
+    let now = state.e.ledger().timestamp();
+    prop_assert!(
+        state.vault.exits_frozen_until() <= now + MAX_EXIT_FREEZE_SECS,
+        "exits are shut further into the future than one freeze allows"
+    );
+
     // 1. agUSD supply tracks USDC deposited minus USDC requested for
     // withdrawal (mint happens on deposit, burn happens on request, both
     // exactly the amount passed in).

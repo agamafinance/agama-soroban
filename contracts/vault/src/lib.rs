@@ -210,6 +210,27 @@ const CLAIM_LIFETIME: u32 = CLAIM_BUMP - DAY_LEDGERS;
 /// makes that attack cost the attacker as much as it costs everyone else.
 pub const MIN_WITHDRAWAL: i128 = 10_000_000;
 
+/// The longest an admin can hold withdrawal requests shut, in seconds.
+///
+/// Pausing deposits is routine and costs a would-be depositor nothing: they
+/// keep their USDC. Holding exits shut is a different power, because a holder
+/// of agUSD already owns a claim on this Vault and cannot convert it into a
+/// queued one while the shutter is down. An emergency response needs a few
+/// days; nobody needs an unbounded one, and a limit only the admin enforces is
+/// not a limit. This one is enforced by the contract: past it,
+/// `request_withdrawal` works again whatever the admin does or does not do.
+pub const MAX_EXIT_FREEZE_SECS: u64 = 72 * 60 * 60;
+
+/// How long exits must have been open again before the shutter can come back
+/// down, in seconds.
+///
+/// Without this the bound above buys nothing: an admin re-arming the freeze the
+/// second it lapses holds exits shut forever in 72 hour steps. With it, the
+/// worst an admin can do is 72 hours shut out of every ten days, and the clock
+/// runs from when the freeze actually ended, so lifting one early is rewarded
+/// rather than punished.
+pub const EXIT_FREEZE_COOLDOWN_SECS: u64 = 7 * 24 * 60 * 60;
+
 /// agUSD, as seen from the Vault. The Vault is the token's admin, so it is the
 /// only address that can mint against a deposit or burn against a withdrawal.
 #[contractclient(name = "AgUsdClient")]
@@ -317,6 +338,14 @@ pub enum VaultError {
     /// The agUSD offered counts stroops differently from the USDC this Vault
     /// custodies, so minting one for one would not be a peg.
     DecimalMismatch = 327,
+    /// Withdrawal requests are frozen. Temporary by construction: read
+    /// `exits_frozen_until()` for the ledger time it lapses, after which this
+    /// stops being returned whether or not an admin acts.
+    ExitsFrozen = 328,
+    /// The freeze on withdrawal requests cannot come back down yet. Exits have
+    /// to have been open for `EXIT_FREEZE_COOLDOWN_SECS` since the last freeze
+    /// ended, or the bound on a single freeze would buy nothing.
+    ExitFreezeTooSoon = 329,
 }
 
 /// A queued withdrawal. The agUSD is burned at request time, so this record is
@@ -380,6 +409,11 @@ enum Cfg {
     WrittenOff,
     /// Half finished admin handover: proposed, not yet accepted.
     PendingAdmin,
+    /// Ledger time at which the current freeze on withdrawal requests lapses.
+    /// Zero, or any time in the past, means exits are open. Separate from
+    /// `Paused` on purpose: shutting deposits and shutting exits are different
+    /// powers and only one of them is bounded.
+    ExitFrozenUntil,
 }
 
 /// Persistent storage: the claim records, keyed by claim id, and the flag that
@@ -715,6 +749,66 @@ impl Vault {
         Ok(())
     }
 
+    /// Hold withdrawal requests shut for `MAX_EXIT_FREEZE_SECS`. Returns the
+    /// ledger time the freeze lapses.
+    ///
+    /// This is the half of the old circuit breaker that had to be taken out of
+    /// it. `set_paused` used to stop `request_withdrawal` too, with no limit on
+    /// how long, which meant a holder of agUSD could be kept from converting a
+    /// claim they already owned into a queued one for as long as an admin
+    /// liked. That is a freeze, and the comment above `set_paused` already says
+    /// a freeze is not what that switch is for; it just stopped one step short
+    /// of noticing that an agUSD holder is owed something too.
+    ///
+    /// What it protects is real and worth keeping: if agUSD is minted that
+    /// should not have been, this is what stops it entering the queue. So the
+    /// power stays, bounded and rate limited, as its own entry point with its
+    /// own event, which is also what makes it legible on-chain. A reviewer can
+    /// count the freezes; before, a freeze and a routine deposit pause were the
+    /// same transaction.
+    ///
+    /// Lifting one early with `thaw_exits` costs nothing and shortens the
+    /// cooldown, because the cooldown runs from when exits actually reopened.
+    pub fn freeze_exits(e: Env, admin: Address) -> Result<u64, VaultError> {
+        Self::require_admin(&e, &admin)?;
+        let now = e.ledger().timestamp();
+        let last = Self::exits_frozen_until(e.clone());
+        // Measured from when the previous freeze ended, not from when it was
+        // armed, so an admin who lifts one early is not made to wait longer.
+        if last != 0 && now < last + EXIT_FREEZE_COOLDOWN_SECS {
+            return Err(VaultError::ExitFreezeTooSoon);
+        }
+        let until = now + MAX_EXIT_FREEZE_SECS;
+        e.storage().instance().set(&Cfg::ExitFrozenUntil, &until);
+        Self::bump_instance(&e);
+        ExitFreezeSet { until }.publish(&e);
+        Ok(until)
+    }
+
+    /// Reopen withdrawal requests before the freeze would have lapsed.
+    ///
+    /// Only ever shortens: it ends the freeze now rather than extending it, and
+    /// the cooldown before the next one runs from here.
+    pub fn thaw_exits(e: Env, admin: Address) -> Result<(), VaultError> {
+        Self::require_admin(&e, &admin)?;
+        let now = e.ledger().timestamp();
+        if Self::exits_frozen_until(e.clone()) > now {
+            e.storage().instance().set(&Cfg::ExitFrozenUntil, &now);
+            Self::bump_instance(&e);
+            ExitFreezeSet { until: now }.publish(&e);
+        }
+        Ok(())
+    }
+
+    /// Ledger time at which the freeze on withdrawal requests lapses. Zero, or
+    /// any time already past, means exits are open.
+    pub fn exits_frozen_until(e: Env) -> u64 {
+        e.storage()
+            .instance()
+            .get(&Cfg::ExitFrozenUntil)
+            .unwrap_or(0)
+    }
+
     /// Deposit USDC and receive agUSD 1:1. Returns the amount minted.
     ///
     /// The USDC lands before the agUSD is minted, so a token transfer that
@@ -766,7 +860,12 @@ impl Vault {
     /// integers cannot be reordered, which is a cheaper guarantee of FIFO than
     /// any structure that would have to be walked.
     pub fn request_withdrawal(e: Env, from: Address, amount: i128) -> Result<u64, VaultError> {
-        Self::require_not_paused(&e)?;
+        // Not require_not_paused. Whoever calls this is holding agUSD, which is
+        // already a claim on this Vault, and queueing it moves no money: the
+        // token is burned here and the USDC leaves in claim_withdrawal, which
+        // was never pausable. So the unbounded switch does not reach this, and
+        // the bounded one does.
+        Self::require_exits_open(&e)?;
         from.require_auth();
         if amount <= 0 {
             return Err(VaultError::InvalidAmount);
@@ -1644,6 +1743,13 @@ impl Vault {
         Ok(())
     }
 
+    fn require_exits_open(e: &Env) -> Result<(), VaultError> {
+        if e.ledger().timestamp() < Self::exits_frozen_until(e.clone()) {
+            return Err(VaultError::ExitsFrozen);
+        }
+        Ok(())
+    }
+
     fn read_claim(e: &Env, claim_id: u64) -> Result<Claim, VaultError> {
         e.storage()
             .persistent()
@@ -1788,6 +1894,17 @@ pub struct WithdrawalDeferred {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PauseToggled {
     pub paused: bool,
+}
+
+/// Emitted whenever the freeze on withdrawal requests moves, in either
+/// direction. `until` is the ledger time it lapses; a value at or before the
+/// current time means exits are open. Published as its own event rather than
+/// folded into PauseToggled so that holding exits shut is countable on-chain
+/// separately from the routine deposit pause it used to share a switch with.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExitFreezeSet {
+    pub until: u64,
 }
 
 /// Emitted when the Vault's own reserve floor moves. The floor is the limit
