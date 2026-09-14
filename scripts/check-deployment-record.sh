@@ -154,6 +154,31 @@ else
   echo "  SKIP  no docs clone at \$AGAMA_DOCS or the default path, so the docs page was not checked"
 fi
 
+# Every one of these addresses is written twice: a truncated form a human
+# reads, and the full form inside the link. Only the second one was ever
+# checked, so swapping a generation by rewriting the link left the page saying
+# CBH7NW5L while pointing at CAUOHPPN, and this script called it clean. A
+# reviewer reads the short form.
+echo ""
+echo "==> the visible short form of an address matches the address it links to"
+for F in README.md "$DOCS/content/stellar/deployments.md"; do
+  [ -f "$F" ] || continue
+  MISMATCH=$(python3 - "$F" <<'PY3'
+import io, re, sys
+s = io.open(sys.argv[1], encoding="utf-8").read()
+pat = r"\[`([A-Z0-9]+)\.\.\.([A-Z0-9]+)`\]\(https://stellar\.expert/explorer/testnet/contract/([A-Z0-9]+)\)"
+for head, tail, addr in re.findall(pat, s):
+    if not (addr.startswith(head) and addr.endswith(tail)):
+        print("%s...%s is displayed for %s" % (head, tail, addr))
+PY3
+)
+  if [ -n "$MISMATCH" ]; then
+    while IFS= read -r m; do bad "in $(basename "$F"): $m"; done <<< "$MISMATCH"
+  else
+    ok "$(basename "$F"): every short form matches its link"
+  fi
+done
+
 if [ "${1:-}" = "--wasm" ]; then
   echo ""
   echo "==> every deployed contract is byte for byte the source in this tree"
