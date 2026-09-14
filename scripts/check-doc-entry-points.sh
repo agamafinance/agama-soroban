@@ -27,10 +27,18 @@ mkdir -p "$CACHE"
 PASS=0; FAIL=0
 ok()  { PASS=$((PASS+1)); echo "  PASS  $1"; }
 bad() { FAIL=$((FAIL+1)); echo "  FAIL  $1"; }
+NOTES=0
 report() {
   while IFS='|' read -r verdict msg; do
     [ -n "$verdict" ] || continue
-    if [ "$verdict" = ok ]; then ok "$msg"; else bad "$msg"; fi
+    case "$verdict" in
+      ok)   ok "$msg" ;;
+      # Not a pass and not a failure: a gap somebody decided to carry, named in
+      # the record. Counted so it stays visible, kept out of the totals so it
+      # cannot be mistaken for either.
+      note) NOTES=$((NOTES+1)); echo "  NOTE  $msg" ;;
+      *)    bad "$msg" ;;
+    esac
   done < "$1"
 }
 
@@ -61,7 +69,7 @@ for k, v in c.items():
 echo ""
 echo "==> every live entry point is named in $DOC"
 python3 - "$CACHE" "$DOC" > "$CACHE/result" <<'PY'
-import io, os, re, sys
+import io, json, os, re, sys
 cache, doc = sys.argv[1:3]
 md = io.open(doc, encoding='utf-8').read()
 # SEP-41 is a published standard; its methods are described once as "SEP-41"
@@ -69,6 +77,9 @@ md = io.open(doc, encoding='utf-8').read()
 SEP41 = {'balance','transfer','transfer_from','approve','allowance','burn','burn_from',
          'decimals','name','symbol','mint','set_admin','admin','clawback',
          'set_authorized','authorized','total_supply'}
+DEFER = {k: v for k, v in json.load(
+    io.open('deployments/testnet.json', encoding='utf-8')
+).get('docEntryPointsDeferred', {}).items() if not k.startswith('_')}
 clean = True
 for fn_file in sorted(os.listdir(cache)):
     if not fn_file.endswith('.txt'):
@@ -78,12 +89,29 @@ for fn_file in sorted(os.listdir(cache)):
     fns = sorted({f for f in re.findall(r'\bfn ([a-z_][a-z0-9_]*)\(', src)
                   if not f.startswith('__') and f not in SEP41})
     absent = [f for f in fns if f not in md]
-    if absent:
+    # An entry point missing from the doc because somebody decided it stays
+    # missing is a different thing from one missing because nobody looked. The
+    # first is named in the record, reported, and counted; the second fails.
+    # Without the split this check goes red permanently the first time a doc
+    # edit is deferred, and a permanently red check is one nobody reads.
+    deferred = set(DEFER.get(name, {}).get('entry_points', []))
+    forgotten = [f for f in absent if f not in deferred]
+    carried = [f for f in absent if f in deferred]
+    if forgotten:
         clean = False
         print('bad|%s: %d entry point(s) the doc never names: %s'
-              % (name, len(absent), ', '.join(absent)))
+              % (name, len(forgotten), ', '.join(forgotten)))
+    elif carried:
+        print('note|%s: %d absent from the doc by decision: %s. See '
+              'docEntryPointsDeferred in deployments/testnet.json.'
+              % (name, len(carried), ', '.join(carried)))
     else:
         print('ok|%s, all %d documented' % (name, len(fns)))
+    stale = sorted(deferred - set(absent))
+    if stale:
+        clean = False
+        print('bad|%s: %s are documented but still listed as deferred, so the '
+              'declaration has outlived the gap' % (name, ', '.join(stale)))
 if not clean:
     print('bad|the architecture doc is not complete against the ledger')
 PY
@@ -131,5 +159,8 @@ PY
 report "$CACHE/result"
 
 echo ""
+if [ "${NOTES:-0}" -gt 0 ]; then
+  echo "  $NOTES documentation gap(s) carried by decision, named in the record."
+fi
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]
