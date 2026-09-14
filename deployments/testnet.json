@@ -690,16 +690,5 @@
       "amount": 150640000,
       "note": "USDC left in this Vault after every holder redeemed, with no agUSD outstanding to release it against. Recovered capital, booked but never minted against. It cannot be withdrawn: USDC leaves a Vault only through settle_allocation, which reaches an adapter that sends only back to the Vault it stores, and through a payout bounded by the agUSD burned to create the claim. There is no path to an admin, deliberately, so this is the price of a Vault generation rather than an oversight."
     }
-  ],
-  "docEntryPointsDeferred": {
-    "_why": "docs/ARCHITECTURE.md is held in sync with a document already sent out, so editing it is a decision about that document and not a maintenance task. Entry points listed here are known to be on the ledger and absent from the doc, deliberately. The check reports them as DEFERRED, which is not PASS: they are counted and named on every run, so the doc's incompleteness stays visible without a red that nobody can clear. Anything absent and NOT listed here still fails, which is the part that matters.",
-    "vault": {
-      "entry_points": [
-        "freeze_exits",
-        "thaw_exits",
-        "exits_frozen_until"
-      ],
-      "note": "Shipped with the Vault generation that stopped an admin holding withdrawals shut indefinitely. The doc's set_paused row also still reads 'Circuit breaker.' on its own, which now overstates it: the deployed switch no longer reaches withdrawal requests. Both the additions and that correction are pending the same decision."
-    }
-  }
+  ]
 }

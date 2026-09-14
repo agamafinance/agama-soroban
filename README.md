@@ -1204,3 +1204,4 @@ All Soroban contracts are open-sourced from day one. Contracts deployed on Stell
 - App: [app.agama.finance/stellar](https://app.agama.finance/stellar)
 - X: [@agamafinance](https://x.com/agamafinance)
 - Technical Architecture: [Markdown](docs/ARCHITECTURE.md) · [PDF](docs/Agama_Technical_Architecture.pdf)
+- Security and Testing: [SECURITY.md](SECURITY.md), the threat model, the access control table and what the test suites cover
