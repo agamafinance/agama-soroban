@@ -324,7 +324,12 @@ assert_eq "the private credit adapter names both" "$(q0 "$PC" vault)" "$VAULT"
 assert_eq "the book is empty to start with" "$(q0 "$ENGINE" total_allocated)" "0"
 
 BEFORE=$(q0 "$VAULT" idle_reserves)
-LIVE_MOVE=$(( $(q0 "$VAULT" free_reserves) / 4 ))
+# accounted_free_reserves, not free_reserves. The second reads the real token
+# balance; the Engine's floor and caps measure on the cash the Vault booked, so
+# on a Vault holding USDC its books were never told about, a quarter of the raw
+# balance is more than the floor will release and the allocation comes back
+# refused.
+LIVE_MOVE=$(( $(q0 "$VAULT" accounted_free_reserves) / 4 ))
 echo ""
 echo "-- The honest path, on the production wiring. Borrowed and handed back."
 echo "  allocate tx   $(tx "$ENGINE" allocate --admin "$ADMIN" --pool_id "$PC" --amount "$LIVE_MOVE")"
