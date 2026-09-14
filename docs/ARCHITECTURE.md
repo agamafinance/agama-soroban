@@ -8,7 +8,8 @@ June 2026, revised September 2026 · Confidential
 **The same architecture, elsewhere in this repository:**  
 [`Agama_Technical_Architecture.pdf`](Agama_Technical_Architecture.pdf) — this document as a rendered PDF ·  
 [`../contracts`](../contracts) and [`../adapters`](../adapters) — the Soroban sources described below ·  
-[`../deployments/testnet.json`](../deployments/testnet.json) — where those contracts are deployed on testnet.
+[`../deployments/testnet.json`](../deployments/testnet.json) — where those contracts are deployed on testnet ·  
+[`../SECURITY.md`](../SECURITY.md) — the threat model, access control and test coverage.
 
 ---
 
@@ -483,9 +484,7 @@ Originator (servicing data)
 | `set_quorum_threshold(admin, feed_id, n)` / `quorum_threshold(feed_id) → u32` | A feed's threshold, 1 until raised. Per-feed and reversible, an operating parameter rather than a write-once guard. |
 | `quorum_votes(feed_id, timestamp, nav) → u32` | Votes so far for one value in one round. Zero whether the round never started or nobody cast that value. |
 
-**Test Coverage (all contracts)**
-
-End-to-end flows (deposit → stake → yield → redeem) · Cap-violation rejection · Re-initialization guards · Access control, with targeted authorizations rather than a blanket mock · Zero/negative validation · Oracle staleness, deviation, band and rate limit · Oracle quorum: partial votes commit nothing, one vote per reporter per round, disagreeing values never reach quorum, every guard still binds on the value a round agreed on · Withdrawal queue ordering and permissionless settlement · A hostile Allocation Engine bounded by the Vault's own floor · Write-down accounting across three books · Two-step admin handover · The adapter solvency invariant, that an adapter never holds less USDC than it has booked, asserted after every call in a sequence that moves it · Property-based fuzzing over randomised operation sequences, on the Vault with the Allocation Engine and both adapters, on sagUSD, and on the oracle's quorum. It is what found that `Engine::book_recovery` could lower the reserve floor's base, in four operations, which is why that call no longer exists. Run harder than the committed case counts and the numbers written down: 1500 cases and sequences of up to 89 operations on the Vault, both clean. One property it is measured **not** to reach, a single reporter carrying a quorum by voting into a round twice, is pinned by a constructed test instead, and the oracle suite says so rather than letting its own existence imply otherwise.
+**Test coverage** is described in [`SECURITY.md`](../SECURITY.md).
 
 ### 4.6 Pool Adapters
 
@@ -506,7 +505,7 @@ Both expose the same interface, which is what lets the Engine treat a new RWA ty
 | `settlement_window() → (u32, u32)` (private credit) / `settlement_days() → u32` (Etherfuse) | Cash conversion time. **Nothing on-chain enforces either.** They are published so the Engine's operators and the withdrawal queue can be sized against the real settlement time of the book. Etherfuse reports 0: redemption is on-chain. |
 | `propose_admin` / `accept_admin` / `admin` / `pending_admin` | The same two-step handover every contract here carries. |
 
-The adapter solvency invariant, that an adapter never holds less USDC than it has booked, is asserted after every call in the fuzzer's sequences rather than argued for.
+An adapter never holds less USDC than it has booked.
 
 ## 5. Settlement & Off-Chain Bridge
 
@@ -541,9 +540,12 @@ Originator (fiat repayment: principal + interest)
 5. **Pool removal:** Admin delists the defaulting pool. Existing exposure runs off naturally.
 6. **Recovery:** A partial repayment against a position that still has exposure is a normal `deallocate`. A recovery on a position already written down to zero is `recover(admin, pool_id)`, which sweeps whatever the adapter holds above its booked exposure to the Vault, and releases the recognised loss against it on both books. There is still no path that writes an exposure back *up*: the recovery lands as free reserves, not as redeployed capital, and `floor_base` does not move, because the loss it removes from the base is exactly the cash it adds. Before it existed, a recovery had nowhere to go — `deallocate` is capped at the exposure and there was none — so the money sat in the adapter, and because an adapter holding USDC cannot be repointed, a single stroop of it also bricked the adapter's only repair path. Three generations of the private credit adapter were retired for exactly that, each retirement recorded in `deployments/testnet.json`.
 
-7. **A recovery whose cash is already home is booked with `book_recovery`, which closes M1 of the third review.** The adapter lets its own admin take `recover_surplus` as well as the Engine, which is how an adapter stuck to superseded counterparties is unstuck without a working Engine. Taken that way the cash reaches the Vault with no book moving, and `recover` then gets `NothingToRecover` from the adapter, so the write-down stays on `recognised_losses` and on the pool's concentration charge with nothing able to correct it. `book_recovery(admin, pool_id, amount)` is `recover` with the adapter leg removed. It is bounded by the same arithmetic, because the bound was never in the adapter: the Vault subtracts the balance it can account for from the balance it holds and refuses anything larger, so a recovery is still evidenced rather than asserted.
+7. **A recovery whose cash is already home is booked with `book_recovery`.** The adapter lets its own admin take `recover_surplus` as well as the Engine, which is how an adapter stuck to superseded counterparties is unstuck without a working Engine. Taken that way the cash reaches the Vault with no book moving, and `recover` then gets `NothingToRecover` from the adapter, so the write-down stays on `recognised_losses` and on the pool's concentration charge with nothing able to correct it. `book_recovery(admin, pool_id, amount)` is `recover` with the adapter leg removed. It is bounded by the same arithmetic, because the bound was never in the adapter: the Vault subtracts the balance it can account for from the balance it holds and refuses anything larger, so a recovery is still evidenced rather than asserted.
 
-    This entry point was removed once. An invariant fuzzer showed it could lower `floor_base` in four operations, when the base read the real token balance: a donation raised the base on arrival and the booking lowered `recognised_losses` by the same amount with no further cash moving, so one dollar was counted on arrival and spent again on booking. The base is measured on `booked_reserves` now and both halves are neutral under it, an unannounced arrival moving no term and a booking moving `booked_reserves` up by exactly what it moves `recognised_losses` down. The defect was a property of the basis rather than of the call. The fuzzer drives the operation again with the `floor_base` invariant applied to it rather than excluded from it, clean at 1500 cases wide and at 300 cases of up to 89 operations.
+    The reserve floor's base is measured on `booked_reserves`, so both halves
+    of a recovery are neutral under it: an unannounced arrival moves no term,
+    and a booking moves `booked_reserves` up by exactly what it moves
+    `recognised_losses` down.
 
     What it takes that `recover` does not is the pool, as a parameter. In `recover` the pool decides which adapter is swept, so the cash and the attribution come from one place. Here the cash is already in the Vault and unattributed by construction, since being unable to say where it came from is the whole reason the call exists, so which pool gets its concentration charge back is something the admin asserts and nothing on-chain can check. The global loss book and the Vault's move by exactly the cash that arrived whatever pool is named, so solvency does not rest on the assertion; the per-pool cap does. That is not a privilege escalation, since `set_caps` lets the same admin widen the same limit outright, and no guard can fix it, since there is no fact to check the claim against. It is a disclosure, and `a_booked_recovery_releases_the_cap_of_whichever_pool_the_admin_names` is a test rather than a sentence.
 
@@ -591,7 +593,7 @@ The Engine's base is the Vault's `free_reserves()` plus everything this Engine h
 **The base is not net assets, and it is not the balance either.** `floor_base` is
 `booked_reserves + deployed_capital + recognised_losses - outstanding_liabilities`: everything the Vault has
 accounted for from its own flows, plus what is out at a pool, plus what has been written off, less what the queue is
-owed. Two separate findings pushed it here.
+owed.
 
 It is not net assets because `record_writedown` lowers net assets with no cash moving anywhere, so a floor measured
 against them is a floor whose absolute size its own caller can lower at will. Allocating to the floor and then writing
@@ -602,9 +604,7 @@ invariant under a write-down exactly as it is under an allocation.
 And it is not the raw balance because `idle_reserves` reads the real token balance, so cash arriving without the books
 being told, a misdirected repayment, an over-payment, an adapter admin's own surplus sweep, a donation, raises the base
 the moment it lands. `record_recovery` books the same cash later and lowers `recognised_losses` as it does, and both
-terms are in the base, so the dollar is counted on arrival and spent again on booking. An invariant fuzzer found that in
-four operations through `Engine::book_recovery`, which was removed for it and restored once the basis changed, the
-same fuzzer now driving it with this invariant applied rather than excluded. Measured on accounted cash, unannounced cash
+terms are in the base, so the dollar is counted on arrival and spent again on booking. Measured on accounted cash, unannounced cash
 counts for nothing until something books it, and booking it moves one term up by exactly what it moves the other down.
 `settle_allocation` measures the same way, for both its liquidity check and its floor check, or the two disagree and an
 allocation stops being neutral on the base. The consequence is deliberate and conservative: capital nobody deposited is
@@ -625,11 +625,9 @@ also why the caps moved with it: their denominator is total assets, and a larger
 counting cash nobody deposited would have loosened exactly the limits that exist to be tight.
 
 The cost is one extra cross-contract call per allocation, about 180,000 instructions, and it moves the registry's
-worst-case ceiling from 277 same-bucket pools to 276. Two tests hold the result: a donation to the Vault moves neither
-the Engine's base nor its ratio, and cash the books cannot explain is refused on liquidity by the Engine before the
-Vault ever has to refuse it. Both fail if the Engine is put back on `free_reserves`.
+worst-case ceiling from 277 same-bucket pools to 276.
 
-The terms are summed unclamped and the total clamped once, which the same fuzzer also insisted on. Clamping the cash
+The terms are summed unclamped and the total clamped once. Clamping the cash
 term first lets a withdrawal request push it negative while capital is out, and a `deallocate` then raises the clamped
 term by less than it lowers deployed capital, drifting the base down by a stroop per deallocation.
 
@@ -669,51 +667,11 @@ The floor is set by the Curator through an admin-gated call, and every change em
 - Payouts are outside the circuit breaker — a queued claim has already burned its agUSD, so pausing it would leave the holder with neither the token nor the cash.
 - No claim expiry by design, and now none by accident either. Claim records are persistent with a 90 day TTL that is bumped whenever the claim is written, which for a claim sitting behind a stalled queue is never; the book behind it settles at D+15 to D+90, so outliving the TTL is an ordinary event. An archived persistent entry cannot be read, so the head claim archiving used to stop every withdrawal until somebody paid to restore it. `bump_claim(claim_id)` is the permissionless entry point that keeps it readable, and it is what the keeper this document already described was supposed to be calling.
 
-## 7. Security Model (STRIDE)
+## 7. Security Model
 
-| Category | Threat | Mitigation |
-|---|---|---|
-| **Spoofing** | Unauthorized agUSD mint | `mint` restricted to the recorded minter (the Vault), and `set_minter` closes at the first mint. `burn` is holder-authorized and cannot inflate supply. `require_auth()` throughout. |
-| **Spoofing** | Fake oracle reporter | Authorized reporter set. `push_nav()` validates caller. Rotation requires admin + event. A feed's quorum threshold, admin-settable and 1 by default, can require several distinct reporters to agree before a value commits, so spoofing a single key stops being enough on its own; see §4.5 for what that does and does not cover. |
-| **Tampering** | NAV manipulation | Three guards, not one: a per-push deviation bound (>5% rejected), an absolute band per feed that also covers the first report, and a minimum interval in ledger time between accepted values. The reference point is persistent, so it cannot expire out from under the checks that read it. |
-| **Tampering** | Allocation to compromised pool | On-chain concentration caps (pool, originator, jurisdiction) and the reserve floor, all four in bps of net assets. `allocate()` reverts if any is exceeded. `register_pool` refuses an adapter that does not name this Engine and this Engine's Vault, and `allocate`, `deallocate` and `recover` re-run that check rather than resting on it. |
-| **Tampering** | An adapter left behind when the Engine follows its Vault to a new generation | The adapter check is a condition of use and not only of registration. `set_vault` moves the Engine's end of a pairing the registry cannot be cleared of, so a pool registered before it names a Vault the Engine no longer governs — and the next allocation would release the new Vault's USDC to an adapter that repays the old one, which in this protocol is a superseded Vault where nothing can move USDC at all. `allocate`, `deallocate` and `recover` refuse it with `AdapterMismatch` until `set_counterparties` brings the adapter across. |
-| **Tampering** | Hostile or mis-wired Allocation Engine | The Vault enforces the reserve floor itself in `settle_allocation`, against its own deployed capital book, which no Engine can write to. `set_engine`'s interrogation of an incoming Engine catches mis-wiring and is not relied on for more than that. |
-| **Tampering** | Exposure that no longer exists | `write_down` recognises a credit loss on-chain, admin-gated and evented, so the reserve ratio stops overstating the book by the size of the loss. |
-| **Tampering** | An admin using a write-down to reset a concentration cap | Caps are measured on `charged_exposure`, deployed plus written off, so a write-off keeps consuming the pool's limit, and its originator's and its jurisdiction's, until `recover` brings the cash back. Filling a pool, writing it off and refilling it now fails the same cap the first allocation passed. |
-| **Denial of Service** | Capital stranded in an adapter after a write-down | `recover` sweeps the surplus over booked exposure to the adapter's stored Vault. No destination parameter and no amount parameter, so it cannot be aimed, and the Vault verifies the arrival before it books it. |
-| **Denial of Service** | A head claim archiving and stopping the queue | `bump_claim(claim_id)` is permissionless and extends a claim's TTL, so keeping the queue readable does not depend on any one keeper being alive. |
-| **Elevation of Privilege** | Front-running the deploy to claim admin | Every protocol contract wires itself in a `__constructor` that runs inside the deploy transaction, so there is no uninitialized contract for a competing `initialize` to reach. |
-| **Elevation of Privilege** | An admin using a write-down to create room under the reserve floor | Recognised losses stay in `floor_base` permanently, so a write-down moves net assets and does not move the floor's denominator. Alternating `allocate` and `write_down` releases nothing an honest single allocation would not have. |
-| **Repudiation** | Originator denies allocation | Soroban events on every `allocate` / `deallocate`. Indexed with block provenance. |
-| **Repudiation** | Disputed yield | Every distribution moves real agUSD in, so it leaves a SEP-41 `transfer` event and a matching move in `nav()` and `exchange_rate()`. Fully reconstructable from the chain. A dedicated `yield_distributed` event is planned. |
-| **Info Disclosure** | LP position exposure | Public chain by design. No private data in contracts. |
-| **DoS** | Withdrawal queue flood | Minimum amount + agUSD burn cost. TTL on claim records. |
-| **DoS** | Withdrawal queue stall | `settle_withdrawal()` is permissionless and pays the head claim to its recorded owner, so a claimant who never returns cannot hold the queue behind them. |
-| **DoS** | Withdrawal queue freeze on an undeliverable payout | Delivery is attempted rather than assumed. A claim the token refuses is deferred and stepped over, unpaid and still owed, so a claimant with no USDC trustline, a frozen one or a limit below the claim cannot stop everybody else's withdrawals. |
-| **DoS** | Reserves lent out from under a queued claim | Queued liabilities are subtracted from free reserves and net assets before any cap or floor is computed. |
-| **DoS** | Oracle starvation | Deposits/stakes continue. Only withdrawals/allocations revert. Admin updates reporter set. |
-| **Elev. of Privilege** | Admin key compromise | Admin cannot transfer USDC directly. Only `allocate()` (cap-bound and floor-bound, at both the Engine and the Vault) or `pause()`. Multi-sig (2-of-3) planned. |
-| **Elev. of Privilege** | Admin key lost or compromised, permanently | Every contract carries a two-step handover, `propose_admin` then `accept_admin`, with the successor authorizing the second step itself so the role cannot be handed to an address nobody controls. Before this there was no rotation anywhere and a lost key was unrecoverable. |
-
-### 7.1 Access Control
-
-| Role | V1 Holder | Permissions | Evolution |
-|---|---|---|---|
-| Admin | 2-of-3 multi-sig | Pause, register pools, set caps, set the reserve floor in bps on both the Engine and the Vault, write down a defaulted exposure, repoint counterparties while the guards allow it, update reporters, propose a successor admin | Governance + 48h timelock |
-| Reporter | Dedicated hot wallet(s) | Push or vote NAV to Oracle | V1: one reporter, threshold 1. Every feed on testnet runs at that default. V2: `set_quorum_threshold` raised to 2-of-3 per feed, which the contract supports and which waits on reporter keys that are genuinely independent |
-| Yield Distributor | = Admin in V1 | `distribute_yield()`, which moves the distributor's own agUSD | Dedicated service key, then keeper network |
-| Curator | = Admin in V1 | Whitelist pools, risk params | Independent risk committee |
-
-The write-down entry in that table is worth reading precisely, because it is the most dangerous call in the system and the one whose bound is arithmetic rather than a signature. It reduces recorded exposure with nothing arriving, so it is the move an admin would reach for to make a book look solvent or to create room under the floor. It cannot do the second: recognised losses stay in the floor's denominator permanently, so alternating `allocate` with `write_down` releases nothing that a single honest allocation would not have released. It can still do the first, in the sense that an operator who writes off a healthy position is misreporting; what stops that is the multi-signature admin and the timelock in this table, and the event every write-down emits, not a check inside a contract. It also requires the same address to be the admin of both the Engine and the Vault, so a partial rotation of one key disables loss recognition rather than weakening it. That is the safe direction to fail in and it is not the discoverable one, so the Engine says so twice: `admin_aligned()` reports the divergence at any time, and `write_down` and `recover` refuse with a named `AdminMismatch` instead of trapping on the Vault's `NotAdmin` several frames down. Rotate the Vault and the Engine together, or expect the next default to be the thing that tells you.
-
-The same table's "repoint counterparties while the guards allow it" is worth reading twice for a different reason. Each of those guards is a statement about two contracts, and the Engine's Vault pointer is one address inside four of them, so moving it invalidates every one that was checked against the previous value. `Vault::set_engine`, `Adapter::set_counterparties` and both constructors re-check on the call that moves them; the pool registry is a map with no `unregister_pool`, so it cannot be re-checked at the point of the move and is checked at the point of use instead. `write_down` deliberately does not do that, and the exception is load-bearing rather than an oversight: it moves no capital, and it is the only call that can unwind an adapter whose Vault pointer has already gone stale, because `set_counterparties` refuses an adapter that is not empty and `deallocate` cannot empty one.
-
-**Pausability:** When paused, deposits, withdrawal *requests* and new allocations are blocked. Withdrawal *payouts* are not: `request_withdrawal` burns the agUSD as it queues the claim, so pausing the payout would leave the holder with neither the token nor the cash for as long as the switch stayed on. Stopping the flows that create new obligations is what a breaker is for; refusing to honour obligations already on the books is something else. Staking/unstaking continue. Oracle updates continue.
-
-**Admin rotation:** `propose_admin(admin, new_admin)` records a successor and changes nothing; `accept_admin(new_admin)` moves the role and can only be called by the proposed address, authorizing for itself. Two steps rather than one because a single-call setter aimed at an address nobody controls produces the unrecoverable state rotation exists to fix, in one transaction, with no second chance. There is no cancel entry point: a proposal replaces any earlier one, a pending admin can do nothing until it accepts, and an admin withdrawing a proposal proposes itself. Every contract also exposes `pending_admin()`, so a proposal in flight is readable by anyone rather than only by the two addresses involved.
-
-**Upgrade path:** V1 contracts are immutable. Upgrades require redeployment + migration. V2 may introduce controlled upgrade proxy with timelock.
+The threat model, the access control table and the admin rotation and
+pausability notes live in [`SECURITY.md`](../SECURITY.md), at the root of this
+repository, together with what the test suites cover.
 
 ## 8. Soroban Storage Management
 
