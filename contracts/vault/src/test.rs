@@ -267,7 +267,7 @@ fn a_claim_can_only_be_taken_by_its_owner_and_only_once() {
 /// pay the claims already in it is a freeze on people who have already given up
 /// their tokens.
 #[test]
-fn pausing_blocks_deposits_and_requests_but_never_a_payout() {
+fn pausing_blocks_deposits_and_allocations_but_not_an_exit() {
     let f = setup();
     let alice = depositor(&f, 1_000 * USDC);
     let claim_id = f.vault.request_withdrawal(&alice, &(100 * USDC));
@@ -280,10 +280,12 @@ fn pausing_blocks_deposits_and_requests_but_never_a_payout() {
         f.vault.try_deposit(&alice, &(100 * USDC)),
         Err(Ok(VaultError::Paused))
     );
-    assert_eq!(
-        f.vault.try_request_withdrawal(&alice, &(100 * USDC)),
-        Err(Ok(VaultError::Paused))
-    );
+    // And the request goes through, which is the half that used to be refused.
+    // Alice is holding agUSD, which is already a claim on this Vault; queueing
+    // it burns the token and moves no cash, and the payout it queues was never
+    // pausable anyway. Holding it shut is freeze_exits, which is bounded.
+    let alice_second = f.vault.request_withdrawal(&alice, &(100 * USDC));
+    assert!(alice_second > claim_id);
     // New allocations stop too: an emergency stop that keeps deploying capital
     // into pools is not a stop. The Engine's checks pass, and the Vault
     // refuses the release, so the whole allocation reverts.
@@ -302,6 +304,10 @@ fn pausing_blocks_deposits_and_requests_but_never_a_payout() {
     assert_eq!(f.usdc.balance(&alice), before + 100 * USDC);
     assert!(f.vault.paused());
 
+    // Take the second request too, so the queue is empty again and the
+    // permissionless path below is looking at bob's claim rather than alice's.
+    f.vault.claim_withdrawal(&alice, &alice_second);
+
     // The permissionless path is inside the breaker in exactly the same way:
     // it is the same payment.
     f.vault.set_paused(&f.admin, &false);
@@ -310,6 +316,131 @@ fn pausing_blocks_deposits_and_requests_but_never_a_payout() {
     f.vault.set_paused(&f.admin, &true);
     f.vault.settle_withdrawal();
     assert_eq!(f.vault.claim_status(&bob_claim), ClaimStatus::Claimed);
+}
+
+#[test]
+fn an_exit_freeze_lapses_on_its_own_whatever_the_admin_does() {
+    let f = setup();
+    let alice = depositor(&f, 1_000 * USDC);
+
+    // The routine switch does not reach exits any more.
+    f.vault.set_paused(&f.admin, &true);
+    let before_freeze = f.vault.request_withdrawal(&alice, &(100 * USDC));
+    f.vault.claim_withdrawal(&alice, &before_freeze);
+    f.vault.set_paused(&f.admin, &false);
+
+    let until = f.vault.freeze_exits(&f.admin);
+    assert_eq!(until, T0 + MAX_EXIT_FREEZE_SECS);
+    assert_eq!(f.vault.exits_frozen_until(), until);
+    assert_eq!(
+        f.vault.try_request_withdrawal(&alice, &(100 * USDC)),
+        Err(Ok(VaultError::ExitsFrozen))
+    );
+
+    // One second short of the bound it is still shut.
+    f.e.ledger().set_timestamp(until - 1);
+    assert_eq!(
+        f.vault.try_request_withdrawal(&alice, &(100 * USDC)),
+        Err(Ok(VaultError::ExitsFrozen))
+    );
+
+    // At the bound it is open, and nobody had to do anything. This is the
+    // whole point: the admin is not asked to release it.
+    f.e.ledger().set_timestamp(until);
+    let after = f.vault.request_withdrawal(&alice, &(100 * USDC));
+    assert!(after > before_freeze);
+}
+
+#[test]
+fn a_freeze_cannot_be_re_armed_to_make_it_permanent() {
+    let f = setup();
+    let alice = depositor(&f, 1_000 * USDC);
+
+    let until = f.vault.freeze_exits(&f.admin);
+
+    // The moment it lapses, and for the whole cooldown after it, the shutter
+    // cannot come back down. Without this the bound buys nothing: 72 hours at
+    // a time, forever, is forever.
+    f.e.ledger().set_timestamp(until);
+    assert_eq!(
+        f.vault.try_freeze_exits(&f.admin),
+        Err(Ok(VaultError::ExitFreezeTooSoon))
+    );
+    f.e.ledger()
+        .set_timestamp(until + EXIT_FREEZE_COOLDOWN_SECS - 1);
+    assert_eq!(
+        f.vault.try_freeze_exits(&f.admin),
+        Err(Ok(VaultError::ExitFreezeTooSoon))
+    );
+    // And through all of it, exits are open.
+    f.vault.request_withdrawal(&alice, &(100 * USDC));
+
+    f.e.ledger()
+        .set_timestamp(until + EXIT_FREEZE_COOLDOWN_SECS);
+    let second = f.vault.freeze_exits(&f.admin);
+    assert_eq!(
+        second,
+        until + EXIT_FREEZE_COOLDOWN_SECS + MAX_EXIT_FREEZE_SECS
+    );
+}
+
+#[test]
+fn lifting_a_freeze_early_shortens_the_wait_for_the_next_one() {
+    let f = setup();
+    let alice = depositor(&f, 1_000 * USDC);
+
+    let until = f.vault.freeze_exits(&f.admin);
+    let early = T0 + 60 * 60;
+    f.e.ledger().set_timestamp(early);
+    f.vault.thaw_exits(&f.admin);
+
+    // Open again, an hour in rather than seventy-two.
+    assert_eq!(f.vault.exits_frozen_until(), early);
+    f.vault.request_withdrawal(&alice, &(100 * USDC));
+
+    // And the cooldown runs from when exits actually reopened, not from when
+    // the freeze would have lapsed, so an admin who lifts one early is not
+    // made to wait longer for the next.
+    assert!(early + EXIT_FREEZE_COOLDOWN_SECS < until + EXIT_FREEZE_COOLDOWN_SECS);
+    f.e.ledger()
+        .set_timestamp(early + EXIT_FREEZE_COOLDOWN_SECS);
+    f.vault.freeze_exits(&f.admin);
+
+    // thaw_exits never extends: called with exits already open it is a no-op.
+    let open_at = early + EXIT_FREEZE_COOLDOWN_SECS + MAX_EXIT_FREEZE_SECS;
+    f.e.ledger().set_timestamp(open_at);
+    f.vault.thaw_exits(&f.admin);
+    assert_eq!(f.vault.exits_frozen_until(), open_at);
+}
+
+#[test]
+fn only_the_admin_can_freeze_or_thaw_exits() {
+    let f = setup();
+    let stranger = Address::generate(&f.e);
+    assert_eq!(
+        f.vault.try_freeze_exits(&stranger),
+        Err(Ok(VaultError::NotAdmin))
+    );
+    assert_eq!(
+        f.vault.try_thaw_exits(&stranger),
+        Err(Ok(VaultError::NotAdmin))
+    );
+}
+
+#[test]
+fn a_freeze_never_touches_a_claim_already_queued() {
+    let f = setup();
+    let alice = depositor(&f, 1_000 * USDC);
+    let claim_id = f.vault.request_withdrawal(&alice, &(100 * USDC));
+
+    f.vault.freeze_exits(&f.admin);
+
+    // The agUSD behind this claim is already burned. Holding the cash back now
+    // would leave the holder with neither, which is the thing the payout path
+    // has never been allowed to do and still is not.
+    let before = f.usdc.balance(&alice);
+    f.vault.claim_withdrawal(&alice, &claim_id);
+    assert_eq!(f.usdc.balance(&alice), before + 100 * USDC);
 }
 
 #[test]
