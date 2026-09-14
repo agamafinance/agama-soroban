@@ -313,6 +313,11 @@ N_LOSS=$(q0 "$VAULT" recognised_losses)
 N_BASE=$(q0 "$VAULT" floor_base)
 N_QUEUED=$(q0 "$VAULT" outstanding_liabilities)
 N_TOTAL=$((N_FREE + N_DEP))
+# get_net_assets reports the gross figure, built on the real token balance, while
+# every N_ above is accounted. The two differ by whatever reached this Vault
+# without its books being told, which cannot be cleared once it has, so the
+# comparison nets it out rather than reading one and expecting the other.
+N_UNBOOKED=$(( $(q0 "$VAULT" idle_reserves) - $(q0 "$VAULT" booked_reserves) ))
 # The base is booked_reserves + deployed + losses - liabilities, summed
 # unclamped and clamped once at zero, and accounted free reserves are
 # booked_reserves net of the queue. So the identity below holds whenever the
@@ -431,7 +436,7 @@ echo "    write_down       tx $(tx "$ENGINE" write_down --admin "$ADMIN" --pool_
 assert_eq "the adapter is still holding it, exactly as on the old stack" \
   "$(q "$USDC" balance --id "$PC")" "$((PC_HELD0 + LEG1))"
 assert_eq "the Vault's deployed book has fallen by the loss" "$(q "$VAULT" deployed_capital)" "$LEG2"
-assert_eq "net assets have fallen by it too, which is the honest number" "$(q "$VAULT" get_net_assets)" "$((N_TOTAL - LEG1))"
+assert_eq "net assets have fallen by it too, which is the honest number" "$(( $(q0 "$VAULT" get_net_assets) - N_UNBOOKED ))" "$((N_TOTAL - LEG1))"
 assert_eq "recognised_losses has risen by exactly the loss" "$(q "$VAULT" recognised_losses)" "$((N_LOSS + LEG1))"
 assert_eq "and so has the Engine's written_off" "$(q "$ENGINE" written_off)" "$((N_LOSS + LEG1))"
 
