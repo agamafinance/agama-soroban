@@ -193,6 +193,23 @@ d = json.load(open('deployments/testnet.json'))
 for e in d.get('pendingRedeployment', []):
     print(e['contract'])
 ")
+  # A contract whose source has deliberately moved ahead of the ledger, with the
+  # gap named. Distinct from pendingRedeployment, which claims the ledger runs
+  # what this tree compiles and only the metadata differs. This claims the
+  # opposite, so it is reported rather than passed: AHEAD is not PASS, and it is
+  # counted separately at the end so it cannot be read as a clean run.
+  AHEAD=$(python3 -c "
+import json
+d = json.load(open('deployments/testnet.json'))
+for e in d.get('sourceAheadOfLedger', []):
+    if not e.get('what_the_ledger_lacks'):
+        raise SystemExit('sourceAheadOfLedger entry for %s names no gap' % e['contract'])
+    print(e['contract'])
+")
+  AHEAD_N=0
+  if [ -n "$AHEAD" ]; then
+    echo "  declared as source ahead of the ledger: $(echo "$AHEAD" | tr '\n' ' ')"
+  fi
   if [ -n "$PENDING" ]; then
     echo "  declared as pending redeployment: $(echo "$PENDING" | tr '\n' ' ')"
   fi
@@ -206,7 +223,9 @@ for e in d.get('pendingRedeployment', []):
       # A contract that matches must not be sitting in the declared list, or the
       # declaration has outlived the divergence and is now a false statement of
       # its own.
-      if echo "$PENDING" | grep -qx "$name"; then
+      if echo "$AHEAD" | grep -qx "$name"; then
+        bad "$name matches the chain but is still declared as source ahead of it"
+      elif echo "$PENDING" | grep -qx "$name"; then
         bad "$name matches the chain but is still declared as pending redeployment"
       else
         ok "$name"
@@ -249,7 +268,12 @@ PY2
           ok "$name differs and is declared, outside the code section: $DLIST"
         fi
       else
-        bad "$name differs and nothing declares it ($DLIST): chain ${chain:0:16} vs local ${local_hash:0:16}"
+        if echo "$AHEAD" | grep -qx "$name"; then
+          AHEAD_N=$((AHEAD_N+1))
+          echo "  AHEAD $name: the ledger runs an older generation ($DLIST). deployments/testnet.json names what it lacks under sourceAheadOfLedger."
+        else
+          bad "$name differs and nothing declares it ($DLIST): chain ${chain:0:16} vs local ${local_hash:0:16}"
+        fi
       fi
     fi
   done < <(python3 -c "
@@ -329,5 +353,8 @@ for e in d.get('superseded', []):
 fi
 
 echo ""
+if [ "${AHEAD_N:-0}" -gt 0 ]; then
+  echo "  $AHEAD_N contract(s) are declared source-ahead: the source here is not what is deployed."
+fi
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]
