@@ -235,6 +235,76 @@ fn out_of_bounds_deviation_fails_push_nav() {
     assert_eq!(f.oracle.last_update(&FEED_PC_NAV).timestamp, T0 + 86_400);
 }
 
+/// The deviation bound is exact, to the stroop, in both directions.
+///
+/// It was not. The check computed `|nav - last| * BPS / last` and compared the
+/// result against the bound, and integer division truncates toward zero, so the
+/// computed figure understates the move. Anything between the bound and one
+/// basis point above it rounded down onto the bound and was accepted.
+///
+/// On the deployed private credit feed that is reachable arithmetic rather than
+/// a corner: a NAV of 10000000 against a 500 bps bound allows 500000 stroops of
+/// movement, and 500001 through 500999 all computed as 500 and passed. The
+/// bound advertised 5% and enforced 5.00999%.
+///
+/// Small, and the direction is what makes it worth fixing: every other limit in
+/// this protocol compares by multiplying rather than by dividing, precisely so
+/// that no limit is looser than it says. The reserve floor never divides. This
+/// one now matches, and the reported `deviation_bps` in the rejection event
+/// still divides, because a number shown to a human may round.
+#[test]
+fn the_deviation_bound_is_exact_to_the_stroop() {
+    let f = setup();
+    let base = ONE; // 10_000_000, and the PC feed's bound is 500 bps
+    f.oracle.push_nav(&f.reporter, &FEED_PC_NAV, &base, &T0);
+    let bound_bps = f.oracle.get_feed(&FEED_PC_NAV).deviation_bps as i128;
+    assert_eq!(bound_bps, 500);
+
+    // Exactly on the bound: accepted, and it has to stay accepted.
+    let exact = base + base * bound_bps / 10_000;
+    f.e.ledger().set_timestamp(T0 + 86_400);
+    f.oracle
+        .push_nav(&f.reporter, &FEED_PC_NAV, &exact, &(T0 + 86_400));
+    assert_eq!(f.oracle.get_nav(&FEED_PC_NAV), exact);
+
+    // One stroop past it, from the same base. The truncating form computed 500
+    // for every move up to 500999 and let them through.
+    let f2 = setup();
+    f2.oracle.push_nav(&f2.reporter, &FEED_PC_NAV, &base, &T0);
+    let over = base + base * bound_bps / 10_000 + 1;
+    f2.e.ledger().set_timestamp(T0 + 86_400);
+    assert_eq!(
+        f2.oracle
+            .try_push_nav(&f2.reporter, &FEED_PC_NAV, &over, &(T0 + 86_400)),
+        Err(Ok(OracleError::DeviationOutOfBounds)),
+        "one stroop past the bound was accepted"
+    );
+
+    // And the far end of the rounding window, which is where it was widest.
+    let f3 = setup();
+    f3.oracle.push_nav(&f3.reporter, &FEED_PC_NAV, &base, &T0);
+    let widest = base + base * (bound_bps + 1) / 10_000 - 1;
+    f3.e.ledger().set_timestamp(T0 + 86_400);
+    assert_eq!(
+        f3.oracle
+            .try_push_nav(&f3.reporter, &FEED_PC_NAV, &widest, &(T0 + 86_400)),
+        Err(Ok(OracleError::DeviationOutOfBounds)),
+        "a move of nearly one bps past the bound was accepted"
+    );
+
+    // Downwards too, since the check takes an absolute value.
+    let f4 = setup();
+    f4.oracle.push_nav(&f4.reporter, &FEED_PC_NAV, &base, &T0);
+    let under = base - base * bound_bps / 10_000 - 1;
+    f4.e.ledger().set_timestamp(T0 + 86_400);
+    assert_eq!(
+        f4.oracle
+            .try_push_nav(&f4.reporter, &FEED_PC_NAV, &under, &(T0 + 86_400)),
+        Err(Ok(OracleError::DeviationOutOfBounds)),
+        "one stroop past the bound downwards was accepted"
+    );
+}
+
 #[test]
 fn out_of_bounds_deviation_emits_nav_rejected_on_submit_nav() {
     let f = setup();

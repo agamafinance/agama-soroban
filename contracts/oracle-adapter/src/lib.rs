@@ -900,10 +900,19 @@ impl OracleAdapter {
         if feed.deviation_bps == 0 || last.nav <= 0 {
             return Ok(None);
         }
-        let deviation_bps = (nav - last.nav).abs() * BPS / last.nav;
-        if deviation_bps <= feed.deviation_bps as i128 {
+        // Decided by multiplying, not by dividing. Dividing first truncates
+        // toward zero and understates the move, so everything between the bound
+        // and one basis point above it rounded down onto the bound and was
+        // accepted: on a NAV of 10000000 against 500 bps, moves of 500001
+        // through 500999 stroops all computed as 500. The bound advertised 5%
+        // and enforced 5.00999%. Every other limit in this protocol compares
+        // this way for the same reason, the reserve floor included.
+        let delta = (nav - last.nav).abs();
+        if delta * BPS <= feed.deviation_bps as i128 * last.nav {
             return Ok(None);
         }
+        // Only now, and only for the event. A figure a human reads may round.
+        let deviation_bps = delta * BPS / last.nav;
         Ok(Some(NavRejected {
             feed_id: feed_id.clone(),
             reporter: reporter.clone(),
