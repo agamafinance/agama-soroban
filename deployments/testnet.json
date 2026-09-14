@@ -680,7 +680,7 @@
     {
       "contract": "oracleAdapter",
       "what": "Register USDC_USD with a staleness window that matches how it is actually operated, or do not register it at all.",
-      "why": "It carries a 3600 second window and nothing pushes it, so it is stale almost all of the time by construction rather than by accident. check-live-state.sh reports it as a warning rather than a failure because nothing live reads it: the Vault reads PC_NAV and the pool adapters carry their own feed as a constant Symbol. A warning that is always on teaches people to ignore the check, which is worse than not having it.",
+      "why": "It carries a 3600 second window and nothing pushes it, so it is stale almost all of the time by construction rather than by accident. Nothing live reads it: the Vault reads PC_NAV and the pool adapters carry their own feed as a constant Symbol. A warning that is always on teaches people to ignore the check, which is worse than not having it.",
       "why_not_now": "register_feed refuses a feed that already exists with FeedAlreadyRegistered and there is no update_feed, so a feed's parameters are immutable for the life of the oracle contract. That immutability is deliberate and worth keeping, since it stops an admin loosening a bound after the fact, but it means this particular correction costs a redeployment. It is not worth one on its own."
     }
   ],
