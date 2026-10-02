@@ -1138,6 +1138,32 @@ current source.
 | Tranche 2, Testnet | Allocation Engine, Etherfuse and private credit adapters, Oracle Adapter | December 2026 | Live on testnet, delivered early, allocation and both guards proven on-chain |
 | Tranche 3, Mainnet | All contracts, audit remediation | February 2027 | Pending |
 
+## SCF #45, Tranche 1 Deliverable 1
+
+What the award measures this deliverable by, and where each one is checkable. The
+criteria are quoted from the submission; everything in the right column is on the
+ledger or in this repository, not asserted here.
+
+| Completion criterion | Where it is checkable |
+|---|---|
+| contracts deployed on testnet with transactions publicly verifiable on Stellar Expert | the live table above, every address linked. `bash scripts/check-deployment-record.sh --wasm` compares each one's bytecode against this tree and fails on any divergence nothing declares |
+| the full deposit / mint / stake / unstake / redeem flow executable end-to-end | `bash scripts/smoke-journey.sh`, which runs the whole path against the deployed contracts and asserts each step. Eight suites, 331 assertions chained |
+| sagUSD exchange rate readable through the DeFindex assets-per-share interface | `get_asset_amounts_per_shares(vault_shares)` and `fetch_total_managed_funds()` on `CCFLQUXL4DNFBZOILIZ5FWOROBO52J5GMQE2HHVCCM3AGSM4ZDAW6VDX`, under DeFindex's own signatures. See [SECURITY.md](SECURITY.md) for what each returns and why the amount is a direct quotient rather than the scalar rate multiplied out |
+| unit test suite passing on all core functions | `cargo test --workspace`, 206 tests, plus an invariant fuzzer over randomised operation sequences |
+| source public at github.com/agamafinance/agama-soroban | this repository, Apache-2.0, public from the first commit |
+
+Two notes on honesty rather than completeness.
+
+The submission's architecture annex says a DeFindex-integrated wallet would need
+integration work to read sagUSD. It no longer does: the two calls above are
+implemented, so that sentence understates what shipped. The annex is the document
+the panel reviewed and is left as reviewed; the difference is recorded in
+SECURITY.md.
+
+Tranche 1 Deliverable 2 (dApp with Soroswap routing and a CCTP bridge) and
+Deliverable 3 (indexer and yield accounting API) are not in this repository and
+are not claimed complete here.
+
 ## Ecosystem Integrations
 
 From the [SCF Integration List](https://communityfund.stellar.org/integration-list):
