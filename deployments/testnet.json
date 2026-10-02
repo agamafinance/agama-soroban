@@ -9,7 +9,7 @@
   "contracts": {
     "usdc": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
     "agusd": "CCXEP6QAAYEMFMV2JGBULD2NS6AQB6KQSBHLPPBJSDBCN6HOYIHNQ6H3",
-    "staking": "CD6Q4G7UZHRP5SOKNIZOJGRM7VBTEC7TZDCUFR64AW7JBRJQJAPGIOGF",
+    "staking": "CCFLQUXL4DNFBZOILIZ5FWOROBO52J5GMQE2HHVCCM3AGSM4ZDAW6VDX",
     "vault": "CANIR7O2VQYQ5ZM2LIOREGPAXNXPWXHBAJVZPF3J2HBVT6VXOZHTG247",
     "allocationEngine": "CDYT5BFC2ABBK2QWWUTU4AM6JGFN2BP3XHCUGVEI3O5NCCIBUXC5TUFL",
     "oracleAdapter": "CAUOHPPNHUIYQI3KIVPLP75CGWKFBGSXK3RW75UO52PKY3YKQRTWIQUS",
@@ -621,6 +621,15 @@
       "supersededBy": "staking",
       "wasmHash": "d1aca98605990479f471470359c7a38b1a8fb039040240668ad61b55206b3bad",
       "reason": "Replaced because agUSD moved and set_agusd cannot follow it. The guard reads a cumulative stake counter rather than the current balance, and that is deliberate: its own documentation says unwinding to zero is not the same thing as never having taken custody, and the pending queue can be non-empty while the share supply is nil. So the token pointer freezes at the first stake and never thaws, which is the right property for stakers and means a new agUSD generation costs a staking generation every time. This one had taken 64 stakes. It was emptied first, supply and NAV both zero, so nothing was stranded in it. What was wrong was the migration script, which said staking takes the new token 'which it can only do while empty' and then asserted it; emptiness is not what the guard tests, and the ten generations before this one were all replaced rather than repointed. The script now deploys the replacement instead of trying a setter that cannot succeed."
+    },
+    {
+      "contract": "staking",
+      "generation": 13,
+      "label": "sagUSD staking, thirteenth deployment",
+      "address": "CD6Q4G7UZHRP5SOKNIZOJGRM7VBTEC7TZDCUFR64AW7JBRJQJAPGIOGF",
+      "supersededBy": "staking",
+      "wasmHash": "d1aca98605990479f471470359c7a38b1a8fb039040240668ad61b55206b3bad",
+      "reason": "Replaced to make Tranche 1 Deliverable 1 of the SCF #45 award literally true. Its completion criterion reads 'sagUSD exchange rate readable through the DeFindex assets-per-share interface'. The retired contract exposed exchange_rate, a scalar and a name Agama chose itself; DeFindex's vault has no scalar price-per-share getter at all. Its interface, read off defindex-io/stellar-contracts vault/src/interface.rs, the live repository, paltalabs/defindex having been archived in July 2026, the two agreeing on both signatures and both structs, is get_asset_amounts_per_shares(e, vault_shares) -> Vec<i128> and fetch_total_managed_funds(e) -> Vec<CurrentAssetInvestmentAllocation>. The replacement implements both under those exact signatures, with the two model structs replicated field for field, so a caller that already decodes a DeFindex vault decodes this one. get_asset_amounts_per_shares computes shares * nav / supply directly rather than multiplying the rounded scalar rate back out, which matters: on a NAV of 40000001 against 30000000 shares the direct quotient is 40000001, exactly what request_unstake pays, and the scalar route gives 39999999. A wallet showing a number the contract would not pay is worse than one showing nothing. Neither entry point is reachable through a setter, so shipping them took a new contract, and the difference is checkable on-chain: the retired one exposes no get_asset_amounts_per_shares. Emptied first, supply and NAV both zero, so nothing was stranded in it. Nothing else moved: no contract in this protocol points at staking, staking points at agUSD."
     }
   ],
   "oracleFeedGuards": "The band bounds every report including the first, which a deviation bound cannot reach because a bound on a move needs something to move from. The minimum interval is measured in ledger time between accepted values, not in the timestamps the reporter supplies, because the reporter chooses those. The reference point is persistent, so it cannot expire out from under the checks that read it.",
@@ -689,6 +698,13 @@
       "vault": "CCPBVZ3WCUTA2OYC2HKYVZUNUV46K47TPKMHSS5IDFYRRPFEDASZNFFD",
       "amount": 150640000,
       "note": "USDC left in this Vault after every holder redeemed, with no agUSD outstanding to release it against. Recovered capital, booked but never minted against. It cannot be withdrawn: USDC leaves a Vault only through settle_allocation, which reaches an adapter that sends only back to the Vault it stores, and through a payout bounded by the agUSD burned to create the claim. There is no path to an admin, deliberately, so this is the price of a Vault generation rather than an oversight."
+    }
+  ],
+  "abandonedDuringWork": [
+    {
+      "_why": "Contracts deployed while getting Tranche 1 Deliverable 1 right and then abandoned, within one session, never announced anywhere and pointed at by nothing. Listed so somebody reading the ledger for this account does not have to wonder. Both are empty: supply and NAV zero, no agUSD held.",
+      "CDW7MGK5OWEF7URLXG2CZHXPKPKELFMAWBB3KPHQQ3BUEUY6ZFWE6EAM": "Deployed from a host-target cargo build rather than the wasm32v1-none one, so it shipped without the two new entry points. Caught by reading its interface off the chain, unwound and replaced.",
+      "CDSR3MCXWLHLUKE7LMGEU7UTOIS7F5PWUVYENLLZJWCEJ3XEPYGHWRPY": "Correct code, but the doc comments were then corrected to cite defindex-io/stellar-contracts instead of the archived paltalabs/defindex. Soroban embeds doc comments in contractspecv0, so the deployed wasm no longer matched the tree. Redeployed rather than carried as a declared divergence, because staking is cheap to replace and nothing points at it."
     }
   ]
 }

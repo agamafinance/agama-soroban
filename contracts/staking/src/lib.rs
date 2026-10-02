@@ -28,8 +28,14 @@
 //! entry point. So this is a naming convention Agama has adopted on its own
 //! side, matching DeFindex's economics: shares are never rebased, nothing is
 //! pushed to holders, and a position appreciates because the assets behind each
-//! share grow. It is not call compatibility with a DeFindex vault, and it
-//! should not be described as such.
+//! share grow.
+//!
+//! Call compatibility is a separate thing, and this contract now has it as well:
+//! `get_asset_amounts_per_shares` and `fetch_total_managed_funds` are
+//! implemented below under DeFindex's own signatures, with its two model structs
+//! replicated field for field. Verified against `defindex-io/stellar-contracts`,
+//! the live repository, in October 2026; `paltalabs/defindex` was archived in
+//! July 2026 and the two agree on both signatures and both structs.
 //!
 //! `exchange_rate` is that view: agUSD per sagUSD share, scaled to 7 decimals.
 //! `share_price` is kept as an alias of it, returning the same number from the
@@ -102,6 +108,37 @@ use soroban_sdk::{
     Env, String, Vec,
 };
 use token as tok;
+
+/// A strategy's slice of one asset, as DeFindex's vault reports it.
+///
+/// Replicated field for field from `defindex-io/stellar-contracts`,
+/// `vault/src/models.rs`, so a caller that already decodes a
+/// DeFindex vault's answer decodes this one. sagUSD runs no strategies, so the
+/// vector of these is always empty; the type exists because the shape of the
+/// reply is part of the interface, not because sagUSD has anything to put in it.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StrategyAllocation {
+    pub strategy_address: Address,
+    pub amount: i128,
+    pub paused: bool,
+}
+
+/// One asset's position in the vault, as DeFindex's vault reports it.
+///
+/// Also replicated field for field. For sagUSD there is exactly one asset,
+/// agUSD, and all of it is idle: nothing is deployed into a strategy from here.
+/// Capital that leaves the protocol leaves through the Vault and the Allocation
+/// Engine, which are different contracts and not strategies of this one.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CurrentAssetInvestmentAllocation {
+    pub asset: Address,
+    pub total_amount: i128,
+    pub idle_amount: i128,
+    pub invested_amount: i128,
+    pub strategy_allocations: Vec<StrategyAllocation>,
+}
 
 /// A pending unstake is the only record that says a departed staker is still
 /// owed anything: the shares are burned and the assets are out of `nav`, so if
@@ -624,6 +661,72 @@ impl Staking {
         } else {
             Self::nav(e.clone()) * ONE / supply
         }
+    }
+
+    /// How much of each underlying asset `vault_shares` are worth, in
+    /// DeFindex's own entry point and under its own signature.
+    ///
+    /// `exchange_rate` above is a scalar and a convention Agama named itself.
+    /// This is the call a DeFindex-integrated wallet actually makes, taken from
+    /// `defindex-io/stellar-contracts`, `vault/src/interface.rs`:
+    ///
+    /// ```ignore
+    /// fn get_asset_amounts_per_shares(e: Env, vault_shares: i128)
+    ///     -> Result<Vec<i128>, ContractError>;
+    /// ```
+    ///
+    /// One asset, so one element: the agUSD those shares redeem for. It is
+    /// deliberately the same arithmetic as `request_unstake`, truncating toward
+    /// zero, rather than the scalar rate multiplied out. A wallet that showed a
+    /// number the contract would not pay would be worse than one that showed
+    /// nothing, and multiplying a rounded rate by a share count reintroduces
+    /// exactly that gap: the rate itself is already a quotient.
+    ///
+    /// Zero shares are worth zero. A negative count is not a question, so it
+    /// answers `InvalidAmount` rather than a negative amount.
+    pub fn get_asset_amounts_per_shares(
+        e: Env,
+        vault_shares: i128,
+    ) -> Result<Vec<i128>, StakingError> {
+        if vault_shares < 0 {
+            return Err(StakingError::InvalidAmount);
+        }
+        let supply = tok::total_supply(&e);
+        let assets = if supply == 0 || vault_shares == 0 {
+            0
+        } else {
+            vault_shares * Self::nav(e.clone()) / supply
+        };
+        Ok(Vec::from_array(&e, [assets]))
+    }
+
+    /// The vault's position per underlying asset, in DeFindex's entry point and
+    /// under its shape.
+    ///
+    /// One asset, agUSD, and all of it idle. sagUSD holds the agUSD staked with
+    /// it and deploys none of it: what leaves the protocol leaves through the
+    /// Vault and the Allocation Engine, which are separate contracts and not
+    /// strategies of this one, so `invested_amount` is zero and
+    /// `strategy_allocations` is empty rather than a summary of somebody else's
+    /// book.
+    ///
+    /// `total_amount` is the NAV this contract accounts for, not its token
+    /// balance. The two differ by any agUSD owed to a pending unstake, which has
+    /// already left the NAV and not yet left the contract, and by anything sent
+    /// here without staking.
+    pub fn fetch_total_managed_funds(e: Env) -> Vec<CurrentAssetInvestmentAllocation> {
+        let nav = Self::nav(e.clone());
+        let agusd: Address = e.storage().instance().get(&Cfg::AgUsd).unwrap();
+        Vec::from_array(
+            &e,
+            [CurrentAssetInvestmentAllocation {
+                asset: agusd,
+                total_amount: nav,
+                idle_amount: nav,
+                invested_amount: 0,
+                strategy_allocations: Vec::new(&e),
+            }],
+        )
     }
 
     /// Alias of [`Staking::exchange_rate`], under the name this contract
