@@ -59,6 +59,39 @@ The split exists because the two are not the same act. Someone who has not yet q
 
 **Upgrade path:** V1 contracts are immutable. Upgrades require redeployment + migration. V2 may introduce controlled upgrade proxy with timelock.
 
+## DeFindex interface compatibility, as shipped
+
+`docs/ARCHITECTURE.md` is the document the SCF #45 panel reviewed and validated,
+and it is left as it was reviewed. Its section 3.1 says that interface
+compatibility is economic rather than call-level, and that a DeFindex-integrated
+wallet would need integration work to read sagUSD. The contract now on the ledger
+goes further than that, so the difference is recorded here rather than by editing
+a reviewed document.
+
+sagUSD implements both calls a DeFindex vault answers, under DeFindex's own
+signatures, read off `defindex-io/stellar-contracts`, `vault/src/interface.rs`:
+
+| entry point | sagUSD's answer |
+|---|---|
+| `get_asset_amounts_per_shares(vault_shares)` | a one-element vector: the agUSD those shares redeem for. One asset, so one element. Negative counts answer `InvalidAmount`. |
+| `fetch_total_managed_funds()` | a one-element vector: agUSD, `total_amount` and `idle_amount` both the NAV, `invested_amount` zero, `strategy_allocations` empty. sagUSD runs no strategies; what leaves the protocol leaves through the Vault and the Allocation Engine, which are separate contracts. |
+
+`StrategyAllocation` and `CurrentAssetInvestmentAllocation` are replicated field
+for field, so a caller that already decodes a DeFindex vault decodes this one
+without a second codec.
+
+`get_asset_amounts_per_shares` computes `shares * nav / supply` directly rather
+than multiplying the scalar `exchange_rate` back out, because the scalar is
+already a quotient and multiplying a rounded one understates the result. On the
+live contract, a NAV of 40000001 against 30000000 shares: the direct quotient is
+40000001, which is what `request_unstake` pays, and the scalar route gives
+39999999. A wallet showing a figure the contract would not pay is worse than one
+showing nothing.
+
+What section 3.1 still describes correctly: Agama routes no funds through
+DeFindex vault contracts, trusts no DeFindex deployment, and depends on no
+DeFindex address. Nothing here changes that.
+
 ## Test coverage, all contracts
 
 End-to-end flows (deposit → stake → yield → redeem) · Cap-violation rejection · Re-initialization guards · Access control, with targeted authorizations rather than a blanket mock · Zero/negative validation · Oracle staleness, deviation, band and rate limit · Oracle quorum: partial votes commit nothing, one vote per reporter per round, disagreeing values never reach quorum, every guard still binds on the value a round agreed on · Withdrawal queue ordering and permissionless settlement · A hostile Allocation Engine bounded by the Vault's own floor · Write-down accounting across three books · Two-step admin handover · The adapter solvency invariant, that an adapter never holds less USDC than it has booked, asserted after every call in a sequence that moves it · Property-based fuzzing over randomised operation sequences, on the Vault with the Allocation Engine and both adapters, on sagUSD, and on the oracle's quorum. It is what found that `Engine::book_recovery` could lower the reserve floor's base, in four operations, which is why that call no longer exists. Run harder than the committed case counts and the numbers written down: 1500 cases and sequences of up to 89 operations on the Vault, both clean. One property it is measured **not** to reach, a single reporter carrying a quorum by voting into a round twice, is pinned by a constructed test instead, and the oracle suite says so rather than letting its own existence imply otherwise.
