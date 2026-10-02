@@ -217,6 +217,91 @@ fn delivered_yield_closes_the_agusd_pointer_even_with_no_stakers() {
 /// This is here so a change that turned it into something with a victim, an
 /// orphaned nav reachable without becoming the whole supply, fails a test.
 #[test]
+fn the_defindex_reading_is_what_unstaking_actually_pays() {
+    let f = setup();
+    let alice = Address::generate(&f.e);
+    // A share count and a NAV that do not divide, so a rounded scalar rate and
+    // the real quotient disagree. 3 shares against 10 agUSD is the shape: the
+    // rate truncates and multiplying it back out loses stroops.
+    fund_agusd(&f, &alice, 3);
+    f.vault.stake(&alice, &3);
+    fund_agusd(&f, &f.admin, 7);
+    f.vault.distribute_yield(&7);
+    assert_eq!(f.vault.total_shares(), 3);
+    assert_eq!(f.vault.nav(), 10);
+
+    let read = f.vault.get_asset_amounts_per_shares(&3);
+    assert_eq!(read.len(), 1);
+    let quoted = read.get(0).unwrap();
+    // Taken before the unstake: it empties the vault, and the rate of an empty
+    // vault is 1.0 by definition, which would make this comparison vacuous.
+    let via_rate = 3 * f.vault.exchange_rate() / ONE;
+
+    // What the contract pays for exactly those shares.
+    f.vault.request_unstake(&alice, &3);
+    assert_eq!(f.vault.pending(&alice).assets, quoted);
+
+    // And the scalar route would have been short here, which is why this entry
+    // point does not take it: 10 * ONE / 3 truncates, and 3 of those is 9.
+    assert_eq!(quoted, 10);
+    assert_eq!(via_rate, 9);
+}
+
+#[test]
+fn the_defindex_reading_on_an_empty_and_a_fresh_vault() {
+    let f = setup();
+    // No shares: nothing is owed for any count, including a large one.
+    assert_eq!(f.vault.get_asset_amounts_per_shares(&0).get(0).unwrap(), 0);
+    assert_eq!(
+        f.vault.get_asset_amounts_per_shares(&1_000_000).get(0).unwrap(),
+        0
+    );
+    // A negative count is not a question.
+    assert_eq!(
+        f.vault.try_get_asset_amounts_per_shares(&-1),
+        Err(Ok(StakingError::InvalidAmount))
+    );
+
+    // One for one before any yield, and zero shares stay worth zero after.
+    let alice = Address::generate(&f.e);
+    fund_agusd(&f, &alice, 100 * ONE);
+    f.vault.stake(&alice, &(100 * ONE));
+    assert_eq!(
+        f.vault.get_asset_amounts_per_shares(&(100 * ONE)).get(0).unwrap(),
+        100 * ONE
+    );
+    assert_eq!(f.vault.get_asset_amounts_per_shares(&0).get(0).unwrap(), 0);
+}
+
+#[test]
+fn the_managed_funds_reading_is_one_asset_and_all_of_it_idle() {
+    let f = setup();
+    let alice = Address::generate(&f.e);
+    fund_agusd(&f, &alice, 100 * ONE);
+    f.vault.stake(&alice, &(100 * ONE));
+    fund_agusd(&f, &f.admin, 5 * ONE);
+    f.vault.distribute_yield(&(5 * ONE));
+
+    let funds = f.vault.fetch_total_managed_funds();
+    assert_eq!(funds.len(), 1);
+    let a = funds.get(0).unwrap();
+    assert_eq!(a.asset, f.ag.address);
+    assert_eq!(a.total_amount, 105 * ONE);
+    // Nothing is deployed from here. What leaves the protocol leaves through the
+    // Vault and the Engine, which are not strategies of this contract.
+    assert_eq!(a.idle_amount, 105 * ONE);
+    assert_eq!(a.invested_amount, 0);
+    assert_eq!(a.strategy_allocations.len(), 0);
+
+    // total_amount is the NAV, not the balance. A pending unstake has left the
+    // NAV and not yet left the contract, so the two separate here.
+    f.vault.request_unstake(&alice, &(10 * ONE));
+    let after = f.vault.fetch_total_managed_funds().get(0).unwrap();
+    assert_eq!(after.total_amount, f.vault.nav());
+    assert!(f.ag.balance(&f.vault.address) > after.total_amount);
+}
+
+#[test]
 fn yield_with_no_shares_goes_to_whoever_stakes_next() {
     let f = setup();
     let orphaned = 1_000 * ONE;
