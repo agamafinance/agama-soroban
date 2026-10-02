@@ -1160,9 +1160,29 @@ implemented, so that sentence understates what shipped. The annex is the documen
 the panel reviewed and is left as reviewed; the difference is recorded in
 SECURITY.md.
 
-Tranche 1 Deliverable 2 (dApp with Soroswap routing and a CCTP bridge) and
-Deliverable 3 (indexer and yield accounting API) are not in this repository and
-are not claimed complete here.
+## SCF #45, Tranche 1 Deliverables 2 and 3
+
+Both live in `agamafinance/agama-app-looping`, not here, and are served at
+[app.agama.finance](https://app.agama.finance).
+
+| Completion criterion | Where it is checkable |
+|---|---|
+| public testnet dApp accessible | [app.agama.finance/stellar](https://app.agama.finance/stellar). It talked to the retired generation 1 agUSD until October 2026; its address file is now generated from `deployments/testnet.json` so the two cannot drift again |
+| a new user can connect a wallet and complete the full deposit and stake flow | Stellar Wallets Kit, and the flow against the deployed contracts: deposit mints through the Vault, withdrawal is the FIFO queue in two steps rather than an instant redeem, and the portfolio page is where a queued claim is collected |
+| agUSD/USDC swap executing through the Soroswap testnet Router | router `CCJUD55A...`, pair `CAFTLH76...`. The pair did not exist, `pair_exists` answered false, so it was created at parity through `add_liquidity`. Reserves around 450 of each; a swap of 1 agUSD costs about 0.36 percent, which is quoted off the router rather than assumed |
+| CCTP bridge integration depositing USDC into Stellar end-to-end | [app.agama.finance/stellar/bridge](https://app.agama.finance/stellar/bridge). 950 USDC has crossed from Base Sepolia in seven tranches, each one checked on the Stellar balance before the next |
+| indexer ingesting all contract events | `/api/indexer/ingest` reads the four contracts off Soroban RPC and stores what is new, keeping RPC's own cursor so a quiet stretch counts as progress |
+| NAV and yield data exposed via API and displayed in the dApp | `/api/nav` serves the stored history with the live reading beside it; the sagUSD page draws it |
+
+Two things stated rather than glossed. CCTP on Stellar loses the money if
+`mintRecipient` is the user's address instead of Circle's forwarder, and again if
+the Stellar leg calls `receive_message` instead of the forwarder's
+`mint_and_forward`; both were found by losing 2 USDC each way, and both are
+commented where the code makes the choice. And the indexer's store is in-memory
+until a Redis URL and token are configured, so its history lasts one server
+process: Soroban RPC serves about seven days of events, which is what makes a
+durable store the difference between a window and a history. The API reports
+`durable: false` and the dApp says so on the page.
 
 ## Ecosystem Integrations
 
