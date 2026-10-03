@@ -9,7 +9,7 @@
   "contracts": {
     "usdc": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
     "agusd": "CCXEP6QAAYEMFMV2JGBULD2NS6AQB6KQSBHLPPBJSDBCN6HOYIHNQ6H3",
-    "staking": "CCFLQUXL4DNFBZOILIZ5FWOROBO52J5GMQE2HHVCCM3AGSM4ZDAW6VDX",
+    "staking": "CCCOP5UKU3MOJYC5VFN2AGBRWHNXY5WF2BAGK435SNC6GJ4AFFVEPZ2K",
     "vault": "CANIR7O2VQYQ5ZM2LIOREGPAXNXPWXHBAJVZPF3J2HBVT6VXOZHTG247",
     "allocationEngine": "CDYT5BFC2ABBK2QWWUTU4AM6JGFN2BP3XHCUGVEI3O5NCCIBUXC5TUFL",
     "oracleAdapter": "CAUOHPPNHUIYQI3KIVPLP75CGWKFBGSXK3RW75UO52PKY3YKQRTWIQUS",
@@ -630,6 +630,15 @@
       "supersededBy": "staking",
       "wasmHash": "d1aca98605990479f471470359c7a38b1a8fb039040240668ad61b55206b3bad",
       "reason": "Replaced to make Tranche 1 Deliverable 1 of the SCF #45 award literally true. Its completion criterion reads 'sagUSD exchange rate readable through the DeFindex assets-per-share interface'. The retired contract exposed exchange_rate, a scalar and a name Agama chose itself; DeFindex's vault has no scalar price-per-share getter at all. Its interface, read off defindex-io/stellar-contracts vault/src/interface.rs, the live repository, paltalabs/defindex having been archived in July 2026, the two agreeing on both signatures and both structs, is get_asset_amounts_per_shares(e, vault_shares) -> Vec<i128> and fetch_total_managed_funds(e) -> Vec<CurrentAssetInvestmentAllocation>. The replacement implements both under those exact signatures, with the two model structs replicated field for field, so a caller that already decodes a DeFindex vault decodes this one. get_asset_amounts_per_shares computes shares * nav / supply directly rather than multiplying the rounded scalar rate back out, which matters: on a NAV of 40000001 against 30000000 shares the direct quotient is 40000001, exactly what request_unstake pays, and the scalar route gives 39999999. A wallet showing a number the contract would not pay is worse than one showing nothing. Neither entry point is reachable through a setter, so shipping them took a new contract, and the difference is checkable on-chain: the retired one exposes no get_asset_amounts_per_shares. Emptied first, supply and NAV both zero, so nothing was stranded in it. Nothing else moved: no contract in this protocol points at staking, staking points at agUSD."
+    },
+    {
+      "contract": "staking",
+      "generation": 14,
+      "label": "sagUSD staking, fourteenth deployment",
+      "address": "CCFLQUXL4DNFBZOILIZ5FWOROBO52J5GMQE2HHVCCM3AGSM4ZDAW6VDX",
+      "supersededBy": "staking",
+      "wasmHash": "2bb6a18018f135dc5c25b9c2dc4fea616859abf08ea74354f44232f51c33075a",
+      "reason": "Replaced to give the share-price history a single unbroken run. Identical bytecode: this is not a code change and the wasm hash of the replacement matches this tree, as check-deployment-record verifies. The retired contract had been emptied and restarted several times by the smoke suites, and a staking contract with no shares outstanding prices a share at 1.0 by definition, so its exchange rate climbed to 2.3869465 across twelve events and then dropped back to 1.0 when a suite unwound it. That reading was accurate, which is why it was not edited: the indexer publishes the event stream and the stream said what happened. A chart that falls off a cliff for a reason no reader can see is still a poor thing to hand a reviewer, and the honest way to get a clean one is a contract that has never been unwound, not a prettier rendering of this one. Emptied before retirement, supply and NAV both zero, so nothing was stranded."
     }
   ],
   "oracleFeedGuards": "The band bounds every report including the first, which a deviation bound cannot reach because a bound on a move needs something to move from. The minimum interval is measured in ledger time between accepted values, not in the timestamps the reporter supplies, because the reporter chooses those. The reference point is persistent, so it cannot expire out from under the checks that read it.",
