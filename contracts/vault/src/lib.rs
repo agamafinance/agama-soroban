@@ -247,6 +247,12 @@ pub trait ShareToken {
     /// Vault whose `deposit` cannot mint, and that is not a hypothetical: it is
     /// how the first Vault was lost.
     fn minter(e: Env) -> Address;
+    /// A Stellar Asset Contract's equivalent, under the name a classic asset
+    /// uses. A SAC has no `minter`: the supply of a classic asset is the
+    /// issuer's to create, and the SAC inherits that privilege as `admin`.
+    /// Only consulted for a token that cannot answer `minter`, because for one
+    /// that can the two are different powers and `mint` obeys the first.
+    fn admin(e: Env) -> Address;
 }
 
 /// The Allocation Engine, as seen from the Vault.
@@ -607,9 +613,30 @@ impl Vault {
             return Err(VaultError::DepositsExist);
         }
         let token = AgUsdClient::new(&e, &agusd_token);
-        match token.try_minter() {
-            Ok(Ok(minter)) if minter == e.current_contract_address() => {}
-            _ => return Err(VaultError::AgUsdMismatch),
+        // Two shapes of token can mint for this Vault, and they name the
+        // privilege differently.
+        //
+        // agusd-core, ours, calls it `minter`: one address, fixed at
+        // construction, and the only one `mint` will create supply for. A
+        // Stellar Asset Contract has no `minter` at all, because the supply of
+        // a classic asset is the issuer's to create and the SAC inherits that
+        // as `admin`.
+        //
+        // Which question to ask is decided by which one the token can answer,
+        // and that ordering is the guard, not a convenience. agusd-core exposes
+        // an `admin` too, but there it is a different and weaker power: it
+        // hands over the contract, it does not mint. Accepting an `admin` from
+        // a token that also has a `minter` would wave through a Vault that
+        // names a token it cannot actually mint on, which is the exact failure
+        // this guard was written for. So a token that answers `minter` is
+        // judged on `minter` alone, and `admin` is consulted only for one that
+        // cannot answer at all.
+        let mintable = match token.try_minter() {
+            Ok(Ok(minter)) => minter == e.current_contract_address(),
+            _ => matches!(token.try_admin(), Ok(Ok(a)) if a == e.current_contract_address()),
+        };
+        if !mintable {
+            return Err(VaultError::AgUsdMismatch);
         }
         // And it has to count stroops the way the USDC does.
         //
