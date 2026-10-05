@@ -9,7 +9,7 @@
   "contracts": {
     "usdc": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
     "agusd": "CADD22PHOXWHYVCQ3K5DWIHPUNA5USTHBPOCBE2KDCYNUEBUGFAHH33R",
-    "staking": "CBFJ6KR26AMANZPA3EIIR2L3C4OR445ELVRK5UQ4ZNCUQM63EDEYZIPX",
+    "staking": "CABRKOPPYG4IIWGNH3DX4FY6CQFANFYRWMB3Y27HGUWWWERMCPEUWKIJ",
     "vault": "CCVNCXPJXCA5GKJKNUNZRMJEEWYL74ASYYTL2DULPO5TZDGSHUPZTTJF",
     "allocationEngine": "CBDVZPMBUQQ6OML3WTT4TP6QIOJDRC4BWYXR7UZQAAZG2LETAVZE6FFD",
     "oracleAdapter": "CAUOHPPNHUIYQI3KIVPLP75CGWKFBGSXK3RW75UO52PKY3YKQRTWIQUS",
@@ -687,6 +687,14 @@
       "supersededBy": "etherfuse",
       "reason": "Same as the private credit adapter: Engine and Vault are fixed at construction and there is no setter.",
       "label": "Etherfuse adapter, generation 2 wiring"
+    },
+    {
+      "contract": "staking",
+      "generation": 4,
+      "address": "CBFJ6KR26AMANZPA3EIIR2L3C4OR445ELVRK5UQ4ZNCUQM63EDEYZIPX",
+      "supersededBy": "staking",
+      "reason": "Retired holding 300000000 stroops of agUSD that no share has a claim on. The cause was an operator error during verification: agUSD was transferred to the contract by hand and then distribute_yield was called, and distribute_yield does its own transfer. The contract ended holding 120 agUSD against a NAV of 90. That gap cannot be closed from outside. distribute_yield moves the balance and the NAV together, so it can never catch up to a surplus that is already there, and agUSD leaves this contract only through a claim, which pays NAV. Unwound first: the 60 shares outstanding redeemed at 1.5 for the full 90 agUSD they were owed, so no staker lost anything and nothing is owed. What is stranded is the 30 of surplus, and the 30 USDC backing it stays in the Vault behind agUSD nobody can now redeem.",
+      "label": "sagUSD staking, first on the classic agUSD"
     }
   ],
   "oracleFeedGuards": "The band bounds every report including the first, which a deviation bound cannot reach because a bound on a move needs something to move from. The minimum interval is measured in ledger time between accepted values, not in the timestamps the reporter supplies, because the reporter chooses those. The reference point is persistent, so it cannot expire out from under the checks that read it.",
