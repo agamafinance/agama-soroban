@@ -9,9 +9,9 @@
   "contracts": {
     "usdc": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
     "agusd": "CADD22PHOXWHYVCQ3K5DWIHPUNA5USTHBPOCBE2KDCYNUEBUGFAHH33R",
-    "staking": "CCCOP5UKU3MOJYC5VFN2AGBRWHNXY5WF2BAGK435SNC6GJ4AFFVEPZ2K",
+    "staking": "CBFJ6KR26AMANZPA3EIIR2L3C4OR445ELVRK5UQ4ZNCUQM63EDEYZIPX",
     "vault": "CCVNCXPJXCA5GKJKNUNZRMJEEWYL74ASYYTL2DULPO5TZDGSHUPZTTJF",
-    "allocationEngine": "CDYT5BFC2ABBK2QWWUTU4AM6JGFN2BP3XHCUGVEI3O5NCCIBUXC5TUFL",
+    "allocationEngine": "CBDVZPMBUQQ6OML3WTT4TP6QIOJDRC4BWYXR7UZQAAZG2LETAVZE6FFD",
     "oracleAdapter": "CAUOHPPNHUIYQI3KIVPLP75CGWKFBGSXK3RW75UO52PKY3YKQRTWIQUS",
     "agusdCore": "CADD22PHOXWHYVCQ3K5DWIHPUNA5USTHBPOCBE2KDCYNUEBUGFAHH33R"
   },
@@ -26,8 +26,8 @@
   "usdcIssuer": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
   "usdcReal": true,
   "poolAdapters": {
-    "private-credit": "CAQQLSSXJJKO6YTH54AIXU7YPFOI7HTPTU2OOQ4MKBF2BYJAONT4VEDF",
-    "etherfuse": "CBLYG64BCFJHOUQW4EEYEJTCXS7VEVXGEH2B3GEQ26JIJKMVN46G6GCF"
+    "private-credit": "CDNWXGSSP3BOAIKIYTGDHST2BBSZNWIW6RMDQERM3HOQ24EO43WLP3VE",
+    "etherfuse": "CBLRTQBXHL6SQBI2CBX7XUC3TBNPTS3ZUJXOB4ASYUVKHCEF34APCLCP"
   },
   "engineConfig": {
     "poolCapBps": 4000,
@@ -655,6 +655,38 @@
       "supersededBy": "agusd",
       "reason": "A Soroban contract token with no classic representation. Horizon returns no asset record for the code, so the SDEX cannot hold it and a path payment cannot route it at any price. Superseded by the Stellar Asset Contract of a classic agUSD, which trades on both the SDEX and Soroswap. It stays deployed and keeps its holders; the Soroswap pair created against it in October 2026 is still there.",
       "label": "agUSD core, Soroban only"
+    },
+    {
+      "contract": "staking",
+      "generation": 3,
+      "address": "CCCOP5UKU3MOJYC5VFN2AGBRWHNXY5WF2BAGK435SNC6GJ4AFFVEPZ2K",
+      "supersededBy": "staking",
+      "reason": "Names the Soroban-only agUSD as the token it takes in, and that address is fixed at construction. It keeps its stakers and its exchange rate; it simply cannot accept the classic agUSD.",
+      "label": "sagUSD staking, on the Soroban-only agUSD"
+    },
+    {
+      "contract": "allocationEngine",
+      "generation": 3,
+      "address": "CDYT5BFC2ABBK2QWWUTU4AM6JGFN2BP3XHCUGVEI3O5NCCIBUXC5TUFL",
+      "supersededBy": "allocationEngine",
+      "reason": "Its set_vault refuses while capital is deployed, which it is: 8810023249 stroops across two pools. That guard is right, since repointing an Engine mid-exposure would leave the old Vault's capital governed by an Engine that no longer names it. The old Engine keeps governing the old Vault and those positions.",
+      "label": "Allocation Engine, on the generation 2 Vault"
+    },
+    {
+      "contract": "private-credit",
+      "generation": 3,
+      "address": "CAQQLSSXJJKO6YTH54AIXU7YPFOI7HTPTU2OOQ4MKBF2BYJAONT4VEDF",
+      "supersededBy": "private-credit",
+      "reason": "A pool adapter stores its Engine and its Vault at construction and exposes no setter for either, deliberately: an adapter that could be repointed could be made to take capital from one Vault and repay another. Migrating the Engine therefore means redeploying the adapters.",
+      "label": "Private credit adapter, generation 2 wiring"
+    },
+    {
+      "contract": "etherfuse",
+      "generation": 3,
+      "address": "CBLYG64BCFJHOUQW4EEYEJTCXS7VEVXGEH2B3GEQ26JIJKMVN46G6GCF",
+      "supersededBy": "etherfuse",
+      "reason": "Same as the private credit adapter: Engine and Vault are fixed at construction and there is no setter.",
+      "label": "Etherfuse adapter, generation 2 wiring"
     }
   ],
   "oracleFeedGuards": "The band bounds every report including the first, which a deviation bound cannot reach because a bound on a move needs something to move from. The minimum interval is measured in ledger time between accepted values, not in the timestamps the reporter supplies, because the reporter chooses those. The reference point is persistent, so it cannot expire out from under the checks that read it.",
@@ -738,6 +770,7 @@
     "issuer": "GAXM76GV3KKUK4XC3DKKHBEXCGUPYOALOB35HITI4WBKAAC7MUT5ZZEB",
     "sac": "CADD22PHOXWHYVCQ3K5DWIHPUNA5USTHBPOCBE2KDCYNUEBUGFAHH33R",
     "issuerLocked": true,
-    "note": "agUSD is a classic Stellar asset and the contract address is its Stellar Asset Contract, which is the same asset seen from Soroban rather than a second token: a balance moved by the contract's transfer shows up in Horizon's classic balances. Supply is the Vault's alone. The SAC's admin, which is what mint obeys, was handed to the Vault; the issuer account was then locked by setting its master key weight to zero, which is irreversible and is what stops the issuer minting by classic payment behind the Vault's back. Both halves are needed: set_admin alone leaves the issuer able to pay new units into existence, and that was verified on a throwaway asset before it was done here."
+    "note": "agUSD is a classic Stellar asset and the contract address is its Stellar Asset Contract, which is the same asset seen from Soroban rather than a second token: a balance moved by the contract's transfer shows up in Horizon's classic balances. Supply is the Vault's alone. The SAC's admin, which is what mint obeys, was handed to the Vault; the issuer account was then locked by setting its master key weight to zero, which is irreversible and is what stops the issuer minting by classic payment behind the Vault's back. Both halves are needed: set_admin alone leaves the issuer able to pay new units into existence, and that was verified on a throwaway asset before it was done here.",
+    "generation3": "Moving agUSD onto a classic asset cascaded through the whole stack, and the record names every contract it reached. The Vault had to be new because its deposit counter closes set_agusd for good. The staking contract had to be new because the agUSD it accepts is fixed at construction. The Allocation Engine had to be new because set_vault refuses while capital is deployed, and the two pool adapters had to be new because they store their Engine and Vault with no setter at all. None of those guards was worked around; each one is doing what it was written to do."
   }
 }
