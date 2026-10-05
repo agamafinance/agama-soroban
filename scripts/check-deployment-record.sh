@@ -282,7 +282,6 @@ d = json.load(open('deployments/testnet.json'))
 c, p = d['contracts'], d['poolAdapters']
 for name, addr, wasm in [
     ('vault', c['vault'], 'vault.wasm'),
-    ('agusdCore', c['agusdCore'], 'agusd_core.wasm'),
     ('staking', c['staking'], 'staking.wasm'),
     ('allocationEngine', c['allocationEngine'], 'allocation_engine.wasm'),
     ('oracleAdapter', c['oracleAdapter'], 'oracle_adapter.wasm'),
@@ -311,7 +310,7 @@ for name, addr, wasm in [
   done < <(python3 -c "
 import json
 d = json.load(open('deployments/testnet.json'))
-compared = {'contracts.vault', 'contracts.agusdCore', 'contracts.staking',
+compared = {'contracts.vault', 'contracts.staking',
             'contracts.allocationEngine', 'contracts.oracleAdapter',
             'poolAdapters.private-credit', 'poolAdapters.etherfuse'}
 declared = set(d.get('notCompared', {}))

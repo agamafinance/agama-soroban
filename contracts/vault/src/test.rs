@@ -2292,3 +2292,144 @@ fn an_adapter_admins_sweep_no_longer_inflates_the_floors_base() {
     f.engine.allocate(&f.admin, &f.pool, &(200 * USDC));
     assert_eq!(f.vault.floor_base(), base);
 }
+
+/// A token shaped like a Stellar Asset Contract: it answers `admin` and has no
+/// `minter` at all.
+///
+/// This is the shape `set_agusd` has to accept for agUSD to exist as a classic
+/// Stellar asset as well as a Soroban one. A classic asset's supply belongs to
+/// its issuer, and the SAC exposes that privilege as `admin`; there is no
+/// second notion of a minter to ask about, and asking errors rather than
+/// answering.
+#[contract]
+pub struct SacShapedToken;
+
+#[contractimpl]
+impl SacShapedToken {
+    pub fn initialize(e: Env, admin: Address) {
+        e.storage().instance().set(&symbol_short!("admin"), &admin);
+    }
+
+    pub fn admin(e: Env) -> Address {
+        e.storage().instance().get(&symbol_short!("admin")).unwrap()
+    }
+
+    pub fn decimals(_e: Env) -> u32 {
+        7
+    }
+
+    pub fn mint(_e: Env, _to: Address, _amount: i128) {}
+    pub fn burn(_e: Env, _from: Address, _amount: i128) {}
+
+    pub fn balance(_e: Env, _id: Address) -> i128 {
+        0
+    }
+}
+
+/// A token that answers both questions, and answers them differently: its
+/// `admin` is the Vault, its `minter` is somebody else.
+///
+/// This is the one that matters. On a token of our own shape `mint` obeys the
+/// minter, so an `admin` that names the Vault proves nothing about whether the
+/// Vault can issue. A guard that took either answer would wave this through and
+/// leave a Vault pointing at a token it cannot mint, which is the failure the
+/// guard was written for in the first place. It must be rejected.
+#[contract]
+pub struct TwoFacedToken;
+
+#[contractimpl]
+impl TwoFacedToken {
+    pub fn initialize(e: Env, admin: Address, minter: Address) {
+        e.storage().instance().set(&symbol_short!("admin"), &admin);
+        e.storage().instance().set(&symbol_short!("minter"), &minter);
+    }
+
+    pub fn admin(e: Env) -> Address {
+        e.storage().instance().get(&symbol_short!("admin")).unwrap()
+    }
+
+    pub fn minter(e: Env) -> Address {
+        e.storage().instance().get(&symbol_short!("minter")).unwrap()
+    }
+
+    pub fn decimals(_e: Env) -> u32 {
+        7
+    }
+
+    pub fn mint(_e: Env, _to: Address, _amount: i128) {}
+    pub fn burn(_e: Env, _from: Address, _amount: i128) {}
+
+    pub fn balance(_e: Env, _id: Address) -> i128 {
+        0
+    }
+}
+
+/// A SAC whose admin is the Vault is accepted, and one whose admin is a
+/// stranger is not.
+#[test]
+fn set_agusd_accepts_a_sac_that_names_the_vault() {
+    let e = Env::default();
+    e.mock_all_auths();
+    e.ledger().set_timestamp(T0);
+
+    let admin = Address::generate(&e);
+    let usdc_id = e.register(MockUsdc, ());
+    MockUsdcClient::new(&e, &usdc_id).initialize(
+        &admin,
+        &7u32,
+        &String::from_str(&e, "USD Coin"),
+        &String::from_str(&e, "USDC"),
+    );
+    let vault_id = e.register(Vault, (admin.clone(), usdc_id.clone()));
+    let vault = VaultClient::new(&e, &vault_id);
+
+    // Admin is the Vault: the Vault can mint, so this is agUSD.
+    let sac_id = e.register(SacShapedToken, ());
+    SacShapedTokenClient::new(&e, &sac_id).initialize(&vault_id);
+    vault.set_agusd(&admin, &sac_id);
+    assert_eq!(vault.agusd(), sac_id);
+
+    // Admin is somebody else: the Vault could not issue a unit through it.
+    let stranger = Address::generate(&e);
+    let theirs_id = e.register(SacShapedToken, ());
+    SacShapedTokenClient::new(&e, &theirs_id).initialize(&stranger);
+    assert_eq!(
+        vault.try_set_agusd(&admin, &theirs_id),
+        Err(Ok(VaultError::AgUsdMismatch))
+    );
+    assert_eq!(vault.agusd(), sac_id);
+}
+
+/// A token that names the Vault as admin but somebody else as minter is
+/// rejected, because on that shape it is the minter that mints.
+#[test]
+fn set_agusd_rejects_a_token_whose_admin_is_us_but_whose_minter_is_not() {
+    let e = Env::default();
+    e.mock_all_auths();
+    e.ledger().set_timestamp(T0);
+
+    let admin = Address::generate(&e);
+    let usdc_id = e.register(MockUsdc, ());
+    MockUsdcClient::new(&e, &usdc_id).initialize(
+        &admin,
+        &7u32,
+        &String::from_str(&e, "USD Coin"),
+        &String::from_str(&e, "USDC"),
+    );
+    let vault_id = e.register(Vault, (admin.clone(), usdc_id.clone()));
+    let vault = VaultClient::new(&e, &vault_id);
+
+    let stranger = Address::generate(&e);
+    let trap_id = e.register(TwoFacedToken, ());
+    TwoFacedTokenClient::new(&e, &trap_id).initialize(&vault_id, &stranger);
+
+    // It names the Vault, under a name the Vault must not take for an answer.
+    assert_eq!(
+        TwoFacedTokenClient::new(&e, &trap_id).admin(),
+        vault_id.clone()
+    );
+    assert_eq!(
+        vault.try_set_agusd(&admin, &trap_id),
+        Err(Ok(VaultError::AgUsdMismatch))
+    );
+}

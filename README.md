@@ -78,18 +78,18 @@ Network: **Stellar Testnet** · RPC: `https://soroban-testnet.stellar.org`
 | Contract | Address |
 |---|---|
 | USDC (Circle) | [`CBIELTK6...XQDAMA`](https://stellar.expert/explorer/testnet/contract/CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA) |
-| agUSD | [`CDK6A24G...LSW4MO`](https://stellar.expert/explorer/testnet/contract/CDK6A24G3ZS5S46OXDNNIV2HU4J45QXN2Y6GUNDJOJ4H5L66BQLSW4MO) |
-| sagUSD | [`CCCOP5UK...VEPZ2K`](https://stellar.expert/explorer/testnet/contract/CCCOP5UKU3MOJYC5VFN2AGBRWHNXY5WF2BAGK435SNC6GJ4AFFVEPZ2K) |
-| Vault Contract | [`CANIR7O2...HTG247`](https://stellar.expert/explorer/testnet/contract/CANIR7O2VQYQ5ZM2LIOREGPAXNXPWXHBAJVZPF3J2HBVT6VXOZHTG247) |
-| Allocation Engine | [`CDYT5BFC...C5TUFL`](https://stellar.expert/explorer/testnet/contract/CDYT5BFC2ABBK2QWWUTU4AM6JGFN2BP3XHCUGVEI3O5NCCIBUXC5TUFL) |
+| agUSD | [`CADD22PH...AHH33R`](https://stellar.expert/explorer/testnet/contract/CADD22PHOXWHYVCQ3K5DWIHPUNA5USTHBPOCBE2KDCYNUEBUGFAHH33R) |
+| sagUSD | [`CABRKOPP...EUWKIJ`](https://stellar.expert/explorer/testnet/contract/CABRKOPPYG4IIWGNH3DX4FY6CQFANFYRWMB3Y27HGUWWWERMCPEUWKIJ) |
+| Vault Contract | [`CCVNCXPJ...PZTTJF`](https://stellar.expert/explorer/testnet/contract/CCVNCXPJXCA5GKJKNUNZRMJEEWYL74ASYYTL2DULPO5TZDGSHUPZTTJF) |
+| Allocation Engine | [`CBDVZPMB...ZE6FFD`](https://stellar.expert/explorer/testnet/contract/CBDVZPMBUQQ6OML3WTT4TP6QIOJDRC4BWYXR7UZQAAZG2LETAVZE6FFD) |
 | Oracle Adapter | [`CAUOHPPN...TWIQUS`](https://stellar.expert/explorer/testnet/contract/CAUOHPPNHUIYQI3KIVPLP75CGWKFBGSXK3RW75UO52PKY3YKQRTWIQUS) |
 
 ### Pool Adapters
 
 | Adapter | Originator | Jurisdiction | Address |
 |---|---|---|---|
-| Private Credit | QIRO | LU | [`CAQQLSSX...T4VEDF`](https://stellar.expert/explorer/testnet/contract/CAQQLSSXJJKO6YTH54AIXU7YPFOI7HTPTU2OOQ4MKBF2BYJAONT4VEDF) |
-| Etherfuse | ETHERFUS | MX | [`CBLYG64B...6G6GCF`](https://stellar.expert/explorer/testnet/contract/CBLYG64BCFJHOUQW4EEYEJTCXS7VEVXGEH2B3GEQ26JIJKMVN46G6GCF) |
+| Private Credit | QIRO | LU | [`CDNWXGSS...WLP3VE`](https://stellar.expert/explorer/testnet/contract/CDNWXGSSP3BOAIKIYTGDHST2BBSZNWIW6RMDQERM3HOQ24EO43WLP3VE) |
+| Etherfuse | ETHERFUS | MX | [`CBLRTQBX...APCLCP`](https://stellar.expert/explorer/testnet/contract/CBLRTQBXHL6SQBI2CBX7XUC3TBNPTS3ZUJXOB4ASYUVKHCEF34APCLCP) |
 
 Both adapters are registered with the Allocation Engine. `originator` and
 `jurisdiction` are the buckets the concentration caps aggregate over, so two
@@ -1149,7 +1149,7 @@ ledger or in this repository, not asserted here.
 |---|---|
 | contracts deployed on testnet with transactions publicly verifiable on Stellar Expert | the live table above, every address linked. `bash scripts/check-deployment-record.sh --wasm` compares each one's bytecode against this tree and fails on any divergence nothing declares |
 | the full deposit / mint / stake / unstake / redeem flow executable end-to-end | `bash scripts/smoke-journey.sh`, which runs the whole path against the deployed contracts and asserts each step. Eight suites, 331 assertions chained |
-| sagUSD exchange rate readable through the DeFindex assets-per-share interface | `get_asset_amounts_per_shares(vault_shares)` and `fetch_total_managed_funds()` on `CCCOP5UKU3MOJYC5VFN2AGBRWHNXY5WF2BAGK435SNC6GJ4AFFVEPZ2K`, under DeFindex's own signatures. See [SECURITY.md](SECURITY.md) for what each returns and why the amount is a direct quotient rather than the scalar rate multiplied out |
+| sagUSD exchange rate readable through the DeFindex assets-per-share interface | `get_asset_amounts_per_shares(vault_shares)` and `fetch_total_managed_funds()` on `CABRKOPPYG4IIWGNH3DX4FY6CQFANFYRWMB3Y27HGUWWWERMCPEUWKIJ`, under DeFindex's own signatures. See [SECURITY.md](SECURITY.md) for what each returns and why the amount is a direct quotient rather than the scalar rate multiplied out |
 | unit test suite passing on all core functions | `cargo test --workspace`, 206 tests, plus an invariant fuzzer over randomised operation sequences |
 | source public at github.com/agamafinance/agama-soroban | this repository, Apache-2.0, public from the first commit |
 
