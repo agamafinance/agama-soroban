@@ -1161,6 +1161,34 @@ implemented, so that sentence understates what shipped. The annex is the documen
 the panel reviewed and is left as reviewed; the difference is recorded in
 SECURITY.md.
 
+## What a swap costs on the agUSD/USDC pair
+
+Measured on the live pair, reserves at 3651.13 of each side and at parity.
+
+| swap | received | total cost | Soroswap's fee | price impact, ours |
+|---|---|---|---|---|
+| 1 agUSD | 0.9967 USDC | 0.327% | 0.300% | **0.027%** |
+| 5 agUSD | 4.9782 USDC | 0.436% | 0.300% | 0.136% |
+| 10 agUSD | 9.9428 USDC | 0.572% | 0.300% | 0.272% |
+
+The 0.300% is Soroswap's swap fee, taken on the input by the pair contract. It is
+not ours, it is the same on every Soroswap pair, and no amount of liquidity
+reduces it. It was not read off their documentation: it was derived by fitting
+the constant-product formula to the router's own quote, and 30 bps is the only
+rate that reproduces it to the stroop.
+
+Price impact is the part a deeper pool fixes, and it is roughly the trade size
+divided by the reserve. It started at 0.220% when the pair held 450 a side.
+Getting it to 0.027% took the reserves to 3651, and halving it again would take
+them to about 7300. The return falls away fast: at this depth a swap of 1 agUSD
+is already 92% Soroswap's fee and 8% ours.
+
+Two things this table is careful about. The pair is held at parity before every
+measurement, because a pair trading above par flatters the headline number by
+giving some of the fee back, and a reading taken that way is not one anybody can
+reproduce. And the figures come from `router_get_amounts_out`, the router's own
+quote, rather than from the constant-product formula applied by hand.
+
 ## SCF #45, Tranche 1 Deliverables 2 and 3
 
 Both live in `agamafinance/agama-app-looping`, not here, and are served at
@@ -1170,7 +1198,7 @@ Both live in `agamafinance/agama-app-looping`, not here, and are served at
 |---|---|
 | public testnet dApp accessible | [app.agama.finance/stellar](https://app.agama.finance/stellar). It talked to the retired generation 1 agUSD until October 2026; its address file is now generated from `deployments/testnet.json` so the two cannot drift again |
 | a new user can connect a wallet and complete the full deposit and stake flow | Stellar Wallets Kit, and the flow against the deployed contracts: deposit mints through the Vault, withdrawal is the FIFO queue in two steps rather than an instant redeem, and the portfolio page is where a queued claim is collected |
-| agUSD/USDC swap executing through the Soroswap testnet Router | router `CCJUD55A...`, pair `CAFTLH76...`. The pair did not exist, `pair_exists` answered false, so it was created at parity through `add_liquidity`. Reserves around 450 of each; a swap of 1 agUSD costs about 0.36 percent, which is quoted off the router rather than assumed |
+| agUSD/USDC swap executing through the Soroswap testnet Router | router `CCJUD55A...`, pair `CAFTLH76...`. The pair did not exist, `pair_exists` answered false, so it was created at parity through `add_liquidity`. What a swap costs, and which part of it is ours, is set out under "What a swap costs" below |
 | CCTP bridge integration depositing USDC into Stellar end-to-end | [app.agama.finance/stellar/bridge](https://app.agama.finance/stellar/bridge). 950 USDC has crossed from Base Sepolia in seven tranches, each one checked on the Stellar balance before the next |
 | indexer ingesting all contract events | `/api/indexer/ingest` reads the four contracts off Soroban RPC and stores what is new, keeping RPC's own cursor so a quiet stretch counts as progress |
 | NAV and yield data exposed via API and displayed in the dApp | `/api/nav` serves the stored history with the live reading beside it; the sagUSD page draws it |
