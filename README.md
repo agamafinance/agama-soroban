@@ -78,9 +78,9 @@ Network: **Stellar Testnet** · RPC: `https://soroban-testnet.stellar.org`
 | Contract | Address |
 |---|---|
 | USDC (Circle) | [`CBIELTK6...XQDAMA`](https://stellar.expert/explorer/testnet/contract/CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA) |
-| agUSD | [`CDK6A24G...LSW4MO`](https://stellar.expert/explorer/testnet/contract/CDK6A24G3ZS5S46OXDNNIV2HU4J45QXN2Y6GUNDJOJ4H5L66BQLSW4MO) |
+| agUSD | [`CADD22PH...AHH33R`](https://stellar.expert/explorer/testnet/contract/CADD22PHOXWHYVCQ3K5DWIHPUNA5USTHBPOCBE2KDCYNUEBUGFAHH33R) |
 | sagUSD | [`CCCOP5UK...VEPZ2K`](https://stellar.expert/explorer/testnet/contract/CCCOP5UKU3MOJYC5VFN2AGBRWHNXY5WF2BAGK435SNC6GJ4AFFVEPZ2K) |
-| Vault Contract | [`CANIR7O2...HTG247`](https://stellar.expert/explorer/testnet/contract/CANIR7O2VQYQ5ZM2LIOREGPAXNXPWXHBAJVZPF3J2HBVT6VXOZHTG247) |
+| Vault Contract | [`CCVNCXPJ...PZTTJF`](https://stellar.expert/explorer/testnet/contract/CCVNCXPJXCA5GKJKNUNZRMJEEWYL74ASYYTL2DULPO5TZDGSHUPZTTJF) |
 | Allocation Engine | [`CDYT5BFC...C5TUFL`](https://stellar.expert/explorer/testnet/contract/CDYT5BFC2ABBK2QWWUTU4AM6JGFN2BP3XHCUGVEI3O5NCCIBUXC5TUFL) |
 | Oracle Adapter | [`CAUOHPPN...TWIQUS`](https://stellar.expert/explorer/testnet/contract/CAUOHPPNHUIYQI3KIVPLP75CGWKFBGSXK3RW75UO52PKY3YKQRTWIQUS) |
 

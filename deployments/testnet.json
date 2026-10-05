@@ -8,12 +8,12 @@
   "cooldownSeconds": 60,
   "contracts": {
     "usdc": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
-    "agusd": "CCXEP6QAAYEMFMV2JGBULD2NS6AQB6KQSBHLPPBJSDBCN6HOYIHNQ6H3",
+    "agusd": "CADD22PHOXWHYVCQ3K5DWIHPUNA5USTHBPOCBE2KDCYNUEBUGFAHH33R",
     "staking": "CCCOP5UKU3MOJYC5VFN2AGBRWHNXY5WF2BAGK435SNC6GJ4AFFVEPZ2K",
-    "vault": "CANIR7O2VQYQ5ZM2LIOREGPAXNXPWXHBAJVZPF3J2HBVT6VXOZHTG247",
+    "vault": "CCVNCXPJXCA5GKJKNUNZRMJEEWYL74ASYYTL2DULPO5TZDGSHUPZTTJF",
     "allocationEngine": "CDYT5BFC2ABBK2QWWUTU4AM6JGFN2BP3XHCUGVEI3O5NCCIBUXC5TUFL",
     "oracleAdapter": "CAUOHPPNHUIYQI3KIVPLP75CGWKFBGSXK3RW75UO52PKY3YKQRTWIQUS",
-    "agusdCore": "CDK6A24G3ZS5S46OXDNNIV2HU4J45QXN2Y6GUNDJOJ4H5L66BQLSW4MO"
+    "agusdCore": "CADD22PHOXWHYVCQ3K5DWIHPUNA5USTHBPOCBE2KDCYNUEBUGFAHH33R"
   },
   "creditVaults": {
     "payment-financing": "CAUFXVGKB2OKEDDO6SDWH4ZSWXJ37T2WYKEVUTBOCWZAFEUTGCFYQEF4",
@@ -639,6 +639,22 @@
       "supersededBy": "staking",
       "wasmHash": "2bb6a18018f135dc5c25b9c2dc4fea616859abf08ea74354f44232f51c33075a",
       "reason": "Replaced to give the share-price history a single unbroken run. Identical bytecode: this is not a code change and the wasm hash of the replacement matches this tree, as check-deployment-record verifies. The retired contract had been emptied and restarted several times by the smoke suites, and a staking contract with no shares outstanding prices a share at 1.0 by definition, so its exchange rate climbed to 2.3869465 across twelve events and then dropped back to 1.0 when a suite unwound it. That reading was accurate, which is why it was not edited: the indexer publishes the event stream and the stream said what happened. A chart that falls off a cliff for a reason no reader can see is still a poor thing to hand a reviewer, and the honest way to get a clean one is a contract that has never been unwound, not a prettier rendering of this one. Emptied before retirement, supply and NAV both zero, so nothing was stranded."
+    },
+    {
+      "contract": "vault",
+      "generation": 2,
+      "address": "CANIR7O2VQYQ5ZM2LIOREGPAXNXPWXHBAJVZPF3J2HBVT6VXOZHTG247",
+      "supersededBy": "vault",
+      "reason": "Its set_agusd can never run again: Cfg::Deposits counts deposits and is never decremented, it stands at 73, and the setter refuses while it is above zero. That guard is deliberate, since repointing a Vault that has issued would leave agUSD outstanding against a token it no longer mints. Moving agUSD onto a classic asset therefore needed a Vault with an empty counter rather than an upgrade, and this contract has no upgrade entry point either.",
+      "label": "Vault, generation 2, Soroban-only agUSD"
+    },
+    {
+      "contract": "agusdCore",
+      "generation": 2,
+      "address": "CCXEP6QAAYEMFMV2JGBULD2NS6AQB6KQSBHLPPBJSDBCN6HOYIHNQ6H3",
+      "supersededBy": "agusd",
+      "reason": "A Soroban contract token with no classic representation. Horizon returns no asset record for the code, so the SDEX cannot hold it and a path payment cannot route it at any price. Superseded by the Stellar Asset Contract of a classic agUSD, which trades on both the SDEX and Soroswap. It stays deployed and keeps its holders; the Soroswap pair created against it in October 2026 is still there.",
+      "label": "agUSD core, Soroban only"
     }
   ],
   "oracleFeedGuards": "The band bounds every report including the first, which a deviation bound cannot reach because a bound on a move needs something to move from. The minimum interval is measured in ledger time between accepted values, not in the timestamps the reporter supplies, because the reporter chooses those. The reference point is persistent, so it cannot expire out from under the checks that read it.",
@@ -691,8 +707,9 @@
   "notCompared": {
     "_why": "The --wasm pass claims every deployed contract is byte for byte the source in this tree. Nine of the fifteen addresses this record names were outside that claim, not because anyone decided they should be but because the list of contracts to compare was written by hand and they were never added to it. An omission that silent is worth less than no claim at all, so the check now enumerates every address in the record and requires each one to be either compared or named here with a reason.",
     "contracts.usdc": "The real Circle USDC Stellar Asset Contract on testnet, issuer GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5. A Stellar Asset Contract carries no uploaded WASM, so stellar contract fetch returns nothing for it and there is no bytecode to compare. None of it is ours to compile.",
-    "contracts.agusd": "Generation 1 agUSD, ledger hash e622db4a7d728d0b. This is the standalone design in which the token itself held the reserve, kept a buffer in basis points of supply and allocated the excess into the six generation 1 credit vaults. It was superseded by agusdCore, the SEP-41 token the Vault alone mints, and nothing in the live protocol names it any more: vault.agusd() and staking.agusd() both answer with agusdCore. It is left deployed with its holders rather than retired, which is what reusedInPlace already says. At the time of writing it carries 68.2 agUSD outstanding against 12.2 USDC of reserve and 54.76 USDC deployed into the credit vaults. Its bytecode predates both adversarial reviews, so a comparison against this tree fails on the code section by design: the source here has moved and the contract cannot follow without taking value from the people holding it. The only source change since it was deployed is the removal of em dashes from its doc comments, which Soroban embeds in contractspecv0; the code section differs because it was built against an older soroban-sdk.",
-    "creditVaults.*": "The six generation 1 credit vaults, all six deployed from one build of staking.wasm, ledger hash 30ec81abcd1a4674 for every one of them. They are reachable only from generation 1 agUSD, which names them as its allocation targets at 2500, 1000, 1500, 2500, 1000 and 1500 basis points, and they hold its deployed capital. Their code section is 10955 bytes against the 13619 this tree compiles today, which is nine commits of difference including both review passes, the error codes, the unstake horizon and the stroop-count check on the agUSD a contract accepts. Same reasoning as generation 1 agUSD: they are not part of the live protocol and redeploying them would strand what they hold."
+    "contracts.agusd": "agUSD's Stellar Asset Contract, issuer GAXM76GV3KKUK4XC3DKKHBEXCGUPYOALOB35HITI4WBKAAC7MUT5ZZEB. A Stellar Asset Contract carries no uploaded WASM: the host implements it, stellar contract fetch returns nothing, and there is no bytecode to compare against this tree. What can be checked instead is checked, and is what matters here: that its admin is the Vault, so the Vault is what mint obeys, and that the issuer account's master key weight is zero, so no classic payment can create a unit behind the Vault's back.",
+    "creditVaults.*": "The six generation 1 credit vaults, all six deployed from one build of staking.wasm, ledger hash 30ec81abcd1a4674 for every one of them. They are reachable only from generation 1 agUSD, which names them as its allocation targets at 2500, 1000, 1500, 2500, 1000 and 1500 basis points, and they hold its deployed capital. Their code section is 10955 bytes against the 13619 this tree compiles today, which is nine commits of difference including both review passes, the error codes, the unstake horizon and the stroop-count check on the agUSD a contract accepts. Same reasoning as generation 1 agUSD: they are not part of the live protocol and redeploying them would strand what they hold.",
+    "contracts.agusdCore": "agUSD's Stellar Asset Contract, issuer GAXM76GV3KKUK4XC3DKKHBEXCGUPYOALOB35HITI4WBKAAC7MUT5ZZEB. A Stellar Asset Contract carries no uploaded WASM: the host implements it, stellar contract fetch returns nothing, and there is no bytecode to compare against this tree. What can be checked instead is checked, and is what matters here: that its admin is the Vault, so the Vault is what mint obeys, and that the issuer account's master key weight is zero, so no classic payment can create a unit behind the Vault's back. Same address as contracts.agusd: agusdCore names the agUSD that exposes a mint entry point the Vault can call, and since the move to a classic asset that is this same contract."
   },
   "queuedForNextDeployment": [
     {
@@ -715,5 +732,12 @@
       "CDW7MGK5OWEF7URLXG2CZHXPKPKELFMAWBB3KPHQQ3BUEUY6ZFWE6EAM": "Deployed from a host-target cargo build rather than the wasm32v1-none one, so it shipped without the two new entry points. Caught by reading its interface off the chain, unwound and replaced.",
       "CDSR3MCXWLHLUKE7LMGEU7UTOIS7F5PWUVYENLLZJWCEJ3XEPYGHWRPY": "Correct code, but the doc comments were then corrected to cite defindex-io/stellar-contracts instead of the archived paltalabs/defindex. Soroban embeds doc comments in contractspecv0, so the deployed wasm no longer matched the tree. Redeployed rather than carried as a declared divergence, because staking is cheap to replace and nothing points at it."
     }
-  ]
+  ],
+  "agusdClassic": {
+    "assetCode": "agUSD",
+    "issuer": "GAXM76GV3KKUK4XC3DKKHBEXCGUPYOALOB35HITI4WBKAAC7MUT5ZZEB",
+    "sac": "CADD22PHOXWHYVCQ3K5DWIHPUNA5USTHBPOCBE2KDCYNUEBUGFAHH33R",
+    "issuerLocked": true,
+    "note": "agUSD is a classic Stellar asset and the contract address is its Stellar Asset Contract, which is the same asset seen from Soroban rather than a second token: a balance moved by the contract's transfer shows up in Horizon's classic balances. Supply is the Vault's alone. The SAC's admin, which is what mint obeys, was handed to the Vault; the issuer account was then locked by setting its master key weight to zero, which is irreversible and is what stops the issuer minting by classic payment behind the Vault's back. Both halves are needed: set_admin alone leaves the issuer able to pay new units into existence, and that was verified on a throwaway asset before it was done here."
+  }
 }
