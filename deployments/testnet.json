@@ -642,7 +642,7 @@
     },
     {
       "contract": "vault",
-      "generation": 2,
+      "generation": 12,
       "address": "CANIR7O2VQYQ5ZM2LIOREGPAXNXPWXHBAJVZPF3J2HBVT6VXOZHTG247",
       "supersededBy": "vault",
       "reason": "Its set_agusd can never run again: Cfg::Deposits counts deposits and is never decremented, it stands at 73, and the setter refuses while it is above zero. That guard is deliberate, since repointing a Vault that has issued would leave agUSD outstanding against a token it no longer mints. Moving agUSD onto a classic asset therefore needed a Vault with an empty counter rather than an upgrade, and this contract has no upgrade entry point either.",
@@ -650,15 +650,15 @@
     },
     {
       "contract": "agusdCore",
-      "generation": 2,
-      "address": "CCXEP6QAAYEMFMV2JGBULD2NS6AQB6KQSBHLPPBJSDBCN6HOYIHNQ6H3",
+      "generation": 11,
+      "address": "CDK6A24G3ZS5S46OXDNNIV2HU4J45QXN2Y6GUNDJOJ4H5L66BQLSW4MO",
       "supersededBy": "agusd",
-      "reason": "A Soroban contract token with no classic representation. Horizon returns no asset record for the code, so the SDEX cannot hold it and a path payment cannot route it at any price. Superseded by the Stellar Asset Contract of a classic agUSD, which trades on both the SDEX and Soroswap. It stays deployed and keeps its holders; the Soroswap pair created against it in October 2026 is still there.",
-      "label": "agUSD core, Soroban only"
+      "reason": "A Soroban contract token with no classic representation. Horizon returned no asset record for the code, so the SDEX could not hold it and a path payment could not route it at any price. Superseded by the Stellar Asset Contract of a classic agUSD, which trades on both the SDEX and Soroswap. It stays deployed and keeps its holders; the Soroswap pair created against it in October 2026 was drained into the pair on the classic agUSD.",
+      "label": "agUSD core, Soroban only, the token the Vault minted before the move"
     },
     {
       "contract": "staking",
-      "generation": 3,
+      "generation": 15,
       "address": "CCCOP5UKU3MOJYC5VFN2AGBRWHNXY5WF2BAGK435SNC6GJ4AFFVEPZ2K",
       "supersededBy": "staking",
       "reason": "Names the Soroban-only agUSD as the token it takes in, and that address is fixed at construction. It keeps its stakers and its exchange rate; it simply cannot accept the classic agUSD.",
@@ -666,23 +666,23 @@
     },
     {
       "contract": "allocationEngine",
-      "generation": 3,
+      "generation": 16,
       "address": "CDYT5BFC2ABBK2QWWUTU4AM6JGFN2BP3XHCUGVEI3O5NCCIBUXC5TUFL",
       "supersededBy": "allocationEngine",
       "reason": "Its set_vault refuses while capital is deployed, which it is: 8810023249 stroops across two pools. That guard is right, since repointing an Engine mid-exposure would leave the old Vault's capital governed by an Engine that no longer names it. The old Engine keeps governing the old Vault and those positions.",
       "label": "Allocation Engine, on the generation 2 Vault"
     },
     {
-      "contract": "private-credit",
-      "generation": 3,
+      "contract": "poolAdapters.private-credit",
+      "generation": 9,
       "address": "CAQQLSSXJJKO6YTH54AIXU7YPFOI7HTPTU2OOQ4MKBF2BYJAONT4VEDF",
       "supersededBy": "private-credit",
       "reason": "A pool adapter stores its Engine and its Vault at construction and exposes no setter for either, deliberately: an adapter that could be repointed could be made to take capital from one Vault and repay another. Migrating the Engine therefore means redeploying the adapters.",
       "label": "Private credit adapter, generation 2 wiring"
     },
     {
-      "contract": "etherfuse",
-      "generation": 3,
+      "contract": "poolAdapters.etherfuse",
+      "generation": 6,
       "address": "CBLYG64BCFJHOUQW4EEYEJTCXS7VEVXGEH2B3GEQ26JIJKMVN46G6GCF",
       "supersededBy": "etherfuse",
       "reason": "Same as the private credit adapter: Engine and Vault are fixed at construction and there is no setter.",
@@ -690,7 +690,7 @@
     },
     {
       "contract": "staking",
-      "generation": 4,
+      "generation": 16,
       "address": "CBFJ6KR26AMANZPA3EIIR2L3C4OR445ELVRK5UQ4ZNCUQM63EDEYZIPX",
       "supersededBy": "staking",
       "reason": "Retired holding 300000000 stroops of agUSD that no share has a claim on. The cause was an operator error during verification: agUSD was transferred to the contract by hand and then distribute_yield was called, and distribute_yield does its own transfer. The contract ended holding 120 agUSD against a NAV of 90. That gap cannot be closed from outside. distribute_yield moves the balance and the NAV together, so it can never catch up to a surplus that is already there, and agUSD leaves this contract only through a claim, which pays NAV. Unwound first: the 60 shares outstanding redeemed at 1.5 for the full 90 agUSD they were owed, so no staker lost anything and nothing is owed. What is stranded is the 30 of surplus, and the 30 USDC backing it stays in the Vault behind agUSD nobody can now redeem.",
@@ -698,7 +698,7 @@
     },
     {
       "contract": "staking",
-      "generation": 5,
+      "generation": 17,
       "address": "CABRKOPPYG4IIWGNH3DX4FY6CQFANFYRWMB3Y27HGUWWWERMCPEUWKIJ",
       "supersededBy": "staking",
       "reason": "Issued sagUSD as a balance ledger kept inside itself, so sagUSD was a Soroban-only token with no classic representation and the Stellar orderbook could not hold it at any price. Replaced by a contract that issues through a Stellar Asset Contract instead, which took a code change rather than a redeployment: this one has no share token pointer to repoint, it is the share token. Retired empty, supply and NAV both zero, nothing staked and nothing owed.",
@@ -791,7 +791,8 @@
     "sac": "CADD22PHOXWHYVCQ3K5DWIHPUNA5USTHBPOCBE2KDCYNUEBUGFAHH33R",
     "issuerLocked": true,
     "note": "agUSD is a classic Stellar asset and the contract address is its Stellar Asset Contract, which is the same asset seen from Soroban rather than a second token: a balance moved by the contract's transfer shows up in Horizon's classic balances. Supply is the Vault's alone. The SAC's admin, which is what mint obeys, was handed to the Vault; the issuer account was then locked by setting its master key weight to zero, which is irreversible and is what stops the issuer minting by classic payment behind the Vault's back. Both halves are needed: set_admin alone leaves the issuer able to pay new units into existence, and that was verified on a throwaway asset before it was done here.",
-    "generation3": "Moving agUSD onto a classic asset cascaded through the whole stack, and the record names every contract it reached. The Vault had to be new because its deposit counter closes set_agusd for good. The staking contract had to be new because the agUSD it accepts is fixed at construction. The Allocation Engine had to be new because set_vault refuses while capital is deployed, and the two pool adapters had to be new because they store their Engine and Vault with no setter at all. None of those guards was worked around; each one is doing what it was written to do."
+    "generation3": "Moving agUSD onto a classic asset cascaded through the whole stack, and the record names every contract it reached. The Vault had to be new because its deposit counter closes set_agusd for good. The staking contract had to be new because the agUSD it accepts is fixed at construction. The Allocation Engine had to be new because set_vault refuses while capital is deployed, and the two pool adapters had to be new because they store their Engine and Vault with no setter at all. None of those guards was worked around; each one is doing what it was written to do.",
+    "genesisUnit": "The payment that brings a classic asset into existence creates supply the Vault never took USDC for, so agUSD was over-issued by one unit against its backing from the moment it was created: 6407.0000000 in circulation against 6406.0000000 USDC held. Burned once measured, and the two now agree to the stroop. The deploy script burns it rather than leaving it, and the end to end test asserts circulation against the Vault's USDC so a recurrence fails a run rather than sitting there."
   },
   "sagusdClassic": {
     "assetCode": "sagUSD",
@@ -799,6 +800,6 @@
     "sac": "CCQG6FDEYA52IVWLXQ2IFZ56UTNKKBLOADGG5BASXNLTX53SBSM7NBD5",
     "issuerLocked": true,
     "note": "sagUSD is a classic Stellar asset and the contract address is its Stellar Asset Contract, the same move agUSD made and for a sharper reason. A share token's fair price is a contract read rather than something a market has to discover, and a constant product pool prices a token that only appreciates at yesterday's rate between trades, so the difference is taken by arbitrage out of the liquidity providers. An orderbook can be quoted off the rate instead. Supply is the staking contract's alone: the SAC's admin was handed to it and the issuer account's master key weight was then set to zero. Both halves are needed, and in that order.",
-    "supplyIsTracked": "A Stellar Asset Contract publishes no total supply, so the staking contract counts shares itself, moving the figure on every mint and burn. Only it can mint, so the count cannot read low. It can read high: a holder may call burn on the SAC directly and destroy shares without unstaking, which the contract cannot observe. That direction is the safe one, since a supply read too high prices every share too low and the contract pays out less than it holds rather than more. The indexer can see what the contract cannot, by comparing Horizon's figure for the classic asset against total_supply."
+    "supplyIsTracked": "A Stellar Asset Contract publishes no total supply, so the staking contract counts shares itself, moving the figure on every mint and burn. Two directions of drift, and they are not symmetric. Reading high is harmless: a supply too high prices every share too low, so the contract pays out less than it holds. A holder can cause that by calling burn on the SAC directly instead of unstaking, which the contract cannot observe. Reading low is the dangerous one, because it prices every share too high and a redemption then pays more than its share of the assets, diluting everybody else. Only one thing can cause it: units that existed before this contract became the SAC's admin, which it never counted. One did, from the payment that brought the classic asset into existence, and it was burned once the gap was measured. The reconciliation is now asserted on every run of scripts/e2e-generation3.sh, against Horizon's own figure for the classic asset, which is the only number that can contradict this one."
   }
 }
