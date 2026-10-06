@@ -36,19 +36,21 @@ fn setup() -> Fix {
     );
 
     // two credit vaults, 60/40 target weights
+    // Each one issues its shares through its own token contract now, admined
+    // by the staking contract. A MockUsdc stands in for the Stellar Asset
+    // Contract: the staking contract asks it for `admin`, `mint`, `burn`,
+    // `balance` and `decimals`, and those are the same on both.
     let mk = |name: &str, sym: &str| {
-        let id = e.register(
-            Staking,
-            (
-                admin.clone(),
-                usdc_id.clone(),
-                COOLDOWN,
-                7u32,
-                String::from_str(&e, name),
-                String::from_str(&e, sym),
-            ),
-        );
+        let id = e.register(Staking, (admin.clone(), usdc_id.clone(), COOLDOWN));
         let c = StakingClient::new(&e, &id);
+        let shares = e.register(MockUsdc, ());
+        MockUsdcClient::new(&e, &shares).initialize(
+            &id,
+            &7u32,
+            &String::from_str(&e, name),
+            &String::from_str(&e, sym),
+        );
+        c.set_shares(&admin, &shares);
         (id, c)
     };
     let (v1_id, v1) = mk("Vault One", "V1");
