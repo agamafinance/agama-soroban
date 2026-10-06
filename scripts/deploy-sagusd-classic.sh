@@ -63,6 +63,16 @@ SH=$(stellar contract invoke --id "$STAKING" --source "$SRC" --network "$NET" --
 [ "$SH" = "$SAC" ] || { echo "   set_shares did not take"; exit 1; }
 echo "   verified"
 
+echo "== burn the unit that brought the asset into existence"
+# That payment is supply the staking contract never issued and does not count,
+# and an uncounted unit prices every share slightly too high, so a redemption
+# pays more than its share of the assets. It is one unit and it was still worth
+# measuring: the first time round the gap sat there until a reconciliation
+# against Horizon found it.
+stellar contract invoke --id "$SAC" --source sagusd-holder2 --network "$NET" -- \
+  burn --from "$HOLDER" --amount 10000000 >/dev/null
+echo "   burned"
+
 echo "== lock the issuer, irreversible, and only now"
 stellar tx new set-options --source-account sagusd-issuer2 --master-weight 0 --network "$NET" >/dev/null
 echo "   locked: the staking contract is the only address that can mint sagUSD"
