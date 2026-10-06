@@ -9,7 +9,7 @@
   "contracts": {
     "usdc": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
     "agusd": "CADD22PHOXWHYVCQ3K5DWIHPUNA5USTHBPOCBE2KDCYNUEBUGFAHH33R",
-    "staking": "CABRKOPPYG4IIWGNH3DX4FY6CQFANFYRWMB3Y27HGUWWWERMCPEUWKIJ",
+    "staking": "CBOHG5YGAE7ORFDE5GIUN6MYYSXMHYWGLZTH3Y563HZCBBWFVQ4CACV3",
     "vault": "CCVNCXPJXCA5GKJKNUNZRMJEEWYL74ASYYTL2DULPO5TZDGSHUPZTTJF",
     "allocationEngine": "CBDVZPMBUQQ6OML3WTT4TP6QIOJDRC4BWYXR7UZQAAZG2LETAVZE6FFD",
     "oracleAdapter": "CAUOHPPNHUIYQI3KIVPLP75CGWKFBGSXK3RW75UO52PKY3YKQRTWIQUS",
@@ -695,6 +695,14 @@
       "supersededBy": "staking",
       "reason": "Retired holding 300000000 stroops of agUSD that no share has a claim on. The cause was an operator error during verification: agUSD was transferred to the contract by hand and then distribute_yield was called, and distribute_yield does its own transfer. The contract ended holding 120 agUSD against a NAV of 90. That gap cannot be closed from outside. distribute_yield moves the balance and the NAV together, so it can never catch up to a surplus that is already there, and agUSD leaves this contract only through a claim, which pays NAV. Unwound first: the 60 shares outstanding redeemed at 1.5 for the full 90 agUSD they were owed, so no staker lost anything and nothing is owed. What is stranded is the 30 of surplus, and the 30 USDC backing it stays in the Vault behind agUSD nobody can now redeem.",
       "label": "sagUSD staking, first on the classic agUSD"
+    },
+    {
+      "contract": "staking",
+      "generation": 5,
+      "address": "CABRKOPPYG4IIWGNH3DX4FY6CQFANFYRWMB3Y27HGUWWWERMCPEUWKIJ",
+      "supersededBy": "staking",
+      "reason": "Issued sagUSD as a balance ledger kept inside itself, so sagUSD was a Soroban-only token with no classic representation and the Stellar orderbook could not hold it at any price. Replaced by a contract that issues through a Stellar Asset Contract instead, which took a code change rather than a redeployment: this one has no share token pointer to repoint, it is the share token. Retired empty, supply and NAV both zero, nothing staked and nothing owed.",
+      "label": "sagUSD staking, Soroban-only share token"
     }
   ],
   "oracleFeedGuards": "The band bounds every report including the first, which a deviation bound cannot reach because a bound on a move needs something to move from. The minimum interval is measured in ledger time between accepted values, not in the timestamps the reporter supplies, because the reporter chooses those. The reference point is persistent, so it cannot expire out from under the checks that read it.",
@@ -771,6 +779,10 @@
       "_why": "Contracts deployed while getting Tranche 1 Deliverable 1 right and then abandoned, within one session, never announced anywhere and pointed at by nothing. Listed so somebody reading the ledger for this account does not have to wonder. Both are empty: supply and NAV zero, no agUSD held.",
       "CDW7MGK5OWEF7URLXG2CZHXPKPKELFMAWBB3KPHQQ3BUEUY6ZFWE6EAM": "Deployed from a host-target cargo build rather than the wasm32v1-none one, so it shipped without the two new entry points. Caught by reading its interface off the chain, unwound and replaced.",
       "CDSR3MCXWLHLUKE7LMGEU7UTOIS7F5PWUVYENLLZJWCEJ3XEPYGHWRPY": "Correct code, but the doc comments were then corrected to cite defindex-io/stellar-contracts instead of the archived paltalabs/defindex. Soroban embeds doc comments in contractspecv0, so the deployed wasm no longer matched the tree. Redeployed rather than carried as a declared divergence, because staking is cheap to replace and nothing points at it."
+    },
+    {
+      "_why": "A sagUSD asset bricked by operator error, recorded because the ledger shows it and somebody will otherwise wonder. Nothing was ever staked against it and nothing points at it.",
+      "CAYO42I6GQAMKBHBG3XQIMNNYSIQOSJPF3N34GW46FKDEITK7L4EX5FE": "The first sagUSD Stellar Asset Contract, issuer GDTS3KNC65WXMEHW33S4K52Z5RPRDC7FMPKFEWVORE5GGRRQDZGFDZNV. Unusable for good: the issuer account's master key weight was set to zero while the issuer was still the SAC's admin, because the deploy step before it had silently produced an empty contract address and the set_admin that should have moved the admin to the staking contract failed without being checked. Nobody can mint it and nobody can move its admin, since both would need a signature the issuer can no longer give. One unit exists, paid out before the lock. The order is the lesson: hand the admin over, read it back, and only then lock the issuer. The sequence that replaced it asserts the admin is the staking contract and exits before locking if it is not."
     }
   ],
   "agusdClassic": {
@@ -780,5 +792,13 @@
     "issuerLocked": true,
     "note": "agUSD is a classic Stellar asset and the contract address is its Stellar Asset Contract, which is the same asset seen from Soroban rather than a second token: a balance moved by the contract's transfer shows up in Horizon's classic balances. Supply is the Vault's alone. The SAC's admin, which is what mint obeys, was handed to the Vault; the issuer account was then locked by setting its master key weight to zero, which is irreversible and is what stops the issuer minting by classic payment behind the Vault's back. Both halves are needed: set_admin alone leaves the issuer able to pay new units into existence, and that was verified on a throwaway asset before it was done here.",
     "generation3": "Moving agUSD onto a classic asset cascaded through the whole stack, and the record names every contract it reached. The Vault had to be new because its deposit counter closes set_agusd for good. The staking contract had to be new because the agUSD it accepts is fixed at construction. The Allocation Engine had to be new because set_vault refuses while capital is deployed, and the two pool adapters had to be new because they store their Engine and Vault with no setter at all. None of those guards was worked around; each one is doing what it was written to do."
+  },
+  "sagusdClassic": {
+    "assetCode": "sagUSD",
+    "issuer": "GDG7JGDAC2V3SV7KE5YGJGI5YGEDXCXY3S5FEG3EBLOI4GNG3EOO346F",
+    "sac": "CCQG6FDEYA52IVWLXQ2IFZ56UTNKKBLOADGG5BASXNLTX53SBSM7NBD5",
+    "issuerLocked": true,
+    "note": "sagUSD is a classic Stellar asset and the contract address is its Stellar Asset Contract, the same move agUSD made and for a sharper reason. A share token's fair price is a contract read rather than something a market has to discover, and a constant product pool prices a token that only appreciates at yesterday's rate between trades, so the difference is taken by arbitrage out of the liquidity providers. An orderbook can be quoted off the rate instead. Supply is the staking contract's alone: the SAC's admin was handed to it and the issuer account's master key weight was then set to zero. Both halves are needed, and in that order.",
+    "supplyIsTracked": "A Stellar Asset Contract publishes no total supply, so the staking contract counts shares itself, moving the figure on every mint and burn. Only it can mint, so the count cannot read low. It can read high: a holder may call burn on the SAC directly and destroy shares without unstaking, which the contract cannot observe. That direction is the safe one, since a supply read too high prices every share too low and the contract pays out less than it holds rather than more. The indexer can see what the contract cannot, by comparing Horizon's figure for the classic asset against total_supply."
   }
 }
