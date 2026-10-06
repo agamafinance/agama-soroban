@@ -114,18 +114,20 @@ fn setup() -> FuzzState {
         &String::from_str(&e, "agUSD"),
     );
 
-    let staking_id = e.register(
-        Staking,
-        (
-            admin.clone(),
-            agusd_id.clone(),
-            COOLDOWN,
-            7u32,
-            String::from_str(&e, "Staked agUSD"),
-            String::from_str(&e, "sagUSD"),
-        ),
-    );
+    let staking_id = e.register(Staking, (admin.clone(), agusd_id.clone(), COOLDOWN));
     let staking = StakingClient::new(&e, &staking_id);
+
+    // The share token, admined by the staking contract. See the note in the
+    // test setup: a MockUsdc answers everything the contract asks of a Stellar
+    // Asset Contract.
+    let shares_id = e.register(MockUsdc, ());
+    MockUsdcClient::new(&e, &shares_id).initialize(
+        &staking_id,
+        &7u32,
+        &String::from_str(&e, "Staked agUSD"),
+        &String::from_str(&e, "sagUSD"),
+    );
+    staking.set_shares(&admin, &shares_id);
 
     FuzzState {
         e,

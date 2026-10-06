@@ -104,8 +104,8 @@
 //! the share price without moving the assets behind it.
 
 use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contracttype, token::TokenClient, Address,
-    Env, String, Vec,
+    contract, contracterror, contractevent, contractclient, contractimpl, contracttype,
+    token::TokenClient, Address, Env, String, Vec,
 };
 use token as tok;
 
@@ -189,6 +189,30 @@ pub enum StakingError {
     /// The agUSD offered counts stroops differently from the sagUSD this
     /// contract issues, so the exchange rate would not start at one.
     DecimalMismatch = 811,
+    /// The share token offered does not name this contract as its admin, so
+    /// this contract could not mint a share through it.
+    SharesMismatch = 812,
+    /// A stake or an unstake before `set_shares` named the token to issue.
+    SharesNotSet = 813,
+}
+
+/// The sagUSD share token, as seen from here.
+///
+/// A Stellar Asset Contract, so that sagUSD is a classic Stellar asset as well
+/// as a Soroban one and the classic orderbook can hold it. The entry points are
+/// the SAC's own; note what is absent, because it shapes this contract: a SAC
+/// publishes no total supply. There is no call to read one, so the share count
+/// is kept here and moved by hand on every mint and burn.
+#[contractclient(name = "SharesClient")]
+pub trait ShareToken {
+    fn mint(e: Env, to: Address, amount: i128);
+    fn burn(e: Env, from: Address, amount: i128);
+    fn balance(e: Env, id: Address) -> i128;
+    fn decimals(e: Env) -> u32;
+    /// The address whose authorization `mint` requires. `set_shares` reads it,
+    /// because a contract that points at a token which does not name it back
+    /// is a contract whose `stake` cannot issue a share.
+    fn admin(e: Env) -> Address;
 }
 
 /// Emitted when the staked asset is repointed. It can only happen before the
@@ -207,6 +231,12 @@ pub struct AgUsdRepointed {
 enum Cfg {
     Admin,
     AgUsd,
+    /// The sagUSD share token: a Stellar Asset Contract this contract is the
+    /// admin of, rather than a balance ledger kept in here.
+    Shares,
+    /// Shares issued less shares burned, counted here because a Stellar Asset
+    /// Contract publishes no total supply and there is nothing to read it from.
+    Supply,
     Nav,
     Cooldown,
     Allocations,
@@ -337,23 +367,77 @@ impl Staking {
     /// identical one naming somebody else. On this contract that is the authority over the yield the share price is moved by. A constructor runs inside
     /// the deploy, so there is no window to race, and the host runs it exactly
     /// once, which is what used to need a re-initialization guard.
+    /// No share token yet, and that is not an oversight.
+    ///
+    /// The share token has to name this contract as its admin, and this
+    /// contract has no address until the deploy that runs this constructor has
+    /// finished. So the order is fixed by the chain: deploy, hand the token's
+    /// admin over to the address that comes back, then `set_shares`. The same
+    /// shape as the Vault and its agUSD, for the same reason.
     pub fn __constructor(
         e: Env,
         admin: Address,
         agusd: Address,
         cooldown_seconds: u64,
-        decimal: u32,
-        name: String,
-        symbol: String,
     ) -> Result<(), StakingError> {
         admin.require_auth();
         e.storage().instance().set(&Cfg::Admin, &admin);
         e.storage().instance().set(&Cfg::AgUsd, &agusd);
         e.storage().instance().set(&Cfg::Nav, &0i128);
+        e.storage().instance().set(&Cfg::Supply, &0i128);
         e.storage().instance().set(&Cfg::Cooldown, &cooldown_seconds);
-        tok::set_metadata(&e, decimal, name, symbol);
         tok::bump_instance(&e);
         Ok(())
+    }
+
+    /// Name the token this contract issues shares in, before anybody has staked.
+    ///
+    /// Guarded the way the Vault guards `set_agusd`, and for the failure that
+    /// actually happened there: a contract pointed at a token it cannot mint is
+    /// a contract whose `stake` reverts, and the cheapest way to rule that out
+    /// is to ask the token who its admin is and refuse any answer but this
+    /// address.
+    ///
+    /// Shut once a stake has been taken. Shares outstanding are denominated in
+    /// this token, and repointing underneath them would leave holders with a
+    /// balance in a token this contract no longer burns.
+    pub fn set_shares(e: Env, admin: Address, shares_token: Address) -> Result<(), StakingError> {
+        Self::require_admin(&e, &admin)?;
+        if Self::stakes(e.clone()) > 0 {
+            return Err(StakingError::CustodyTaken);
+        }
+        let shares = SharesClient::new(&e, &shares_token);
+        match shares.try_admin() {
+            Ok(Ok(a)) if a == e.current_contract_address() => {}
+            _ => return Err(StakingError::SharesMismatch),
+        }
+        // Both sides have to count stroops the same way, for the reason spelled
+        // out under `set_agusd`: the first staker is priced one for one, so a
+        // mismatch makes an exchange rate of 1.0 not one to one in value.
+        let agusd: Address = e
+            .storage()
+            .instance()
+            .get(&Cfg::AgUsd)
+            .ok_or(StakingError::NotInitialized)?;
+        let theirs = match TokenClient::new(&e, &agusd).try_decimals() {
+            Ok(Ok(d)) => d,
+            _ => return Err(StakingError::DecimalMismatch),
+        };
+        match shares.try_decimals() {
+            Ok(Ok(d)) if d == theirs => {}
+            _ => return Err(StakingError::DecimalMismatch),
+        }
+        e.storage().instance().set(&Cfg::Shares, &shares_token);
+        tok::bump_instance(&e);
+        Ok(())
+    }
+
+    /// The share token, or `SharesNotSet` if `set_shares` has not run.
+    pub fn shares(e: Env) -> Result<Address, StakingError> {
+        e.storage()
+            .instance()
+            .get(&Cfg::Shares)
+            .ok_or(StakingError::SharesNotSet)
     }
 
     /// Point the contract at a different agUSD, before anybody has staked.
@@ -401,10 +485,18 @@ impl Staking {
         // stroops. It is the same check the Vault makes on the token it mints,
         // for the same reason: an integer ratio is only a price while both
         // sides agree what the integers mean.
-        let mine = tok::decimals(&e);
-        match TokenClient::new(&e, &agusd).try_decimals() {
-            Ok(Ok(d)) if d == mine => {}
-            _ => return Err(StakingError::DecimalMismatch),
+        // Measured against the share token rather than against a decimals
+        // field kept in here, because the share token is what the rate is
+        // denominated in now.
+        if let Ok(shares_token) = Self::shares(e.clone()) {
+            let mine = match SharesClient::new(&e, &shares_token).try_decimals() {
+                Ok(Ok(d)) => d,
+                _ => return Err(StakingError::DecimalMismatch),
+            };
+            match TokenClient::new(&e, &agusd).try_decimals() {
+                Ok(Ok(d)) if d == mine => {}
+                _ => return Err(StakingError::DecimalMismatch),
+            }
         }
         e.storage().instance().set(&Cfg::AgUsd, &agusd);
         tok::bump_instance(&e);
@@ -426,7 +518,7 @@ impl Staking {
         TokenClient::new(&e, &agusd).transfer(&from, &e.current_contract_address(), &amount);
 
         let nav = Self::nav(e.clone());
-        let supply = tok::total_supply(&e);
+        let supply = Self::total_supply(e.clone());
         let shares = if supply == 0 || nav == 0 {
             amount
         } else {
@@ -435,7 +527,9 @@ impl Staking {
         if shares <= 0 {
             return Err(StakingError::ZeroShares);
         }
-        tok::mint(&e, &from, shares);
+        let shares_token = Self::shares(e.clone())?;
+        SharesClient::new(&e, &shares_token).mint(&from, &shares);
+        e.storage().instance().set(&Cfg::Supply, &(supply + shares));
         e.storage().instance().set(&Cfg::Nav, &(nav + amount));
         e.storage()
             .instance()
@@ -445,7 +539,7 @@ impl Staking {
             assets: amount,
             shares,
             nav: Self::nav(e.clone()),
-            supply: tok::total_supply(&e),
+            supply: Self::total_supply(e.clone()),
         }
         .publish(&e);
         Ok(shares)
@@ -458,13 +552,15 @@ impl Staking {
         if shares <= 0 {
             return Err(StakingError::InvalidAmount);
         }
-        let supply = tok::total_supply(&e);
+        let supply = Self::total_supply(e.clone());
         if supply == 0 {
             return Err(StakingError::NoSupply);
         }
         let nav = Self::nav(e.clone());
         let assets = shares * nav / supply;
-        tok::burn_unchecked(&e, &from, shares);
+        let shares_token = Self::shares(e.clone())?;
+        SharesClient::new(&e, &shares_token).burn(&from, &shares);
+        e.storage().instance().set(&Cfg::Supply, &(supply - shares));
         e.storage().instance().set(&Cfg::Nav, &(nav - assets));
 
         let cooldown: u64 = e.storage().instance().get(&Cfg::Cooldown).unwrap();
@@ -483,7 +579,7 @@ impl Staking {
             assets,
             claimable_at: p.claimable_at,
             nav: Self::nav(e.clone()),
-            supply: tok::total_supply(&e),
+            supply: Self::total_supply(e.clone()),
         }
         .publish(&e);
         Ok(assets)
@@ -573,7 +669,7 @@ impl Staking {
         YieldDistributed {
             amount,
             nav: nav + amount,
-            supply: tok::total_supply(&e),
+            supply: Self::total_supply(e.clone()),
         }
         .publish(&e);
         Ok(())
@@ -647,7 +743,7 @@ impl Staking {
         e.storage().instance().get(&Cfg::Nav).unwrap_or(0)
     }
     pub fn total_shares(e: Env) -> i128 {
-        tok::total_supply(&e)
+        Self::total_supply(e)
     }
     /// agUSD per sagUSD share, scaled to 7 decimals (ONE = 1.0). Starts at 1.0
     /// and only ever moves with the NAV, which is what makes yield passive.
@@ -655,7 +751,7 @@ impl Staking {
     /// This is the assets-per-share view under the name Agama committed to. It
     /// is the canonical one; `share_price` below is an alias.
     pub fn exchange_rate(e: Env) -> i128 {
-        let supply = tok::total_supply(&e);
+        let supply = Self::total_supply(e.clone());
         if supply == 0 {
             ONE
         } else {
@@ -691,7 +787,7 @@ impl Staking {
         if vault_shares < 0 {
             return Err(StakingError::InvalidAmount);
         }
-        let supply = tok::total_supply(&e);
+        let supply = Self::total_supply(e.clone());
         let assets = if supply == 0 || vault_shares == 0 {
             0
         } else {
@@ -769,33 +865,42 @@ impl Staking {
         e.storage().instance().get(&Cfg::Stakes).unwrap_or(0)
     }
 
-    // ---- SEP-41 (sagUSD share token) ----
+    // ---- share token views ----
+    //
+    // Transfer, approve, allowance and transfer_from are gone from here. They
+    // belong to the share token now, and a shadow copy on this contract would
+    // be a second answer to a question the ledger already answers, free to
+    // disagree with it.
+
+    /// Delegated, so it is the token's own answer rather than a second ledger.
     pub fn balance(e: Env, id: Address) -> i128 {
-        tok::balance(&e, &id)
+        match Self::shares(e.clone()) {
+            Ok(t) => SharesClient::new(&e, &t).balance(&id),
+            Err(_) => 0,
+        }
     }
-    pub fn transfer(e: Env, from: Address, to: Address, amount: i128) {
-        tok::transfer(&e, from, to, amount)
-    }
-    pub fn transfer_from(e: Env, spender: Address, from: Address, to: Address, amount: i128) {
-        tok::transfer_from(&e, spender, from, to, amount)
-    }
-    pub fn approve(e: Env, from: Address, spender: Address, amount: i128, expiration_ledger: u32) {
-        tok::approve(&e, from, spender, amount, expiration_ledger)
-    }
-    pub fn allowance(e: Env, from: Address, spender: Address) -> i128 {
-        tok::allowance(&e, &from, &spender)
-    }
+
     pub fn decimals(e: Env) -> u32 {
-        tok::decimals(&e)
+        match Self::shares(e.clone()) {
+            Ok(t) => SharesClient::new(&e, &t).decimals(),
+            Err(_) => 0,
+        }
     }
-    pub fn name(e: Env) -> String {
-        tok::name(&e)
-    }
-    pub fn symbol(e: Env) -> String {
-        tok::symbol(&e)
-    }
+
+    /// Shares issued less shares burned, as counted here.
+    ///
+    /// Kept rather than read, because a Stellar Asset Contract publishes no
+    /// total supply and there is no call that would return one. Only this
+    /// contract can mint, so the count cannot be low. It can be high: a holder
+    /// may call `burn` on the share token directly and destroy shares without
+    /// unstaking, which this contract has no way to observe. That direction is
+    /// the safe one. A supply read too high prices every share too low, so
+    /// redemptions pay less than the assets behind them and the surplus stays
+    /// in the contract; it can never pay out more than it holds. The indexer
+    /// can see what this contract cannot, by comparing Horizon's figure for the
+    /// classic asset against this one.
     pub fn total_supply(e: Env) -> i128 {
-        tok::total_supply(&e)
+        e.storage().instance().get(&Cfg::Supply).unwrap_or(0)
     }
 
     // ---- internals ----

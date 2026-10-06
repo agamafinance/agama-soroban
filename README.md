@@ -79,7 +79,7 @@ Network: **Stellar Testnet** · RPC: `https://soroban-testnet.stellar.org`
 |---|---|
 | USDC (Circle) | [`CBIELTK6...XQDAMA`](https://stellar.expert/explorer/testnet/contract/CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA) |
 | agUSD | [`CADD22PH...AHH33R`](https://stellar.expert/explorer/testnet/contract/CADD22PHOXWHYVCQ3K5DWIHPUNA5USTHBPOCBE2KDCYNUEBUGFAHH33R) |
-| sagUSD | [`CABRKOPP...EUWKIJ`](https://stellar.expert/explorer/testnet/contract/CABRKOPPYG4IIWGNH3DX4FY6CQFANFYRWMB3Y27HGUWWWERMCPEUWKIJ) |
+| sagUSD | [`CBOHG5YG...4CACV3`](https://stellar.expert/explorer/testnet/contract/CBOHG5YGAE7ORFDE5GIUN6MYYSXMHYWGLZTH3Y563HZCBBWFVQ4CACV3) |
 | Vault Contract | [`CCVNCXPJ...PZTTJF`](https://stellar.expert/explorer/testnet/contract/CCVNCXPJXCA5GKJKNUNZRMJEEWYL74ASYYTL2DULPO5TZDGSHUPZTTJF) |
 | Allocation Engine | [`CBDVZPMB...ZE6FFD`](https://stellar.expert/explorer/testnet/contract/CBDVZPMBUQQ6OML3WTT4TP6QIOJDRC4BWYXR7UZQAAZG2LETAVZE6FFD) |
 | Oracle Adapter | [`CAUOHPPN...TWIQUS`](https://stellar.expert/explorer/testnet/contract/CAUOHPPNHUIYQI3KIVPLP75CGWKFBGSXK3RW75UO52PKY3YKQRTWIQUS) |
@@ -1149,7 +1149,7 @@ ledger or in this repository, not asserted here.
 |---|---|
 | contracts deployed on testnet with transactions publicly verifiable on Stellar Expert | the live table above, every address linked. `bash scripts/check-deployment-record.sh --wasm` compares each one's bytecode against this tree and fails on any divergence nothing declares |
 | the full deposit / mint / stake / unstake / redeem flow executable end-to-end | `bash scripts/smoke-journey.sh`, which runs the whole path against the deployed contracts and asserts each step. Eight suites, 331 assertions chained |
-| sagUSD exchange rate readable through the DeFindex assets-per-share interface | `get_asset_amounts_per_shares(vault_shares)` and `fetch_total_managed_funds()` on `CABRKOPPYG4IIWGNH3DX4FY6CQFANFYRWMB3Y27HGUWWWERMCPEUWKIJ`, under DeFindex's own signatures. See [SECURITY.md](SECURITY.md) for what each returns and why the amount is a direct quotient rather than the scalar rate multiplied out |
+| sagUSD exchange rate readable through the DeFindex assets-per-share interface | `get_asset_amounts_per_shares(vault_shares)` and `fetch_total_managed_funds()` on `CBOHG5YGAE7ORFDE5GIUN6MYYSXMHYWGLZTH3Y563HZCBBWFVQ4CACV3`, under DeFindex's own signatures. See [SECURITY.md](SECURITY.md) for what each returns and why the amount is a direct quotient rather than the scalar rate multiplied out |
 | unit test suite passing on all core functions | `cargo test --workspace`, 206 tests, plus an invariant fuzzer over randomised operation sequences |
 | source public at github.com/agamafinance/agama-soroban | this repository, Apache-2.0, public from the first commit |
 

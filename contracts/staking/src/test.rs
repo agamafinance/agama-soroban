@@ -48,18 +48,21 @@ fn setup() -> Fix {
         &String::from_str(&e, "agUSD"),
     );
 
-    let v_id = e.register(
-        Staking,
-        (
-            admin.clone(),
-            ag_id.clone(),
-            COOLDOWN,
-            7u32,
-            String::from_str(&e, "Staked agUSD"),
-            String::from_str(&e, "sagUSD"),
-        ),
-    );
+    let v_id = e.register(Staking, (admin.clone(), ag_id.clone(), COOLDOWN));
     let vault = StakingClient::new(&e, &v_id);
+
+    // sagUSD is its own token contract now, and this contract is its admin
+    // rather than its ledger. A MockUsdc stands in for the Stellar Asset
+    // Contract: what the staking contract asks of it is `admin`, `mint`,
+    // `burn`, `balance` and `decimals`, and those are the same on both.
+    let sh_id = e.register(MockUsdc, ());
+    MockUsdcClient::new(&e, &sh_id).initialize(
+        &v_id,
+        &7u32,
+        &String::from_str(&e, "Staked agUSD"),
+        &String::from_str(&e, "sagUSD"),
+    );
+    vault.set_shares(&admin, &sh_id);
 
     Fix { e, usdc, ag, vault, admin }
 }
@@ -819,4 +822,130 @@ fn the_agusd_pointer_refuses_a_token_that_counts_stroops_differently() {
     );
     f.vault.set_agusd(&f.admin, &right);
     assert_eq!(f.vault.agusd(), right);
+}
+
+/// `set_shares` refuses a token that does not name this contract as its admin.
+///
+/// The guard exists for the failure the Vault actually hit: a contract pointed
+/// at a token it cannot mint is a contract whose `stake` reverts, and the
+/// cheapest moment to find that out is before anyone has staked.
+#[test]
+fn set_shares_refuses_a_token_it_cannot_mint() {
+    let f = setup();
+    let stranger = Address::generate(&f.e);
+
+    let theirs = f.e.register(MockUsdc, ());
+    MockUsdcClient::new(&f.e, &theirs).initialize(
+        &stranger,
+        &7u32,
+        &String::from_str(&f.e, "Not ours"),
+        &String::from_str(&f.e, "NOPE"),
+    );
+    assert_eq!(
+        f.vault.try_set_shares(&f.admin, &theirs),
+        Err(Ok(StakingError::SharesMismatch))
+    );
+}
+
+/// And it refuses one that counts stroops differently from agUSD, because the
+/// first staker is priced one for one and a mismatch makes a rate of 1.0 not
+/// one to one in value.
+#[test]
+fn set_shares_refuses_a_token_with_the_wrong_decimals() {
+    let e = Env::default();
+    e.mock_all_auths();
+    e.ledger().set_timestamp(1_000);
+    let admin = Address::generate(&e);
+    let treasury = Address::generate(&e);
+
+    let usdc_id = e.register(MockUsdc, ());
+    MockUsdcClient::new(&e, &usdc_id).initialize(
+        &admin,
+        &7u32,
+        &String::from_str(&e, "USD Coin"),
+        &String::from_str(&e, "USDC"),
+    );
+    let ag_id = e.register(AgUsd, ());
+    AgUsdClient::new(&e, &ag_id).initialize(
+        &admin,
+        &usdc_id,
+        &treasury,
+        &2000u32,
+        &7u32,
+        &String::from_str(&e, "Agama USD"),
+        &String::from_str(&e, "agUSD"),
+    );
+    let v_id = e.register(Staking, (admin.clone(), ag_id.clone(), COOLDOWN));
+    let vault = StakingClient::new(&e, &v_id);
+
+    let six = e.register(MockUsdc, ());
+    MockUsdcClient::new(&e, &six).initialize(
+        &v_id,
+        &6u32,
+        &String::from_str(&e, "Staked agUSD"),
+        &String::from_str(&e, "sagUSD"),
+    );
+    assert_eq!(
+        vault.try_set_shares(&admin, &six),
+        Err(Ok(StakingError::DecimalMismatch))
+    );
+}
+
+/// Once a stake has been taken the share token is fixed, because shares
+/// outstanding are denominated in it.
+#[test]
+fn set_shares_shuts_once_somebody_has_staked() {
+    let f = setup();
+    let alice = Address::generate(&f.e);
+    fund_agusd(&f, &alice, 100 * ONE);
+    f.vault.stake(&alice, &(100 * ONE));
+
+    let other = f.e.register(MockUsdc, ());
+    MockUsdcClient::new(&f.e, &other).initialize(
+        &f.vault.address,
+        &7u32,
+        &String::from_str(&f.e, "Staked agUSD"),
+        &String::from_str(&f.e, "sagUSD"),
+    );
+    assert_eq!(
+        f.vault.try_set_shares(&f.admin, &other),
+        Err(Ok(StakingError::CustodyTaken))
+    );
+}
+
+/// The share supply is counted here, and it has to track the token's own ledger
+/// through a full round trip.
+///
+/// A Stellar Asset Contract publishes no total supply, so this contract keeps
+/// the count itself. That is a second number for the same quantity, which is
+/// exactly the shape of thing that drifts, so the test reads both and compares.
+#[test]
+fn tracked_supply_matches_the_share_token_through_a_round_trip() {
+    let f = setup();
+    let shares = MockUsdcClient::new(&f.e, &f.vault.shares());
+    let alice = Address::generate(&f.e);
+    let bob = Address::generate(&f.e);
+
+    fund_agusd(&f, &alice, 100 * ONE);
+    fund_agusd(&f, &bob, 60 * ONE);
+
+    f.vault.stake(&alice, &(100 * ONE));
+    assert_eq!(f.vault.total_supply(), shares.total_supply());
+    assert_eq!(f.vault.balance(&alice), shares.balance(&alice));
+
+    // Yield moves the rate but not the share count.
+    fund_agusd(&f, &f.admin, 50 * ONE);
+    f.vault.distribute_yield(&(50 * ONE));
+    assert_eq!(f.vault.total_supply(), shares.total_supply());
+    assert_eq!(f.vault.exchange_rate(), 15 * ONE / 10);
+
+    // A second staker at the higher price gets fewer shares than assets.
+    f.vault.stake(&bob, &(60 * ONE));
+    assert_eq!(f.vault.total_supply(), shares.total_supply());
+    assert_eq!(f.vault.balance(&bob), 40 * ONE);
+
+    // And unstaking burns through the token, so both counts fall together.
+    f.vault.request_unstake(&alice, &(100 * ONE));
+    assert_eq!(f.vault.total_supply(), shares.total_supply());
+    assert_eq!(f.vault.balance(&alice), 0);
 }
