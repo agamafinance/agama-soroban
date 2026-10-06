@@ -61,6 +61,43 @@ for e in d.get('superseded', []):
   ok "no superseded address appears in the README's live table"
 fi
 
+# A generation number is how a reader orders the history of one contract, so two
+# entries sharing one is a history that cannot be read. Both failures below were
+# made in this record and neither was visible: entries added at the end restarted
+# the count from 2 while the sequence was already at 11, and one entry carried the
+# address of a different contract that was itself already listed. The sequence has
+# to be the whole numbers from 1 with nothing repeated and nothing missing, and an
+# address can appear once.
+echo ""
+echo "==> superseded generations are a clean sequence, one address each"
+  GEN_REPORT=$(python3 -c "
+import json, collections
+d = json.load(open('deployments/testnet.json'))
+sup = d.get('superseded', [])
+by = collections.defaultdict(list)
+for e in sup:
+    by[e['contract']].append(e.get('generation'))
+for name, gens in sorted(by.items()):
+    if None in gens:
+        print('FAIL|%s has an entry with no generation' % name); continue
+    want = list(range(1, len(gens) + 1))
+    if sorted(gens) != want:
+        print('FAIL|%s generations are %s, expected %s' % (name, sorted(gens), want))
+    else:
+        print('PASS|%s, %d generations, no gap and no repeat' % (name, len(gens)))
+addrs = [e['address'] for e in sup]
+dups = sorted({a for a in addrs if addrs.count(a) > 1})
+for a in dups:
+    who = ', '.join(sorted({e['contract'] for e in sup if e['address'] == a}))
+    print('FAIL|%s is listed more than once (%s)' % (a, who))
+if not dups:
+    print('PASS|every superseded address is listed once')
+"
+  )
+  while IFS='|' read -r verdict msg; do
+    if [ "$verdict" = "PASS" ]; then ok "$msg"; else bad "$msg"; fi
+  done < <(printf '%s\n' "$GEN_REPORT")
+
 echo ""
 echo "==> every superseded entry carries a reason"
 while IFS='|' read -r label n; do
