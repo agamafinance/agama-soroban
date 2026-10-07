@@ -33,6 +33,10 @@ for k, v in d['contracts'].items():
     print(f'{k}|{v}')
 for k, v in d.get('poolAdapters', {}).items():
     print(f'poolAdapters.{k}|{v}')
+for key in ('agusdClassic', 'sagusdClassic'):
+    sac = d.get(key, {}).get('sac')
+    if sac:
+        print(f'{key}.sac|{sac}')
 ")
 
 # The README's live table is the block between the Deployed Contracts heading
@@ -355,6 +359,10 @@ seen = []
 for group in ('contracts', 'poolAdapters', 'creditVaults'):
     for k, v in d.get(group, {}).items():
         seen.append(('%s.%s' % (group, k), v))
+for key in ('agusdClassic', 'sagusdClassic'):
+    sac = d.get(key, {}).get('sac')
+    if sac:
+        seen.append(('%s.sac' % key, sac))
 for path, addr in seen:
     if path in compared:
         state = 'compared'
