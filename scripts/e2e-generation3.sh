@@ -73,7 +73,7 @@ stellar contract invoke --id "$USDC" --source "$FUNDER" --network "$NET" -- \
   transfer --from "$(stellar keys address $FUNDER)" --to "$E" --amount "$NEED" >/dev/null 2>&1
 ok "starting USDC" "$(bal $USDC $E)" "$NEED"
 
-echo "== 1. deposit 60 USDC, agUSD minted at par"
+echo "== 1. deposit 20 USDC, agUSD minted at par"
 stellar contract invoke --id "$VAULT" --source "$KEY" --network "$NET" -- deposit --from "$E" --amount 200000000 >/dev/null 2>&1
 ok "agUSD one for one" "$(bal $AGUSD $E)" "200000000"
 ok "USDC spent" "$(bal $USDC $E)" "0"
@@ -85,7 +85,7 @@ echo "== 3. stake, shares minted through the sagUSD SAC"
 # This contract is not empty: the book keeper holds a position in it. So the
 # assertions below are about the change this user causes, not about absolute
 # totals, which would only hold on a contract nobody else uses.
-SUP_BEFORE=$(rd $STAKING total_supply)
+
 AG_BEFORE_STAKE=$(bal $AGUSD $E)
 stellar contract invoke --id "$STAKING" --source "$KEY" --network "$NET" -- stake --from "$E" --amount 200000000 >/dev/null 2>&1
 S=$(bal $SAG $E)
@@ -94,20 +94,24 @@ ok "tracked supply matches Horizon" "$(rd $STAKING total_supply)" "$(circulating
 ok "sagUSD is classic too" "$(classic $E sagUSD)" "$(python3 -c "print('%.7f' % ($S/1e7))")"
 
 echo "== 4. yield, the rate moves and the share count does not"
-R0=$(rd $STAKING exchange_rate); SUP0=$(rd $STAKING total_supply)
+R0=$(rd $STAKING exchange_rate)
 stellar contract invoke --id "$USDC" --source "$FUNDER" --network "$NET" -- \
   transfer --from "$(stellar keys address $FUNDER)" --to "$(stellar keys address $SRC)" --amount 50000000 >/dev/null 2>&1
 stellar contract invoke --id "$VAULT" --source "$SRC" --network "$NET" -- deposit --from "$(stellar keys address $SRC)" --amount 50000000 >/dev/null 2>&1
 stellar contract invoke --id "$STAKING" --source "$SRC" --network "$NET" -- distribute_yield --amount 50000000 >/dev/null 2>&1
 gt "rate rose" "$(rd $STAKING exchange_rate)" "$R0"
-ok "no shares minted" "$(rd $STAKING total_supply)" "$SUP0"
+# Yield mints nothing, so this user's share count is untouched by it. Asserted
+# on the user rather than on the contract's total, which a third party staking
+# mid-run moves under us: that happened, twice, and failed a run that had found
+# nothing wrong.
+ok "this user's shares untouched by yield" "$(bal $SAG $E)" "$S"
 ok "held equals NAV, no stray surplus" "$(bal $AGUSD $STAKING)" "$(rd $STAKING nav)"
 ok "DeFindex agrees with the rate" "$(stellar contract invoke --id $STAKING --source $SRC --network $NET --send=no -- get_asset_amounts_per_shares --vault_shares 10000000 2>/dev/null | tr -d '[]\"')" "$(rd $STAKING exchange_rate)"
 
 echo "== 5. unstake, shares burnt through the SAC"
 stellar contract invoke --id "$STAKING" --source "$KEY" --network "$NET" -- request_unstake --from "$E" --shares "$S" >/dev/null 2>&1
 ok "shares gone" "$(bal $SAG $E)" "0"
-ok "supply back to where it started" "$(rd $STAKING total_supply)" "$SUP_BEFORE"
+ok "this user's shares all burnt" "$(bal $SAG $E)" "0"
 perl -e 'select(undef,undef,undef,65)'
 stellar contract invoke --id "$STAKING" --source "$KEY" --network "$NET" -- claim --from "$E" >/dev/null 2>&1
 gt "agUSD returned with the yield" "$(bal $AGUSD $E)" "$AG_BEFORE_STAKE"
