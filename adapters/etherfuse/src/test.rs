@@ -187,6 +187,10 @@ fn metadata_matches_the_feed_the_pool_is_priced_from() {
     // window and no deviation bound, matching same-block settlement here.
     assert_eq!(f.adapter.oracle_feed(), ORACLE_FEED);
     assert_eq!(f.adapter.settlement_days(), 0);
+    // The same question, under the name every adapter answers it by, so a
+    // caller sizing the queue against the book does not have to know which
+    // adapter it is holding.
+    assert_eq!(f.adapter.settlement_window(), (0, 0));
 }
 
 

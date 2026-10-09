@@ -498,8 +498,27 @@ impl EtherfuseAdapter {
     }
 
     /// Days from `deallocate` to cash in the Vault. Zero: on-chain redemption.
+    ///
+    /// Kept because it is what this adapter shipped with and something may be
+    /// reading it. `settlement_window` is the one to call.
     pub fn settlement_days(_e: Env) -> u32 {
         SETTLEMENT_DAYS
+    }
+
+    /// Settlement window in days, as `(min, max)`, the same question the private
+    /// credit adapter answers under the same name.
+    ///
+    /// The two adapters answered it differently: `settlement_days() -> u32` here
+    /// and `settlement_window() -> (u32, u32)` there. Nothing on-chain enforces
+    /// either, so nothing broke, and that is the problem with it: a caller
+    /// sizing the withdrawal queue against the book has to know which adapter it
+    /// is holding and call a different name with a different return type for
+    /// each, and the one that gets added next is a third case. Redemption here
+    /// is on-chain and immediate, so both ends of the window are zero, which is
+    /// a narrower and truer statement than a single scalar that happens to be
+    /// the same number.
+    pub fn settlement_window(_e: Env) -> (u32, u32) {
+        (SETTLEMENT_DAYS, SETTLEMENT_DAYS)
     }
 
     pub fn engine(e: Env) -> Result<Address, AdapterError> {
