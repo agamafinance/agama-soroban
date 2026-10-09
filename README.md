@@ -1203,18 +1203,23 @@ Both live in `agamafinance/agama-app-looping`, not here, and are served at
 | a new user can connect a wallet and complete the full deposit and stake flow | Stellar Wallets Kit, and the flow against the deployed contracts: deposit mints through the Vault, withdrawal is the FIFO queue in two steps rather than an instant redeem, and the portfolio page is where a queued claim is collected |
 | agUSD/USDC swap executing through the Soroswap testnet Router | router `CCJUD55A...`, pair `CAFTLH76...`. The pair did not exist, `pair_exists` answered false, so it was created at parity through `add_liquidity`. What a swap costs, and which part of it is ours, is set out under "What a swap costs" below |
 | CCTP bridge integration depositing USDC into Stellar end-to-end | [app.agama.finance/stellar/bridge](https://app.agama.finance/stellar/bridge). 950 USDC has crossed from Base Sepolia in seven tranches, each one checked on the Stellar balance before the next |
-| indexer ingesting all contract events | `/api/indexer/ingest` reads the four contracts off Soroban RPC and stores what is new, keeping RPC's own cursor so a quiet stretch counts as progress |
+| indexer ingesting all contract events | `/api/indexer/ingest` reads six contracts off Soroban RPC and stores what is new, keeping RPC's own cursor so a quiet stretch counts as progress. It read four until October 2026, and the two it omitted were agUSD and sagUSD, so every mint and burn of the share token went past unrecorded while the claim was being made. Soroban RPC takes at most five contract ids in one filter, undocumented in the SDK's types and reported only at runtime, so the six are chunked rather than trimmed back to a number that fits |
 | NAV and yield data exposed via API and displayed in the dApp | `/api/nav` serves the stored history with the live reading beside it; the sagUSD page draws it |
 
 Two things stated rather than glossed. CCTP on Stellar loses the money if
 `mintRecipient` is the user's address instead of Circle's forwarder, and again if
 the Stellar leg calls `receive_message` instead of the forwarder's
 `mint_and_forward`; both were found by losing 2 USDC each way, and both are
-commented where the code makes the choice. And the indexer's store is in-memory
-until a Redis URL and token are configured, so its history lasts one server
-process: Soroban RPC serves about seven days of events, which is what makes a
-durable store the difference between a window and a history. The API reports
-`durable: false` and the dApp says so on the page.
+commented where the code makes the choice. And the indexer stores to Upstash in
+production, which it did not when this section was first written: it falls back
+to memory when no Redis URL and token are configured, and a history that lasts
+one server process is no history at all, because Soroban RPC serves only about
+seven days of events. Which of the two is running is reported rather than
+assumed, by `durable` and `backend` on the ingest response, and the dApp says so
+on the page. More is stored than is served: the ingest endpoint watches six
+contracts and holds every event they emit, while `/api/nav` serves the staking
+subset the NAV chart is drawn from, so the Vault, Engine, Oracle and token events
+are ingested and kept but have no read path yet.
 
 ## Ecosystem Integrations
 
