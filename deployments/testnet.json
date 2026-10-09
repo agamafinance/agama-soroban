@@ -839,6 +839,27 @@
       "forwarder": "CA66Q2WFBND6V4UEB7RD4SAXSVIWMD6RA4X3U32ELVFGXV5PJK4T4VSZ"
     },
     "attestation": "https://iris-api-sandbox.circle.com/v2",
-    "theTwoWaysItLosesTheMoney": "mintRecipient must be the forwarder and never the recipient's own key, because a CCTP message carries 32 bare bytes with no type tag and the same key encodes as both G and C: minting to the key credits the contract form, which nobody can sign for. And the Stellar leg must call the forwarder's mint_and_forward, not MessageTransmitter.receive_message, which succeeds, returns true, mints, and leaves the USDC short of the recipient. Each was found by losing 2 USDC."
+    "theTwoWaysItLosesTheMoney": "mintRecipient must be the forwarder and never the recipient's own key, because a CCTP message carries 32 bare bytes with no type tag and the same key encodes as both G and C: minting to the key credits the contract form, which nobody can sign for. And the Stellar leg must call the forwarder's mint_and_forward, not MessageTransmitter.receive_message, which succeeds, returns true, mints, and leaves the USDC short of the recipient. Each was found by losing 2 USDC.",
+    "replayed": {
+      "script": "scripts/e2e-cctp-transfer.sh",
+      "on": "2026-10-10",
+      "what": "Two crossings driven from the command line rather than from a browser, which is the first time the burn leg was reproducible by someone who was not holding the wallet. e2e-cctp-wiring.sh passed throughout the two attempts that lost 2 USDC each, so a green wiring suite is not evidence that the path pays; this one asserts the recipient's Stellar balance moved by the amount the forwarder says it forwarded.",
+      "burns": [
+        {
+          "amount": "5 USDC",
+          "baseSepoliaTx": "0x6acb4f24ad805ec6867488ceae49b8ed709ce6788f9c9b9a9f1ffdefa1966cba",
+          "landedOnStellar": "4.99935"
+        },
+        {
+          "amount": "1 USDC",
+          "baseSepoliaTx": "0x176758c8b779dc66afa62df125c923d4ae5c9fe33e41b470de3a3458c053d7fa",
+          "landedOnStellar": "0.99987"
+        }
+      ],
+      "theBurnTxIsTheIdentifier": "Circle's attestation is keyed on the Base Sepolia transaction hash and is permanent, so a run that dies after the burn has lost nothing: the same hash finishes the Stellar leg later. That is why these are recorded and the Stellar hashes are not.",
+      "rescale": "6 decimals on Base against 7 on Stellar is the factor of ten, and Circle's fee comes off the top: 1000000 units burned landed as 9998700, a fee of 1300. The amount that arrives is never the amount sent, so it has to be read and not computed.",
+      "fundingIsTheConstraint": "Base Sepolia USDC comes from Circle's faucet behind a captcha, so it cannot be topped up by a script and this suite is the only one that spends something irreplaceable. Gas is easier: Ethereum Sepolia ETH is scriptable, and the Base standard bridge at 0xfd0Bf71F60660E2f608ed56e1659C450eB113120 on Sepolia carries it to Base Sepolia in about five minutes via depositETH.",
+      "staleReadsOnThePublicRpc": "https://sepolia.base.org is a load balancer over several nodes, so a read straight after a write can hit one that has not caught up. It cost two false failures while this script was being written: an allowance that read 0 on an approve that had mined, which then made the burn revert in simulation and never be submitted, and then a nonce read of 3 while the chain was at 4, which came back as 'nonce too low'. Neither lost anything, because a transaction rejected before submission never reaches the chain, but both reported as a refused burn. The script now waits for both facts to be visible and pins the nonce."
+    }
   }
 }
