@@ -47,8 +47,14 @@ def instance_key(strkey):
     ).decode()
 
 keys = {name: instance_key(addr) for name, addr in live.items()}
+# Two names can point at one address, and since agUSD became a classic asset two
+# do: agusd and agusdCore are the same Stellar Asset Contract. Sending the same
+# key twice in one getLedgerEntries is not tolerated and not reported as such
+# either, the RPC answers "could not query captive core" with a 404 and no
+# entries, so the whole check failed and read as an RPC outage. Deduplicate what
+# goes over the wire and keep the full name map for the report.
 payload = {"jsonrpc": "2.0", "id": 1, "method": "getLedgerEntries",
-           "params": {"keys": list(keys.values())}}
+           "params": {"keys": sorted(set(keys.values()))}}
 out = subprocess.run(['curl', '-s', '-X', 'POST', rpc, '-H', 'Content-Type: application/json',
                       '-d', json.dumps(payload)], capture_output=True, text=True)
 d = json.loads(out.stdout)

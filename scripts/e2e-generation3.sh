@@ -123,12 +123,31 @@ stellar contract invoke --id "$ROUTER" --source "$KEY" --network "$NET" -- swap_
 gt "swap executed on the pool" "$(bal $USDC $E)" "$B"
 
 echo "== 7. SDEX, the venue a Soroban-only token could not reach"
+# The quote is taken first and then used as the floor the payment must clear,
+# which is the thing the application does and the thing that was wrong in it:
+# the swap panel raced both venues, printed the SDEX number and then signed a
+# Soroswap swap, so the figure it showed was one nobody would receive. A quote
+# nobody holds the venue to is not a quote, so this asserts the fill against it
+# rather than merely asserting that some USDC arrived.
 B=$(bal $USDC $E)
+# agUSD is five characters, so it is a credit_alphanum12 asset. Pairing the
+# code with credit_alphanum4 is a 400 from Horizon, not an empty path list,
+# and an empty path list is what a careless reader of this would report.
+SDEXQ=$(curl -s "https://horizon-testnet.stellar.org/paths/strict-send?source_asset_type=credit_alphanum12&source_asset_code=agUSD&source_asset_issuer=$AG_ISS&source_amount=5.0000000&destination_assets=USDC:$U_ISS" \
+  | python3 -c "
+import sys,json
+r=json.load(sys.stdin).get('_embedded',{}).get('records',[])
+best=max((float(x['destination_amount']) for x in r), default=0.0)
+print(int(round(best*10**7)))
+")
+gt "the book quotes this trade" "$SDEXQ" "0"
+MIN=$(( SDEXQ * 9950 / 10000 ))   # the 50 bps the application allows
 stellar tx new path-payment-strict-send --source-account "$KEY" --destination "$E" \
-  --send-asset "agUSD:$AG_ISS" --send-amount 50000000 --dest-asset "USDC:$U_ISS" --dest-min 45000000 \
+  --send-asset "agUSD:$AG_ISS" --send-amount 50000000 --dest-asset "USDC:$U_ISS" --dest-min "$MIN" \
   --network "$NET" >/tmp/e2e-pp.log 2>&1 || sed -n '1,2p' /tmp/e2e-pp.log
 perl -e 'select(undef,undef,undef,6)'
 gt "path payment executed on the book" "$(bal $USDC $E)" "$B"
+gt "the fill honoured the quote it was taken at" "$(( $(bal $USDC $E) - B ))" "$(( MIN - 1 ))"
 
 echo "== 8. circulation against backing, the two reconciliations"
 # agUSD is minted one for one against USDC, so what exists of it and what the
