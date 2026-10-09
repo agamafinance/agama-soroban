@@ -24,8 +24,31 @@ SRC=${SRC:-agama-poc}
 DEP=deployments/testnet.json
 j() { python3 -c "import json;print(json.load(open('$DEP'))$1)"; }
 ORACLE=$(j "['contracts']['oracleAdapter']")
-REPORTER=$(stellar keys address "$SRC")
-NOW=$(date +%s)
+# Every key the reporter set is made of, not just this script's own source.
+# A feed whose quorum is above 1 commits nothing until that many distinct
+# reporters have submitted the same value for the same timestamp, so a keeper
+# that signs with one key keeps no feed fresh at all: it votes, the round stays
+# open, and the feed goes stale on schedule while every run reports success.
+KEYS=$(python3 -c "
+import json
+r = json.load(open('$DEP')).get('oracleReporters') or {}
+print(' '.join(r.get('keys') or ['$SRC']))
+")
+# Ledger time, not this machine's clock.
+#
+# The Adapter refuses a timestamp ahead of ledger close time with
+# TimestampInFuture, 509, and a testnet ledger closes every five seconds or so,
+# so `date +%s` is ahead of the chain for most of every five second window. A
+# keeper reading the local clock therefore fails intermittently, for a reason
+# that looks like nothing and depends on when in the window it happened to run.
+ledger_now() {
+  curl -s -X POST "${RPC:-https://soroban-testnet.stellar.org}" \
+    -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"getLatestLedger"}' \
+    | python3 -c "import sys,json;print(json.load(sys.stdin)['result']['closeTime'])"
+}
+NOW=$(ledger_now)
+[ -n "$NOW" ] || { echo "  the RPC did not answer with a ledger, nothing submitted"; exit 1; }
 inv() { stellar contract invoke --id "$ORACLE" --source "$SRC" --network "$NET" "$@" 2>/dev/null; }
 
 feeds=$(python3 -c "
@@ -62,7 +85,11 @@ EOF
   # every ten would still have skipped right up to the edge. Each feed's minimum
   # interval is well under half its window, so none of these can refuse for
   # being too soon.
-  if [ "$left" -gt $(( window / 2 )) ]; then
+  # FORCE=1 pushes regardless of how much window is left, which is how the
+  # multi-reporter path gets exercised on demand: at a quorum above 1 a run that
+  # skips every feed proves nothing, and waiting half a seven day window to find
+  # out whether the keeper can still commit is not a test.
+  if [ "${FORCE:-0}" != "1" ] && [ "$left" -gt $(( window / 2 )) ]; then
     if [ "$left" -ge 3600 ]; then
       printf '  %-10s fresh, %sh left of a %sh window\n' "$feed" "$(( left / 3600 ))" "$(( window / 3600 ))"
     else
@@ -71,16 +98,31 @@ EOF
     fresh=$((fresh+1)); continue
   fi
 
-  out=$(stellar contract invoke --id "$ORACLE" --source "$SRC" --network "$NET" -- \
-          submit_nav --reporter "$REPORTER" --feed_id "$feed" --nav "$nav" --timestamp "$NOW" 2>&1)
-  code=$(printf '%s' "$out" | grep -oE 'Error\(Contract, #[0-9]+\)' | head -1)
-  if [ "$code" = "Error(Contract, #514)" ]; then
+  # One value, one timestamp, every key. The timestamp is computed once for the
+  # whole run precisely so the submissions land in the same round: a keeper that
+  # read the clock per key would open a new round with each signature and never
+  # reach quorum however many reporters it had.
+  votes=0; refused=""
+  for key in $KEYS; do
+    who=$(stellar keys address "$key" 2>/dev/null) || { refused="no such key $key"; break; }
+    out=$(stellar contract invoke --id "$ORACLE" --source "$key" --network "$NET" -- \
+            submit_nav --reporter "$who" --feed_id "$feed" --nav "$nav" --timestamp "$NOW" 2>&1)
+    code=$(printf '%s' "$out" | grep -oE 'Error\(Contract, #[0-9]+\)' | head -1)
+    if [ "$code" = "Error(Contract, #514)" ]; then
+      refused="toosoon"; break
+    elif [ -n "$code" ]; then
+      refused="$code"; break
+    fi
+    votes=$((votes+1))
+  done
+
+  if [ "$refused" = "toosoon" ]; then
     printf '  %-10s too soon since the last submission, left alone\n' "$feed"; fresh=$((fresh+1))
-  elif [ -n "$code" ]; then
-    printf '  %-10s REFUSED %s\n' "$feed" "$code"; failed=$((failed+1))
+  elif [ -n "$refused" ]; then
+    printf '  %-10s REFUSED %s after %s vote(s)\n' "$feed" "$refused" "$votes"; failed=$((failed+1))
   else
-    printf '  %-10s resubmitted at %s, was %sh stale of a %sh window\n' \
-      "$feed" "$nav" "$(( age / 3600 ))" "$(( window / 3600 ))"
+    printf '  %-10s resubmitted at %s by %s reporter(s), was %sh stale of a %sh window\n' \
+      "$feed" "$nav" "$votes" "$(( age / 3600 ))" "$(( window / 3600 ))"
     pushed=$((pushed+1))
   fi
 done

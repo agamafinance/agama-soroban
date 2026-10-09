@@ -1,9 +1,18 @@
 #!/usr/bin/env bash
-# Animate the sagUSD yield during the demo: every INTERVAL seconds, the strategist
-# delivers `YIELD` agUSD into the vault via distribute_yield, raising the NAV and
-# the exchange rate. Admin must hold enough agUSD buffer (seeded by deploy.sh).
+# Deliver yield into the staking contract on a loop, for a demo.
 #
-# Usage: bash scripts/report-nav.sh [yield_human] [interval_seconds] [rounds]
+# Every INTERVAL seconds the strategist delivers `YIELD` agUSD through
+# distribute_yield, which raises the NAV and with it the exchange rate. The admin
+# must hold enough agUSD to do it; deploy.sh seeds that buffer.
+#
+# It was called report-nav.sh, which named the wrong thing on the wrong contract.
+# report_nav was the Oracle Adapter's old NAV setter, removed because it let its
+# caller reprice every share in the contract; this script has never touched the
+# oracle and calls the one entry point that moves NAV and cannot overstate the
+# book. A script whose name says it pushes an oracle reading is a script somebody
+# eventually runs expecting that.
+#
+# Usage: bash scripts/distribute-yield-loop.sh [yield_human] [interval_seconds] [rounds]
 #   yield_human    agUSD delivered per round (default 25)
 #   interval_secs  seconds between rounds (default 30)
 #   rounds         number of rounds, 0 = infinite (default 0)

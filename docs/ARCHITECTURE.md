@@ -504,7 +504,7 @@ Both expose the same interface, which is what lets the Engine treat a new RWA ty
 | `engine()` / `vault()` / `usdc()` | The three counterparties, readable both ways: the Engine checks these against its own before it releases anything to this adapter. |
 | `pool_kind() → Symbol` | Which kind of pool this is, a constant. Read by the Engine and the UI. |
 | `oracle_feed() → Symbol` | Which oracle feed prices this adapter's position. |
-| `settlement_window() → (u32, u32)` (private credit) / `settlement_days() → u32` (Etherfuse) | Cash conversion time. **Nothing on-chain enforces either.** They are published so the Engine's operators and the withdrawal queue can be sized against the real settlement time of the book. Etherfuse reports 0: redemption is on-chain. |
+| `settlement_window() → (u32, u32)` | Cash conversion time in days, as `(min, max)`. **Nothing on-chain enforces it.** It is published so the Engine's operators and the withdrawal queue can be sized against the real settlement time of the book. Private credit reports `(15, 90)`; Etherfuse reports `(0, 0)`, redemption there being on-chain and immediate. The two adapters answered this under different names and different return types until October 2026, `settlement_days() → u32` on Etherfuse against `settlement_window()` here, which nothing read and so nothing caught: a caller sizing the queue had to know which adapter it was holding, and every adapter added was another case. Etherfuse keeps `settlement_days() → u32` for anything already reading it. |
 | `propose_admin` / `accept_admin` / `admin` / `pending_admin` | The same two-step handover every contract here carries. |
 
 An adapter never holds less USDC than it has booked.
