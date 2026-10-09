@@ -90,7 +90,7 @@ Network: **Stellar Testnet** · RPC: `https://soroban-testnet.stellar.org`
 | Adapter | Originator | Jurisdiction | Address |
 |---|---|---|---|
 | Private Credit | QIRO | LU | [`CDNWXGSS...WLP3VE`](https://stellar.expert/explorer/testnet/contract/CDNWXGSSP3BOAIKIYTGDHST2BBSZNWIW6RMDQERM3HOQ24EO43WLP3VE) |
-| Etherfuse | ETHERFUS | MX | [`CBLRTQBX...APCLCP`](https://stellar.expert/explorer/testnet/contract/CBLRTQBXHL6SQBI2CBX7XUC3TBNPTS3ZUJXOB4ASYUVKHCEF34APCLCP) |
+| Etherfuse | ETHERFUS | MX | [`CCXO2ZIM...KM7BXN`](https://stellar.expert/explorer/testnet/contract/CCXO2ZIMK7KZMMUBE24KOLWDJHVXQKXDNEP4QH7N5ZK5U6ESCWKM7BXN) |
 
 Both adapters are registered with the Allocation Engine. `originator` and
 `jurisdiction` are the buckets the concentration caps aggregate over, so two
@@ -344,6 +344,33 @@ bound says nothing about how many pushes there can be, so forty of them at +5%
 moved a NAV sevenfold in forty seconds with every single one inside the bound.
 The interval is measured in ledger time between accepted values rather than in
 the timestamps the reporter supplies, because the reporter chooses those.
+
+### What the September evidence is, and is not
+
+The six sections that follow carry transaction hashes from runs made in
+September 2026. They are real and they are left as they were recorded: each one
+is a fix proven against the deployment that was live on the day, and a hash
+nobody can check later is not evidence.
+
+What they are not is evidence about the contracts running today. agUSD became a
+classic Stellar asset in October 2026 and that cascaded through the stack: a new
+Vault, because its deposit counter closes `set_agusd` for good; a new staking
+contract, because the agUSD it accepts is fixed at construction; a new Allocation
+Engine, because `set_vault` refuses while capital is deployed; and new pool
+adapters, because they store their Engine and Vault with no setter at all. Every
+address in those tables is therefore a superseded one, listed under Superseded
+Contracts with the reason it was retired.
+
+What re-proves each claim on the generation actually deployed:
+
+| Claim | Proven today by |
+|---|---|
+| The whole user path, deposit through redemption | `bash scripts/e2e-generation3.sh`, 21 assertions, which also reconciles each token's circulation against what backs it |
+| The concentration cap and the reserve floor | `bash scripts/e2e-allocation-guards.sh`, 10 assertions, both guards made to bind on the live Engine |
+| A NAV cannot be moved by one key | `bash scripts/e2e-oracle-quorum.sh`, 11 assertions, against a quorum of two |
+| The CCTP path is still wired to the right contracts | `bash scripts/e2e-cctp-wiring.sh`, 10 assertions. The burn leg needs a funded Base Sepolia account and is not replayed there |
+| Every deployed contract is the source in this tree | `bash scripts/check-deployment-record.sh --wasm`, 73 checks |
+| The contracts still answer at all | `bash scripts/check-ttl.sh`, which is the one that catches a deployment quietly archiving itself |
 
 ### The Security Review, On-Chain
 
@@ -1163,6 +1190,41 @@ integration work to read sagUSD. It no longer does: the two calls above are
 implemented, so that sentence understates what shipped. The annex is the document
 the panel reviewed and is left as reviewed; the difference is recorded in
 SECURITY.md.
+
+## SCF #45, Tranche 2
+
+The tranche's scope is the Allocation Engine, the two pool adapters and the
+Oracle Adapter, and unlike Tranche 1 its criteria were never transcribed into
+this repository. What follows is the scope as the roadmap states it, mapped to
+where each piece is checkable, and it is labelled as that rather than presented
+as quoted criteria.
+
+Every line below is proven on the generation currently deployed, not on the one
+that was live when the work was done. That distinction is the reason this
+section exists: Tranche 2 was first demonstrated on an Engine and adapters that
+the agUSD migration retired, and a redeployed contract has proven nothing. The
+Engine that carries this had `total_allocated` of zero until these runs.
+
+| Scope | Where it is checkable |
+|---|---|
+| Allocation Engine deployed and governing the live Vault | `CBDVZPMB...` in the live table. `bash scripts/e2e-allocation-guards.sh` drives capital out of the Vault through it and back, 10 assertions |
+| On-chain concentration caps | Same script. A pool is filled to 40% of net assets and the next allocation is refused with `#407 PoolCapExceeded`, read off the ledger rather than asserted here |
+| On-chain reserve floor | Same script. Both pools have to be driven near their caps before the floor is the thing refusing, which the script does and documents: the refusal is `#410 ReserveFloorBreached`, distinct from `#411 InsufficientReserves`, which is the Vault saying it does not hold that much |
+| The floor cannot be lowered by recognising a loss | The floor is a share of `floor_base`, net assets plus everything ever written off. `cargo test -p vault` and `cargo test -p allocation-engine` cover it; the finding that forced it is M1 under The Medium Findings |
+| Etherfuse adapter | `CCXO2ZIM...`. Registered on the Engine, cap 4000 bps, originator ETHERFUS, jurisdiction MX. Answers `settlement_window() → (0, 0)`, redemption being on-chain |
+| Private credit adapter | `CDNWXGSS...`. Registered on the Engine, cap 4000 bps, originator QIRO, jurisdiction LU. Answers `settlement_window() → (15, 90)` |
+| An adapter cannot be registered against the wrong Engine or Vault | `register_pool` refuses an adapter that does not name this Engine and this Engine's Vault, and `allocate`, `deallocate` and `recover` re-run that check rather than resting on registration. Covered in `cargo test -p allocation-engine` |
+| Oracle Adapter with live feeds | `CAUOHPPN...`, three feeds answering: `USDC_USD`, `PC_NAV` which the Vault reads, and `EF_BOND`. `bash scripts/check-ttl.sh` catches the deployment archiving; the keeper at `scripts/keeper-oracle.sh` runs every ten minutes under launchd and resubmits each feed's existing value once half its staleness window is gone |
+| A NAV cannot be moved by one key | `bash scripts/e2e-oracle-quorum.sh`, 11 assertions. Every feed runs at a quorum of two against a reporter set of two: one submission returns `Pending` and moves nothing, a repeat from the same reporter is refused `#518 AlreadyVoted`, and a second distinct reporter on the same value and timestamp commits it |
+| Per-push NAV guards | A deviation bound per feed, an absolute band that also covers a feed's first report, and a minimum interval in ledger time. `cargo test -p oracle-adapter`, 32 tests |
+
+Two things stated rather than glossed. The quorum is two reporters and both
+keys are on one machine, so this is the mechanism proven on the deployment and
+not two independent operators; the second signer is what a real second operator
+replaces, and the record says so under `oracleReporters`. And there is no real
+private credit NAV source on testnet, so the keeper resubmits the value the feed
+already holds rather than inventing a drift that would read as yield nobody
+earned.
 
 ## What a swap costs on the agUSD/USDC pair
 

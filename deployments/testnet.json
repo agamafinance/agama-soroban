@@ -27,7 +27,7 @@
   "usdcReal": true,
   "poolAdapters": {
     "private-credit": "CDNWXGSSP3BOAIKIYTGDHST2BBSZNWIW6RMDQERM3HOQ24EO43WLP3VE",
-    "etherfuse": "CBLRTQBXHL6SQBI2CBX7XUC3TBNPTS3ZUJXOB4ASYUVKHCEF34APCLCP"
+    "etherfuse": "CCXO2ZIMK7KZMMUBE24KOLWDJHVXQKXDNEP4QH7N5ZK5U6ESCWKM7BXN"
   },
   "engineConfig": {
     "poolCapBps": 4000,
@@ -703,6 +703,14 @@
       "supersededBy": "staking",
       "reason": "Issued sagUSD as a balance ledger kept inside itself, so sagUSD was a Soroban-only token with no classic representation and the Stellar orderbook could not hold it at any price. Replaced by a contract that issues through a Stellar Asset Contract instead, which took a code change rather than a redeployment: this one has no share token pointer to repoint, it is the share token. Retired empty, supply and NAV both zero, nothing staked and nothing owed.",
       "label": "sagUSD staking, Soroban-only share token"
+    },
+    {
+      "label": "Etherfuse adapter, seventh deployment",
+      "contract": "poolAdapters.etherfuse",
+      "address": "CBLRTQBXHL6SQBI2CBX7XUC3TBNPTS3ZUJXOB4ASYUVKHCEF34APCLCP",
+      "generation": 7,
+      "supersededBy": "poolAdapters.etherfuse",
+      "reason": "Replaced so the two pool adapters answer the same question under the same name. Both publish how long their book takes to turn into cash, and they published it as settlement_days() -> u32 here and settlement_window() -> (u32, u32) on private credit. Nothing on-chain reads either, which is exactly why it survived: a caller sizing the withdrawal queue against the book has to know which adapter it is holding and call a different name with a different return type for each, and the next adapter added is a third case. The replacement adds settlement_window returning (0, 0), redemption here being on-chain and immediate, which is a narrower and truer statement than one scalar that happens to be the same number, and keeps settlement_days for anything already reading it. Neither is reachable through a setter, so shipping it took a new contract. Exposure was asserted at zero on the Engine before the registry entry moved, and the cap of 4000 bps, originator ETHERFUS and jurisdiction MX were carried over unchanged."
     }
   ],
   "oracleFeedGuards": "The band bounds every report including the first, which a deviation bound cannot reach because a bound on a move needs something to move from. The minimum interval is measured in ledger time between accepted values, not in the timestamps the reporter supplies, because the reporter chooses those. The reference point is persistent, so it cannot expire out from under the checks that read it.",
@@ -749,7 +757,7 @@
     "residue": "Nothing on the live deployment. The exploit and fix stages run against their own Vaults and a mock USDC with an open faucet, deliberately: the operator key holds well under a USDC of the real asset and some of it is stranded below the Vault anti-dust minimum, and nothing about this finding needs the real one. The live stage borrows half a USDC of the Vault own reserves and hands every stroop back, so the operator balance is unchanged at 0.6977610 and the Vault ends holding 2000000 against an agUSD supply of 2000000, exactly backed, with no recognised losses and an empty exposure book. One empty throwaway Vault, CAEHB22VL572YLUOAKUC7RHEPKAR7P2FRC2XE2LZRJUBOT4WGJ62P6QI, is left on the ledger holding nothing."
   },
   "strandedRecoveries": "A recovery reaches the Vault through the Engine, which sweeps the adapter and books what it swept in one call. The adapter also lets its own admin take that sweep, so that an adapter stuck to superseded counterparties can be unstuck without a working Engine, and taken that way the cash arrives with no book moving. Engine::book_recovery is the booking on its own, for exactly that case. It is bounded by the balance the Vault holds and cannot account for, the same test record_repayment and record_recovery already apply, so a recovery is still evidenced rather than asserted, and it grants no authority an admin did not have: sending USDC to an adapter and sweeping it through recover buys back the same headroom and no more. There is no matching book_repayment, because a repayment that reaches the Vault by another route cannot strand a position the way a recovery can: USDC leaves an adapter only through deallocate, which lowers the exposure by what it sends, and recover_surplus, which sends only what is above the exposure, so an adapter never holds less than it has booked and deallocate is never short. contracts/allocation-engine/src/test.rs pins that invariant so that adding a disbursement path breaks a test rather than a settlement.",
-  "oracleQuorum": "Every feed carries a quorum threshold, defaulting to 1. Above 1, a value commits only once that many distinct authorized reporters have submitted the same value for the same round, a round being one feed and one reported timestamp. A reporter gets one vote per round whatever it votes for. The record of who has voted is cleared when a round commits, because the feed timestamp then advances and monotonicity closes the round behind it, and is deliberately kept when a round is refused, because a refusal moves no state and leaves the round open: without it a reporter could seed a value, wait for the round to be refused on another, vote for its own a second time and carry a quorum of two alone. A threshold of 1 is exempt from that, since one vote is the whole round. Reaching quorum changes how many reporters must agree before the per-feed guards run, never whether they run. It defends against one compromised or malfunctioning reporter, not against a colluding majority and not against a reporter set that honestly agrees on the same wrong upstream source. Testnet runs every feed at 1.",
+  "oracleQuorum": "Every feed carries a quorum threshold, defaulting to 1. Above 1, a value commits only once that many distinct authorized reporters have submitted the same value for the same round, a round being one feed and one reported timestamp. A reporter gets one vote per round whatever it votes for. The record of who has voted is cleared when a round commits, because the feed timestamp then advances and monotonicity closes the round behind it, and is deliberately kept when a round is refused, because a refusal moves no state and leaves the round open: without it a reporter could seed a value, wait for the round to be refused on another, vote for its own a second time and carry a quorum of two alone. A threshold of 1 is exempt from that, since one vote is the whole round. Reaching quorum changes how many reporters must agree before the per-feed guards run, never whether they run. It defends against one compromised or malfunctioning reporter, not against a colluding majority and not against a reporter set that honestly agrees on the same wrong upstream source. Testnet ran every feed at 1 until October 2026 and now runs every feed at 2, against a reporter set of two. The threshold was raised only after the keeper was taught to submit from every key in oracleReporters in a single run, because raising it first would have left no run able to reach quorum and every feed would have gone stale inside its own window.",
   "poolRegistryLevers": "set_pool_cap moves a registered pool's own cap, which is the tighter half of its effective limit wherever it binds. Lowering it below what the pool already holds is allowed: caps are checked when capital is deployed, so an over-cap pool simply receives nothing more, and a cap of zero is a freeze that touches neither the position nor the charge. unregister_pool removes an entry, and refuses one whose Engine exposure or adapter exposure is non-zero, or which still carries a write-off charge. That last condition is what makes delisting safe rather than convenient: the originator and jurisdiction sums are built by walking the registry, so an entry leaving takes its charge out of them, and a defaulted pool could otherwise be delisted and replaced under the same originator with its whole limit back. It runs no counterparty check, deliberately, because the entry most worth removing is the one whose adapter no longer names this Vault. What it cannot see is USDC sitting in an adapter that no book knows about, so the order is sweep with recover, which attributes the recovery to the pool the cash came from, and delist after.",
   "adapterTokenEdge": "An adapter is bound to its asset for life. The token is a constructor argument, it is checked at construction against the token the Vault it names custodies, and set_counterparties never takes it as a parameter, so a repointing has to land on a Vault holding the same asset. That is what makes the asset something the other two checks can rely on rather than another thing that can drift. The Engine re-runs the comparison on every call that moves capital, for the reason it re-runs the Vault edge: set_vault can point the Engine at a Vault custodying a different asset, and every adapter already registered then names a token that Vault does not hold. The way out of that one is a new adapter rather than a repointing, which is the cost of the token being immutable and is the right side to err on.",
   "notCompared": {
@@ -803,5 +811,34 @@
     "issuerLocked": true,
     "note": "sagUSD is a classic Stellar asset and the contract address is its Stellar Asset Contract, the same move agUSD made and for a sharper reason. A share token's fair price is a contract read rather than something a market has to discover, and a constant product pool prices a token that only appreciates at yesterday's rate between trades, so the difference is taken by arbitrage out of the liquidity providers. An orderbook can be quoted off the rate instead. Supply is the staking contract's alone: the SAC's admin was handed to it and the issuer account's master key weight was then set to zero. Both halves are needed, and in that order.",
     "supplyIsTracked": "A Stellar Asset Contract publishes no total supply, so the staking contract counts shares itself, moving the figure on every mint and burn. Two directions of drift, and they are not symmetric. Reading high is harmless: a supply too high prices every share too low, so the contract pays out less than it holds. A holder can cause that by calling burn on the SAC directly instead of unstaking, which the contract cannot observe. Reading low is the dangerous one, because it prices every share too high and a redemption then pays more than its share of the assets, diluting everybody else. Only one thing can cause it: units that existed before this contract became the SAC's admin, which it never counted. One did, from the payment that brought the classic asset into existence, and it was burned once the gap was measured. The reconciliation is now asserted on every run of scripts/e2e-generation3.sh, against Horizon's own figure for the classic asset, which is the only number that can contradict this one."
+  },
+  "oracleReporters": {
+    "keys": [
+      "agama-poc",
+      "agama-oracle-2"
+    ],
+    "addresses": [
+      "GBSX2ZFLIJVE75VFWJURAXPSS4TBOV4FZ34VCRLWM2D7GKI37AD3FFNV",
+      "GASAXCP2Z4BSK5RGPFU257FA57K47JSPD6BJYYKH3RDQ2CKYXIYQOM4H"
+    ],
+    "note": "The local key aliases the oracle keeper signs with, and the addresses they resolve to, which is also the Adapter's reporter set. Two rather than one so a quorum above 1 is something the deployment can actually satisfy: a threshold nobody can reach is a feed that stops answering, and a feed that stops answering takes the Vault's get_nav with it. The keeper submits the same value and the same timestamp from each key in one run, which is what makes them one round rather than two. Both keys sit on this machine, so this is not two independent operators and is not claimed to be: it is the mechanism proven on the deployment, and the second signer is what a real second operator would replace."
+  },
+  "cctp": {
+    "note": "Circle's own CCTP V2 contracts, not Agama's. They are in this record for the same reason every other address is: so there is one place an address is decided and one place a reviewer checks it. They were hardcoded in the application until October 2026, which meant the two most expensive facts here, which contract the Stellar leg calls and what mintRecipient must be, lived somewhere nothing verified.",
+    "evm": {
+      "chain": "base-sepolia",
+      "domain": 6,
+      "tokenMessengerV2": "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA",
+      "messageTransmitterV2": "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275",
+      "usdc": "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
+    },
+    "stellar": {
+      "domain": 27,
+      "tokenMessengerMinter": "CDNG7HXAPBWICI2E3AUBP3YZWZELJLYSB6F5CC7WLDTLTHVM74SLRTHP",
+      "messageTransmitter": "CBJ6MTCKKZG73PMDZCJMSFRD7DQEMI4FKDH7CGDSV4W6FHCRBCQAVVJY",
+      "forwarder": "CA66Q2WFBND6V4UEB7RD4SAXSVIWMD6RA4X3U32ELVFGXV5PJK4T4VSZ"
+    },
+    "attestation": "https://iris-api-sandbox.circle.com/v2",
+    "theTwoWaysItLosesTheMoney": "mintRecipient must be the forwarder and never the recipient's own key, because a CCTP message carries 32 bare bytes with no type tag and the same key encodes as both G and C: minting to the key credits the contract form, which nobody can sign for. And the Stellar leg must call the forwarder's mint_and_forward, not MessageTransmitter.receive_message, which succeeds, returns true, mints, and leaves the USDC short of the recipient. Each was found by losing 2 USDC."
   }
 }
