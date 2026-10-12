@@ -99,6 +99,10 @@ ok "a G strkey survives the 32 byte round trip" "$ROUND" "same"
 
 echo
 printf '  TOTAL: %s passed, %s failed\n' "$pass" "$fail"
-echo "  Not covered here: a live burn on Base Sepolia. That needs a funded EVM"
-echo "  account, which needs a faucet, which is a human action."
+echo "  Not covered here: a live burn on Base Sepolia. Every assertion above"
+echo "  passed throughout both of the attempts that lost 2 USDC each, so a green"
+echo "  run here means the pieces are wired, not that the path pays. For that:"
+echo "    EVM_KEY=... AMOUNT=1 bash scripts/e2e-cctp-transfer.sh"
+echo "  which needs a funded Base Sepolia account, so it is the one suite that"
+echo "  cannot run from a clean checkout."
 [ "$fail" -eq 0 ]
