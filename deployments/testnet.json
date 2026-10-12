@@ -860,6 +860,21 @@
       "rescale": "6 decimals on Base against 7 on Stellar is the factor of ten, and Circle's fee comes off the top: 1000000 units burned landed as 9998700, a fee of 1300. The amount that arrives is never the amount sent, so it has to be read and not computed.",
       "fundingIsTheConstraint": "Base Sepolia USDC comes from Circle's faucet behind a captcha, so it cannot be topped up by a script and this suite is the only one that spends something irreplaceable. Gas is easier: Ethereum Sepolia ETH is scriptable, and the Base standard bridge at 0xfd0Bf71F60660E2f608ed56e1659C450eB113120 on Sepolia carries it to Base Sepolia in about five minutes via depositETH.",
       "staleReadsOnThePublicRpc": "https://sepolia.base.org is a load balancer over several nodes, so a read straight after a write can hit one that has not caught up. It cost two false failures while this script was being written: an allowance that read 0 on an approve that had mined, which then made the burn revert in simulation and never be submitted, and then a nonce read of 3 while the chain was at 4, which came back as 'nonce too low'. Neither lost anything, because a transaction rejected before submission never reaches the chain, but both reported as a refused burn. The script now waits for both facts to be visible and pins the nonce."
+    },
+    "evmSepolia": {
+      "chain": "ethereum-sepolia",
+      "domain": 0,
+      "tokenMessengerV2": "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA",
+      "messageTransmitterV2": "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275",
+      "usdc": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+      "note": "The chain the ABF partner's production deployment targets, and therefore the one the outbound leg aims at. Same CCTP V2 contract addresses as Base Sepolia because V2 is deployed deterministically; only the domain and the USDC differ."
+    },
+    "outbound": {
+      "what": "Stellar to EVM, which is the direction the protocol actually needs and the one that did not exist until now. Deposits land on Stellar, and the yield is earned in a credit book on an EVM chain, so reserves have to leave Stellar for anything to be earned at all.",
+      "script": "scripts/e2e-stellar-to-evm.sh",
+      "theAllowanceIsTheFirstGate": "deposit_for_burn pulls through transfer_from, so the Stellar account must approve the TokenMessengerMinter on the USDC SAC first, with an expiration_ledger. Without it the call fails in simulation with Error(Contract, #9) and the diagnostic event says 'not enough allowance to spend'. This is the mirror of the EVM approve and it is easy to miss because the inbound direction never needs it.",
+      "noHookInThisDirection": "The hook and the forwarder exist because Stellar needs a contract to receive and forward. An EVM destination mints straight to the recipient address, so this calls deposit_for_burn rather than deposit_for_burn_with_hook, and the mintRecipient is the recipient's own 20 byte address left padded to 32. The trap that cost 2 USDC twice does not apply going this way.",
+      "rescaleIsVisibleInTheAttestation": "500000000 units burned at Stellar's 7 decimals were attested as 50000000 at the EVM's 6. Circle's fee was 0 on this one, which is not a promise: the landed amount is read from the attestation and from the recipient's balance, never computed from the burn."
     }
   }
 }
