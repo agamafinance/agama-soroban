@@ -46,11 +46,26 @@ DEP=deployments/testnet.json
 AMOUNT=${AMOUNT:-1}
 HORIZON=${HORIZON:-https://horizon-testnet.stellar.org}
 
+# Which EVM chain to burn from. Base Sepolia by default because that is where
+# the funded account has lived; `CCTP_CHAIN=evmSepolia` burns from Ethereum Sepolia,
+# which is the chain the ABF partner's production deployment targets and so the
+# one the return leg actually comes home from. The two differ in the domain, the
+# USDC and the RPC and in nothing else, because CCTP V2 is deployed
+# deterministically and the messenger is at the same address on both.
+#
+# Not named CHAIN. `cast` reads a CHAIN environment variable as its own --chain
+# option, so exporting one called CHAIN makes every cast call in this script
+# fail with "invalid value for --chain", naming a flag the script never passed.
+CCTP_CHAIN=${CCTP_CHAIN:-evm}
 j() { python3 -I -c "import json;print(json.load(open('$DEP'))$1)"; }
-EVM_RPC=${EVM_RPC:-https://sepolia.base.org}
-TM=$(j "['cctp']['evm']['tokenMessengerV2']")
-USDC_EVM=$(j "['cctp']['evm']['usdc']")
-SRC_DOMAIN=$(j "['cctp']['evm']['domain']")
+case "$CCTP_CHAIN" in
+  evm)        EVM_RPC=${EVM_RPC:-https://sepolia.base.org} ;;
+  evmSepolia) EVM_RPC=${EVM_RPC:-https://ethereum-sepolia-rpc.publicnode.com} ;;
+  *)          EVM_RPC=${EVM_RPC:?set EVM_RPC for an unrecognised CCTP_CHAIN} ;;
+esac
+TM=$(j "['cctp']['$CCTP_CHAIN']['tokenMessengerV2']")
+USDC_EVM=$(j "['cctp']['$CCTP_CHAIN']['usdc']")
+SRC_DOMAIN=$(j "['cctp']['$CCTP_CHAIN']['domain']")
 DST_DOMAIN=$(j "['cctp']['stellar']['domain']")
 FORWARDER=$(j "['cctp']['stellar']['forwarder']")
 IRIS=$(j "['cctp']['attestation']")
@@ -135,6 +150,7 @@ ok "the burner can cover $AMOUNT USDC" "$([ "$EVM_BEFORE" -ge "$UNITS" ] && echo
 echo "== burning $UNITS units on domain $SRC_DOMAIN"
 NONCE0=$(cast nonce "$BURNER" --rpc-url "$EVM_RPC")
 cast send "$USDC_EVM" 'approve(address,uint256)' "$TM" "$UNITS" \
+  ${GAS_LIMIT:+--gas-limit $GAS_LIMIT} \
   --private-key "$EVM_KEY" --rpc-url "$EVM_RPC" >/dev/null 2>/tmp/cctp-approve.err \
   || die "the approve was refused: $(tail -2 /tmp/cctp-approve.err)"
 # Wait for the approve to be visible, do not assume the receipt settles it.
@@ -176,7 +192,8 @@ BURN=$(cast send "$TM" \
   'depositForBurnWithHook(uint256,uint32,bytes32,address,bytes32,uint256,uint32,bytes)' \
   "$UNITS" "$DST_DOMAIN" "$MINTRECIP" "$USDC_EVM" "0x$(printf '00%.0s' $(seq 1 32))" \
   "$MAXFEE" 1000 "$HOOK" \
-  --private-key "$EVM_KEY" --rpc-url "$EVM_RPC" --nonce "$NONCE" --json 2>/tmp/cctp-burn.err \
+  --private-key "$EVM_KEY" --rpc-url "$EVM_RPC" --nonce "$NONCE" ${GAS_LIMIT:+--gas-limit $GAS_LIMIT} \
+  --json 2>/tmp/cctp-burn.err \
   | python3 -I -c "
 import sys, json
 t = sys.stdin.read().strip()
