@@ -1,0 +1,25 @@
+[profile.default]
+src = "src"
+test = "test"
+script = "script"
+out = "out"
+solc = "0.8.28"
+optimizer = true
+optimizer_runs = 200
+# The bid settlement path carries the order, the escrow, the gross, the net, the premium and the share count
+# at once, which overruns the stack on the legacy pipeline. The IR pipeline compiles it as written rather than
+# forcing the function to be split into pieces that read worse than the thing they model.
+via_ir = true
+libs = ["dependencies"]
+# src/ has no dependencies on purpose: every line the counterparty replica compiles is in this repository,
+# so a reviewer never has to establish which version of somebody else's ERC-20 was vendored. forge-std is
+# pulled in for the test suite only, pinned by commit in soldeer.lock, same version as agama-vault/ethereum.
+
+[rpc_endpoints]
+sepolia = "${SEPOLIA_RPC_URL}"
+
+[fmt]
+line_length = 120
+
+[dependencies]
+forge-std = "1.11.0"

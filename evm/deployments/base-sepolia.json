@@ -1,0 +1,39 @@
+{
+  "note": "Agama's replica of the ABF partner's counterparty stack, deployed so the Stellar side can be driven end to end against something that behaves like the real thing. The partner runs no testnet of their own: the addresses they supply are a Polygon staging deployment given explicitly for fork testing, so there was nothing live to point at. Every signature, struct, enum, error selector and the EIP-712 order typehash are copied from their published integration interfaces, which means calldata that works here is calldata their production engine accepts.",
+  "chain": "base-sepolia",
+  "chainId": 84532,
+  "deployedOn": "2026-10-12",
+  "contracts": {
+    "registry": "0x99eE1Bc4012b96Ba63B53F340263B53Fb71dA476",
+    "kyc": "0xb95be525ab447cd455eD10f25BdAa77362e9F5B6",
+    "oracle": "0xCFD7c921aEF2D9ADf0D5a0E4AAd4aDe60A655CFD",
+    "masterVault": "0x168F14cE097492761EcA444D53D510187d263B4B",
+    "matchingEngine": "0xE391DDA69BeEaC1265aDE1056c5c3679Ec1f8773",
+    "usdc": "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
+  },
+  "operator": "0x234D98D30Bf854d53F4638d147F372598926EA68",
+  "shareToken": {
+    "symbol": "abfUSD-T",
+    "decimals": 6,
+    "cap": "1000000000000",
+    "offChainRatioBps": 9000
+  },
+  "orderTypehash": "0x30d2dc235e674572d76a22105c6de0162536207d4bcce76f0279cd3062662850",
+  "theAssetIsUsdcAndThatIsDeliberate": "The partner's production vault takes Agora AUSD. This one takes the real Circle USDC that CCTP mints on this chain, which removes a hop rather than adding one: the bridged amount is depositable exactly as it arrives. Bridging into an AUSD vault would need a USDC to AUSD swap, and that swap is the only step in the whole route where a keeper would have to touch a price, which is the one thing the order price being pinned to NAV exists to prevent.",
+  "whyNotEthereumSepolia": "It was the first choice and it does not work. Contract creation from the deployer fails there and consumes the entire gas limit whatever that limit is, measured with a five byte initcode (0x60016000f3, a contract whose runtime is a single STOP) at limits of 100k, 120k and 3M, each burned in full with status 0, across three endpoints that accepted the send. The identical five bytes deploy on Base Sepolia for 53279 gas with status 1. So the fault is that chain and not this code. Base Sepolia is equivalent for every purpose here: CCTP has it as domain 6, the Stellar TokenMessengerMinter has domain 6 registered as a remote with the same TokenMessengerV2 address it has for domain 0, and the inbound leg has already been run live on it.",
+  "oneKeyPlaysBothSides": "TESTNET ONLY. The deployer holds the partner's operator and strategic roles as well as Agama's side of the trade, because on a testnet there is nobody else to be the counterparty. In production those are different parties and settlement is theirs alone, which is exactly why capital is in flight for a period rather than a block, and why Agama's withdrawal queue burns agUSD at request time instead of promising cash on demand.",
+  "proven": {
+    "entry": {
+      "what": "2 USDC crossed into shares through a posted BID settled at NAV, not through a vault deposit, because direct deposit is closed.",
+      "approve": "0x5c0c5c598fb1be2ec5cd75d3e089d880f350becb2887dab9d60ab0c24cae4156",
+      "postOrder": "0xa2f0ab99871dea7561fbe992f4aa349155c23402f7ae1176eef827512a300ab6",
+      "matchOrders": "0xc2df1f4975ab7779cbea7f275e3eee08952b766f82e50750ff2ff75108a94eed",
+      "result": "2000000 USDC units in, 2000000 abfUSD-T out, one for one on the first deposit"
+    },
+    "yield": {
+      "what": "1.8 USDC moved to the fund administrator under the 90% ratio, then the book reported at 1.9 including 0.1 of yield. The same 2000000 shares went from being worth 2000000 to 2100000 without any share being minted or burned.",
+      "readAfterTheFact": "cash 200000, oracle NAV 1900000, totalAssets 2100000, convertToAssets(2000000) = 2100000, agreed by two independent endpoints"
+    }
+  },
+  "staleReadsOnThePublicRpc": "Same hazard as the CCTP work and worth repeating because it produced three false readings in one session: a read straight after a write on sepolia.base.org can hit a node that has not caught up. It reported zero shares against a vault whose totalAssets had already moved, and engineState PRE_WINDOW immediately after a toggle whose transaction had succeeded. Nothing was wrong except the read. Any assertion here has to be taken from two endpoints or after a wait, never from the call that follows the send."
+}
