@@ -27,7 +27,7 @@ Three deliberate divergences, each written down rather than hidden:
 | Divergence | Why |
 | --- | --- |
 | The asset is USDC, not Agora AUSD | CCTP delivers USDC. With USDC as the asset the bridged amount is depositable exactly as it arrives. An AUSD vault would need a USDC to AUSD swap, and that swap is the only step in the route where a keeper would have to touch a price. |
-| Base Sepolia, not Ethereum Sepolia | Creation fails on Ethereum Sepolia and burns the whole gas limit. See below. |
+| Deployed to both Sepolia and Base Sepolia | Ethereum Sepolia is the chain the partner's production deployment targets, so it is the one that matters. Base Sepolia came first and is kept because it already holds live USDC. |
 | One key holds both sides | On a testnet there is nobody else to be the counterparty. In production settlement is theirs alone. |
 
 Fees are carried and reported but charged on nothing, because the only path Agama uses is primary issuance at
@@ -63,24 +63,44 @@ reading first are the ones that assert outcomes nobody wants:
 
 ## Deployed
 
-Base Sepolia, chain 84532. Addresses and the transactions that prove it in
-[`deployments/base-sepolia.json`](deployments/base-sepolia.json).
+| Chain | Id | Record | USDC |
+| --- | --- | --- | --- |
+| Ethereum Sepolia | 11155111 | [`deployments/ethereum-sepolia.json`](deployments/ethereum-sepolia.json) | not yet funded |
+| Base Sepolia | 84532 | [`deployments/base-sepolia.json`](deployments/base-sepolia.json) | live, exercised |
 
-Run live on 12 October 2026: 2 USDC crossed into 2000000 abfUSD-T through a posted BID settled at NAV, then
-1.8 USDC moved to the fund administrator and the book reported at 1.9. The same 2000000 shares went from
-being worth 2000000 to 2100000 with nothing minted or burned, which is what yield looks like here: the share
-count is fixed and the valuation moves.
+Ethereum Sepolia is the one that matters, because it is what the partner's production deployment targets.
+CCTP has it as domain 0 and the Stellar testnet TokenMessengerMinter is registered there as the remote for
+domain 27, with Stellar registering this chain in return, so the round trip is possible in both directions.
+It holds no USDC yet: Circle's faucet is behind a captcha, so the honest way to fund it is the burn from
+Stellar that the architecture calls for anyway, and that leg does not exist yet.
 
-### Ethereum Sepolia does not accept contract creation
+Base Sepolia was exercised live on 12 October 2026: 2 USDC crossed into 2000000 abfUSD-T through a posted BID
+settled at NAV, then 1.8 USDC moved to the fund administrator and the book reported at 1.9. The same 2000000
+shares went from being worth 2000000 to 2100000 with nothing minted or burned, which is what yield looks like
+here: the share count is fixed and the valuation moves.
 
-It was the first choice. Creation from the deployer fails and consumes the entire gas limit whatever that
-limit is. Measured with a five byte initcode, `0x60016000f3`, a contract whose runtime is a single STOP, at
-limits of 100k, 120k and 3M: each burned in full with status 0, across three endpoints that accepted the
-send. The identical five bytes deploy on Base Sepolia for 53279 gas with status 1. The fault is that chain.
+### Sepolia charges about five times the simulated gas, and that looks like a refusal
 
-Base Sepolia costs nothing here: CCTP has it as domain 6, the Stellar TokenMessengerMinter has domain 6
-registered as a remote with the same TokenMessengerV2 address it has for domain 0, and the inbound leg has
-already been run live on it.
+Worth reading before deploying, because it cost a wrong conclusion before it cost a fix. Creation on Ethereum
+Sepolia consumes roughly five times what foundry's local EVM estimates, and an out of gas burns the entire
+limit, so the symptom is a chain that appears to reject every deployment at any limit.
+
+`AbfRegistry` was estimated at 458,861 and consumed 3,047,937. So forge's own estimate failed, the estimate
+doubled failed, and an explicit 3,000,000 failed by 48k. A five byte initcode (`0x60016000f3`, runtime a
+single STOP) needs more than 120,000 and consumes 209,215, against 53,279 for the identical bytes on Base
+Sepolia.
+
+The first diagnosis was that Sepolia refuses creation. That was wrong, and the test that broke it is the
+cheap one that should have come first: scan recent blocks for creations by anybody. Six consecutive blocks
+held six, all successful, every one consuming 18 to 20 million gas. That last figure was the answer. A fresh
+never used address fails identically at a low limit and succeeds at a high one, so it is neither the account
+nor the chain refusing, it is the limit.
+
+```sh
+forge script script/DeployTestnet.s.sol:DeployTestnet \
+  --rpc-url "$SEPOLIA_RPC_URL" --private-key "$KEY" --broadcast --slow \
+  --gas-estimate-multiplier 1200
+```
 
 ### Reads straight after writes are not trustworthy
 

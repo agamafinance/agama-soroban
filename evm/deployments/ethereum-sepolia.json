@@ -1,0 +1,31 @@
+{
+  "note": "Agama's replica of the ABF partner's counterparty stack on Ethereum Sepolia, which is the chain the partner's production deployment targets. Same source as the Base Sepolia record, same bytecode, different chain and different USDC. Every signature, struct, enum, error selector and the EIP-712 order typehash are copied from their published integration interfaces, so calldata that works here is calldata their production engine accepts.",
+  "chain": "ethereum-sepolia",
+  "chainId": 11155111,
+  "deployedOn": "2026-10-12",
+  "contracts": {
+    "registry": "0x4F78D5Ba2242F77CfD75b7B2a1BD8EEf82DA67d8",
+    "kyc": "0x04477d606b751A7CBC6De478c749d0ffC726416f",
+    "oracle": "0x5360cB29576487c1e0712318F9CBE0d5f0450d0E",
+    "masterVault": "0x12b3C8d7F7761E50d1d5f945F9611f28b0d4555C",
+    "matchingEngine": "0x20125217380F58f5E625B9305B6fE79114B5BDCa",
+    "usdc": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238"
+  },
+  "operator": "0x4Ae5478e01cb01eb26C14c7011F283A13e6631Be",
+  "shareToken": {
+    "symbol": "abfUSD-T",
+    "decimals": 6,
+    "cap": "1000000000000",
+    "offChainRatioBps": 9000
+  },
+  "orderTypehash": "0x30d2dc235e674572d76a22105c6de0162536207d4bcce76f0279cd3062662850",
+  "cctp": {
+    "domain": 0,
+    "tokenMessengerV2": "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA",
+    "messageTransmitterV2": "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275",
+    "stellarIsARegisteredRemote": "remoteTokenMessengers(27) on this chain returns 0xda6f9ee0786c812344d82817ef19b648b4af120f8bd10bf658e6b99eacff24b8, which is the strkey CDNG7HXAPBWICI2E3AUBP3YZWZELJLYSB6F5CC7WLDTLTHVM74SLRTHP decoded to 32 bytes: the Stellar testnet TokenMessengerMinter. The Stellar side returns this chain's TokenMessengerV2 for domain 0. So the pair is registered in both directions and the round trip is possible."
+  },
+  "sepoliaChargesAboutFiveTimesTheSimulatedGas": "This cost a wrong conclusion before it cost a fix, so it is written down in full. Contract creation on Ethereum Sepolia consumes roughly five times what foundry's local EVM estimates, and an out of gas burns the entire limit, which hides the cause behind a symptom that looks like a chain refusing to deploy. Measured: AbfRegistry estimated at 458861 and actually consumed 3047937, so limits of 596519 (forge's own estimate), 917722 (estimate doubled) and even an explicit 3000000 all failed, the last by 48k. A five byte initcode (0x60016000f3, runtime a single STOP) needs more than 120000 and consumes 209215, against 53279 for the identical bytes on Base Sepolia. The first diagnosis here was that Sepolia refuses creation, which was wrong: scanning six consecutive blocks found six contract creations by other accounts, all successful, all consuming 18 to 20 million gas, and that last figure was the clue. A fresh never used address fails identically at a low limit and succeeds at a high one, so it is neither the account nor the chain refusing, it is the limit. Deploy with --gas-estimate-multiplier 1200 or an explicit limit well above the estimate.",
+  "oneKeyPlaysBothSides": "TESTNET ONLY. The deployer holds the partner's operator and strategic roles as well as Agama's side of the trade, because on a testnet there is nobody else to be the counterparty. In production those are different parties and settlement is theirs alone, which is why capital is in flight for a period rather than a block, and why Agama's withdrawal queue burns agUSD at request time instead of promising cash on demand.",
+  "notYetFunded": "This deployment holds no USDC. Circle's Sepolia faucet is behind a captcha, so the honest way to fund it is the one the architecture already calls for: a CCTP burn from Stellar to domain 0. That leg does not exist yet."
+}
