@@ -91,8 +91,18 @@ Network: **Stellar Testnet** · RPC: `https://soroban-testnet.stellar.org`
 |---|---|---|---|
 | Private Credit | QIRO | LU | [`CDNWXGSS...WLP3VE`](https://stellar.expert/explorer/testnet/contract/CDNWXGSSP3BOAIKIYTGDHST2BBSZNWIW6RMDQERM3HOQ24EO43WLP3VE) |
 | Etherfuse | ETHERFUS | MX | [`CCXO2ZIM...KM7BXN`](https://stellar.expert/explorer/testnet/contract/CCXO2ZIMK7KZMMUBE24KOLWDJHVXQKXDNEP4QH7N5ZK5U6ESCWKM7BXN) |
+| Cross chain | ABF | JE | [`CDSO4GJR...WUWFML`](https://stellar.expert/explorer/testnet/contract/CDSO4GJRY7BFVMQ4PYP3ISVOFPQLPA3C7ZFT5HQOUDM3VXTGOUWUWFML) |
 
-Both adapters are registered with the Allocation Engine. `originator` and
+The cross chain adapter is the one whose capital does not stay on Stellar: `allocate`
+burns the Vault's USDC through CCTP towards the chain the credit book is on, and it
+reappears at an address no Soroban call can read. Its destination is stored rather than
+passed per call, and locked while any exposure is booked, because CCTP carries 32 bare
+bytes with no type tag and a wrong recipient is unrecoverable. Because two crossings cost
+two of Circle's fees, the amount that can ever come back is strictly less than the amount
+sent, which makes `write_down` the ordinary path for this pool rather than the distress
+path it is for the other two.
+
+All three adapters are registered with the Allocation Engine. `originator` and
 `jurisdiction` are the buckets the concentration caps aggregate over, so two
 pools fronted by the same counterparty count as one position.
 

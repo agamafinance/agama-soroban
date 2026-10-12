@@ -490,9 +490,9 @@ Originator (servicing data)
 
 ### 4.6 Pool Adapters
 
-**Purpose:** One contract per allocation target, holding that target's position and nothing else. The Engine never touches a pool directly; it calls an adapter, and the adapter is what knows how that pool converts cash. Two are deployed: private credit and Etherfuse.
+**Purpose:** One contract per allocation target, holding that target's position and nothing else. The Engine never touches a pool directly; it calls an adapter, and the adapter is what knows how that pool converts cash. Three are deployed: private credit, Etherfuse and cross chain.
 
-Both expose the same interface, which is what lets the Engine treat a new RWA type as configuration rather than as code.
+All three expose the same interface, which is what lets the Engine treat a new RWA type as configuration rather than as code.
 
 | Function | Description |
 |---|---|
@@ -508,6 +508,28 @@ Both expose the same interface, which is what lets the Engine treat a new RWA ty
 | `propose_admin` / `accept_admin` / `admin` / `pending_admin` | The same two-step handover every contract here carries. |
 
 An adapter never holds less USDC than it has booked.
+
+#### 4.6.1 The cross chain adapter
+
+The other two adapters hold their position on Stellar, so `get_exposure()` and the USDC on the contract's balance are two views of one thing. This one is not: `allocate` burns the Vault's USDC through Circle's CCTP and it reappears on an EVM chain, minted to an address no Soroban call can read, recall or verify. From the moment the burn mines, the exposure booked here is a claim on something this ledger cannot see.
+
+That is the protocol and not an accident. Deposits land on Stellar; the credit book that earns on them is on another chain. The adapter's job is to make the leaving honest, and it carries two entry points the other adapters do not.
+
+| Function | Description |
+|---|---|
+| `messenger() → Address` | Circle's TokenMessengerMinter this adapter burns through. Fixed at construction. |
+| `set_destination(admin, domain: u32, recipient: BytesN<32>)` | The only way the destination moves, and **refused while any exposure is booked** with `DestinationLocked` 713. Thirty two zero bytes is refused outright with `InvalidMintRecipient` 712. |
+| `destination() → (u32, BytesN<32>)` | Reads the pair back. |
+
+Three decisions follow from the irreversibility, and each one is the reason an obvious alternative was rejected.
+
+**The destination is configuration, not an argument.** `allocate` takes an amount and nothing else. CCTP carries 32 bare bytes with no type tag and no checksum, so a wrong recipient is not rejected by anything, anywhere: it is minted to an address nobody holds the key to, and there is no second transaction that fixes it. An adapter taking the recipient per call would put that decision in the hands of whoever can call `allocate`, and the Engine's admin is not who that belongs to. Locking it while exposure stands closes the other half: repointing mid-position would leave the book claiming capital at one address while the money sat at another.
+
+**`deallocate` checks the balance before it moves anything,** and refuses with `ReturnNotArrived` 714. Capital coming home is a crossing initiated on the far chain that lands here as an ordinary mint, and nothing on Stellar can distinguish "in flight" from "never sent". Booking against money that has not arrived would decrement the Engine's book and report the Vault repaid out of nothing.
+
+**`write_down` is the ordinary path for this pool, not the distress path.** Circle takes a fee on each crossing and the decimals differ, 7 here against 6 on every EVM chain, so what arrives is smaller than what was sent and the return is smaller again. The amount recoverable by `deallocate` is therefore *always* strictly less than the amount burned, with nothing having gone wrong. The alternative was a `deallocate` that quietly tolerated the shortfall, which would mean the Engine's book and the cash agreeing only because the adapter had stopped checking. A fee is a real loss of principal and is recognised as one.
+
+`settlement_window()` reports `(1, 14)`: the crossing attests in seconds, and then the capital sits in an order the far side's operator settles on their own schedule, which is the part that takes a week. That asymmetry is why the withdrawal queue burns agUSD at request time and pays from a position in line rather than promising cash on demand.
 
 ## 5. Settlement & Off-Chain Bridge
 

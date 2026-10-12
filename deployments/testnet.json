@@ -13,7 +13,8 @@
     "vault": "CCVNCXPJXCA5GKJKNUNZRMJEEWYL74ASYYTL2DULPO5TZDGSHUPZTTJF",
     "allocationEngine": "CBDVZPMBUQQ6OML3WTT4TP6QIOJDRC4BWYXR7UZQAAZG2LETAVZE6FFD",
     "oracleAdapter": "CAUOHPPNHUIYQI3KIVPLP75CGWKFBGSXK3RW75UO52PKY3YKQRTWIQUS",
-    "agusdCore": "CADD22PHOXWHYVCQ3K5DWIHPUNA5USTHBPOCBE2KDCYNUEBUGFAHH33R"
+    "agusdCore": "CADD22PHOXWHYVCQ3K5DWIHPUNA5USTHBPOCBE2KDCYNUEBUGFAHH33R",
+    "cctpAdapter": "CDSO4GJRY7BFVMQ4PYP3ISVOFPQLPA3C7ZFT5HQOUDM3VXTGOUWUWFML"
   },
   "creditVaults": {
     "payment-financing": "CAUFXVGKB2OKEDDO6SDWH4ZSWXJ37T2WYKEVUTBOCWZAFEUTGCFYQEF4",
@@ -875,6 +876,35 @@
       "theAllowanceIsTheFirstGate": "deposit_for_burn pulls through transfer_from, so the Stellar account must approve the TokenMessengerMinter on the USDC SAC first, with an expiration_ledger. Without it the call fails in simulation with Error(Contract, #9) and the diagnostic event says 'not enough allowance to spend'. This is the mirror of the EVM approve and it is easy to miss because the inbound direction never needs it.",
       "noHookInThisDirection": "The hook and the forwarder exist because Stellar needs a contract to receive and forward. An EVM destination mints straight to the recipient address, so this calls deposit_for_burn rather than deposit_for_burn_with_hook, and the mintRecipient is the recipient's own 20 byte address left padded to 32. The trap that cost 2 USDC twice does not apply going this way.",
       "rescaleIsVisibleInTheAttestation": "500000000 units burned at Stellar's 7 decimals were attested as 50000000 at the EVM's 6. Circle's fee was 0 on this one, which is not a promise: the landed amount is read from the attestation and from the recipient's balance, never computed from the burn."
+    },
+    "adapter": {
+      "contract": "CDSO4GJRY7BFVMQ4PYP3ISVOFPQLPA3C7ZFT5HQOUDM3VXTGOUWUWFML",
+      "source": "adapters/cctp",
+      "what": "The pool whose capital leaves Stellar. Registered with the Allocation Engine as originator ABF, jurisdiction JE, cap 4000 bps, so a crossing is subject to the same concentration caps and reserve floor as any other allocation rather than being a side door around them.",
+      "registeredPool": {
+        "originator": "ABF",
+        "jurisdiction": "JE",
+        "capBps": 4000
+      },
+      "destination": {
+        "domain": 0,
+        "mintRecipient": "0x4Ae5478e01cb01eb26C14c7011F283A13e6631Be"
+      },
+      "whyTheDestinationIsNotAParameter": "allocate takes an amount and nothing else. The domain and the mint recipient are stored, admin gated, and refused while any exposure is booked. CCTP carries 32 bare bytes with no type tag and no checksum, so a wrong recipient is not rejected anywhere: it is minted to an address nobody holds the key to and there is no second transaction that fixes it. An adapter taking the recipient per call would put that decision in the hands of whoever can call allocate.",
+      "whyWriteDownIsTheOrdinaryPath": "Two crossings cost two of Circle's fees and the decimals differ in both directions, so the amount that can ever be deallocated is strictly less than the amount burned. That shortfall is a real loss of principal. The alternative was a deallocate that tolerated it, which would mean the Engine's book and the cash agreeing only because the adapter stopped checking.",
+      "whyDeallocateChecksTheBalance": "Capital returning is a crossing initiated on the far chain that lands here as an ordinary mint, and nothing on Stellar can tell whether it is in flight or was never sent. Booking against money that has not arrived would decrement the Engine's book and report the Vault repaid out of nothing.",
+      "proven": {
+        "on": "2026-10-12",
+        "allocateTx": "0f778310095ec46e999556d2af20c20853051c89a8ad15499c172d0795403bd2",
+        "what": "Engine.allocate for 100000000 units checked the caps and the floor, the Vault released the USDC, and the adapter burned it towards domain 0 in the same transaction. Free reserves fell from 66067511625 to 65967511625, exposure booked at 100000000, and the adapter's own USDC balance stayed 0 because the capital was burned rather than parked.",
+        "landedOnSepolia": "10000000 units, receive tx 0xb9ce00af8f1d50c44139c0759340e1f25d5c32006490abe639f09850de656b3b"
+      }
+    },
+    "returnLeg": {
+      "script": "scripts/e2e-evm-to-stellar.sh",
+      "what": "The half of a user's claim that happens off Stellar: an ASK posted and settled by the partner's operator redeems the shares, then the USDC crosses home. Run live for 10 shares at NAV, redeeming 10500000, of which 10.49895 USDC landed on Stellar and Circle took 0.00105.",
+      "theLiquidityPrecondition": "A redemption is paid in cash the vault holds, and most of its assets are off chain with the fund administrator. So a NAV that was raised is a claim and not money, and the vault refuses a redemption it cannot fund rather than paying part of it. Cash has to come back and the book be written down before anything can be sold, and on the real system those two calls are the partner's and not ours.",
+      "castReadsCHAINFromTheEnvironment": "The source chain variable is called CCTP_CHAIN and not CHAIN because cast reads a CHAIN environment variable as its own --chain option. Exporting one called CHAIN made every cast call in the suite fail with 'invalid value for --chain', naming a flag the script never passed."
     }
   }
 }
