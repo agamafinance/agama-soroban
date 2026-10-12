@@ -150,12 +150,21 @@ gt "path payment executed on the book" "$(bal $USDC $E)" "$B"
 gt "the fill honoured the quote it was taken at" "$(( $(bal $USDC $E) - B ))" "$(( MIN - 1 ))"
 
 echo "== 8. circulation against backing, the two reconciliations"
-# agUSD is minted one for one against USDC, so what exists of it and what the
-# Vault holds have to be the same number. They were not at first: the payment
-# that brings a classic asset into existence had left one unit in circulation
-# that the Vault never took USDC for, and nothing noticed until this was
-# written. The same shape on sagUSD, against the share count instead.
-ok "agUSD in circulation equals the Vault's USDC" "$(circulating agUSD $AG_ISS)" "$(bal $USDC $VAULT)"
+# agUSD is minted one for one against USDC, so what exists of it and what backs
+# it have to be the same number. They were not at first: the payment that brings
+# a classic asset into existence had left one unit in circulation that the Vault
+# never took USDC for, and nothing noticed until this was written. The same
+# shape on sagUSD, against the share count instead.
+#
+# Against get_net_assets and not against the Vault's USDC balance. Those two are
+# the same number only while nothing is deployed, and the moment the Engine
+# allocates, backing leaves the Vault's balance by design and is carried as
+# deployed capital instead. Comparing to the raw balance therefore reported a
+# solvency gap of exactly the amount deployed, correctly measured and wrongly
+# interpreted: it would have fired the first time anyone allocated in
+# production. get_net_assets is USDC held plus deployed capital minus recognised
+# losses, which is the quantity that actually backs the token.
+ok "agUSD in circulation equals what backs it" "$(circulating agUSD $AG_ISS)" "$(rd $VAULT get_net_assets)"
 ok "sagUSD in circulation equals the tracked count" "$(circulating sagUSD $SAG_ISS)" "$(rd $STAKING total_supply)"
 
 echo "== 9. redeem the rest through the Vault queue"

@@ -39,12 +39,25 @@ NETA=$(rd "$VAULT" get_net_assets)
 CAP=$(( NETA * 4000 / 10000 ))
 MAXDEP=$(( NETA * 7500 / 10000 ))
 printf 'net assets %s, per pool cap %s, deployable before the floor %s\n\n' "$NETA" "$CAP" "$MAXDEP"
-ok "nothing deployed at the start" "$(rd $VAULT deployed_capital)" "0"
+# Measured as deltas against whatever is already deployed, not against zero.
+#
+# This suite used to assert an empty book at the start and an empty book at the
+# end, and it unwinds only the two pools it touches. So any other pool holding a
+# position made five assertions fail at once and none of them was about this
+# suite's subject: the cross chain pool had 10 USDC outstanding and the guards
+# themselves, the cap and the floor, went on passing underneath the noise. An
+# empty protocol is also a state that stops recurring the moment this is real.
+BASE_ENGINE=$(rd $ENGINE total_allocated)
+BASE_VAULT=$(rd $VAULT deployed_capital)
+printf '  baseline: engine %s, vault %s\n' "$BASE_ENGINE" "$BASE_VAULT"
+# The invariant that matters at the start is not that the book is empty, it is
+# that the Engine's book and the Vault's agree about what is deployed.
+ok "the two books agree at the start" "$BASE_ENGINE" "$BASE_VAULT"
 
 echo "== capital out through the Engine"
 ok "first allocation accepted" "$(err $PC 10000000000)" "Success"
-ok "the Engine booked it" "$(rd $ENGINE total_allocated)" "10000000000"
-ok "the Vault booked the same" "$(rd $VAULT deployed_capital)" "10000000000"
+ok "the Engine booked it" "$(( $(rd $ENGINE total_allocated) - BASE_ENGINE ))" "10000000000"
+ok "the Vault booked the same" "$(( $(rd $VAULT deployed_capital) - BASE_VAULT ))" "10000000000"
 ok "the pool holds the USDC" "$(stellar contract invoke --id $USDC --source $SRC --network $NET --send=no -- balance --id $PC 2>/dev/null | tr -d '\"')" "10000000000"
 
 echo "== guard 1, the per pool concentration cap"
@@ -65,8 +78,8 @@ for p in "$PC" "$EF"; do
     stellar contract invoke --id "$ENGINE" --source "$SRC" --network "$NET" -- \
       deallocate --pool_id "$p" --amount "$X" >/dev/null 2>&1
 done
-ok "Engine book empty" "$(rd $ENGINE total_allocated)" "0"
-ok "Vault book empty" "$(rd $VAULT deployed_capital)" "0"
+ok "the Engine is back to its baseline" "$(rd $ENGINE total_allocated)" "$BASE_ENGINE"
+ok "the Vault is back to its baseline" "$(rd $VAULT deployed_capital)" "$BASE_VAULT"
 ok "reserves whole again" "$(rd $VAULT free_reserves)" "$(rd $VAULT idle_reserves)"
 echo ""
 echo "TOTAL: $pass passed, $fail failed"
