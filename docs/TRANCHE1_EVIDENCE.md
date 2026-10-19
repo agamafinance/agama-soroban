@@ -1,0 +1,101 @@
+# Tranche 1, Evidence
+
+Every claim below is a command anyone can run or a transaction anyone can open.
+
+Generated 2026-10-19. Network: Stellar testnet.
+
+## The four completion criteria
+
+| Criterion | How to check it | Result |
+|---|---|---|
+| contracts deployed on testnet, transactions publicly verifiable | `bash scripts/check-deployment-record.sh --wasm` | see **Bytecode provenance** below |
+| the full deposit / mint / stake / unstake / redeem flow end to end | `bash scripts/e2e-generation3.sh` | **21 passed, 0 failed** |
+| sagUSD exchange rate readable through DeFindex assets-per-share | asserted inside the same run, `get_asset_amounts_per_shares` against `exchange_rate` | **PASS**, both return the same figure |
+| unit test suite passing on all core functions | `cargo test --workspace` | **227 passed, 0 failed**, 11 suites |
+
+Four further checks the repository carries, all green:
+
+| Check | Command | Result |
+|---|---|---|
+| contracts still live, not archived | `bash scripts/check-ttl.sh` | 10 passed, 31 days left |
+| every state-changing entry point authorizes | `bash scripts/check-authorization.sh` | 69 entry points, 0 failures |
+| advisories against the deployed bytecode | `bash scripts/check-advisories.sh` | 2 passed, 0 failed |
+| every documented signature matches the ledger | `bash scripts/check-doc-entry-points.sh` | 9 passed, 0 failed |
+
+## The live contracts
+
+| Contract | Address | What it does |
+|---|---|---|
+| Vault Contract | [`CCVNCXPJ...PZTTJF`](https://stellar.expert/explorer/testnet/contract/CCVNCXPJXCA5GKJKNUNZRMJEEWYL74ASYYTL2DULPO5TZDGSHUPZTTJF) | USDC deposits, reserve floor, FIFO withdrawal queue |
+| sagUSD Staking | [`CBOHG5YG...4CACV3`](https://stellar.expert/explorer/testnet/contract/CBOHG5YGAE7ORFDE5GIUN6MYYSXMHYWGLZTH3Y563HZCBBWFVQ4CACV3) | share price, yield, unstake cooldown |
+| agUSD (SAC) | [`CADD22PH...AHH33R`](https://stellar.expert/explorer/testnet/contract/CADD22PHOXWHYVCQ3K5DWIHPUNA5USTHBPOCBE2KDCYNUEBUGFAHH33R) | the dollar, as a classic Stellar asset |
+| Allocation Engine | [`CBDVZPMB...ZE6FFD`](https://stellar.expert/explorer/testnet/contract/CBDVZPMBUQQ6OML3WTT4TP6QIOJDRC4BWYXR7UZQAAZG2LETAVZE6FFD) | pool routing and caps |
+| Oracle Adapter | [`CAUOHPPN...TWIQUS`](https://stellar.expert/explorer/testnet/contract/CAUOHPPNHUIYQI3KIVPLP75CGWKFBGSXK3RW75UO52PKY3YKQRTWIQUS) | multi source NAV, staleness and deviation guards |
+| CCTP Adapter | [`CDSO4GJR...WUWFML`](https://stellar.expert/explorer/testnet/contract/CDSO4GJRY7BFVMQ4PYP3ISVOFPQLPA3C7ZFT5HQOUDM3VXTGOUWUWFML) | cross chain USDC leg |
+| Private credit adapter | [`CDNWXGSS...WLP3VE`](https://stellar.expert/explorer/testnet/contract/CDNWXGSSP3BOAIKIYTGDHST2BBSZNWIW6RMDQERM3HOQ24EO43WLP3VE) |  |
+| Etherfuse adapter | [`CCXO2ZIM...KM7BXN`](https://stellar.expert/explorer/testnet/contract/CCXO2ZIMK7KZMMUBE24KOLWDJHVXQKXDNEP4QH7N5ZK5U6ESCWKM7BXN) |  |
+| USDC (Circle SAC) | [`CBIELTK6...XQDAMA`](https://stellar.expert/explorer/testnet/contract/CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA) | the real testnet USDC |
+
+## One run, one account, the whole journey
+
+A fresh account is created for every run, so nothing below is carried over from an earlier one.
+Account [`GAWTA6O5...L5QGSTN5G`](https://stellar.expert/explorer/testnet/account/GAWTA6O5BBF3YFPOEX6YLLMYWG57CVCJFVPUOQT7S5LS7JCL5QGSTN5G), 19 October 2026, every transaction successful.
+
+| # | Step | Operation | Transaction |
+|---|---|---|---|
+| 1 | account created and funded | `create_account` | [`faaf32dec356`](https://stellar.expert/explorer/testnet/tx/faaf32dec356df6be7d73cc353c3343689cb97ad6ee4a7073f81048c481415e5) |
+| 2 | trustline, USDC | `change_trust` | [`fe689d423283`](https://stellar.expert/explorer/testnet/tx/fe689d4232834a0e54897dcc3b1f2c8b96fdaaeaa5e791a3a3e192d82eff9a30) |
+| 3 | trustline, agUSD | `change_trust` | [`79efbe6ff863`](https://stellar.expert/explorer/testnet/tx/79efbe6ff863939e7811314c207d056e905713778b878d43f49ef93b2023c5c6) |
+| 4 | trustline, sagUSD | `change_trust` | [`8c262b76d677`](https://stellar.expert/explorer/testnet/tx/8c262b76d67742cbffe9fe98eb2913649d012c333d7d616e18dae71730e5680a) |
+| 5 | 20 USDC sent to the test account | `transfer` | [`ee6a77d9d0be`](https://stellar.expert/explorer/testnet/tx/ee6a77d9d0bea369777a3dcecd62a4e052d5fb5ca57b494744183d81e5d82fcf) |
+| 6 | deposit, agUSD minted at par | `deposit` | [`d9424f49de21`](https://stellar.expert/explorer/testnet/tx/d9424f49de21eac327ad1ef7dfbbf93b8d1e6605f212c17ec0a65ba0f3d404a2) |
+| 7 | stake, sagUSD shares minted through the SAC | `stake` | [`eb6e524949da`](https://stellar.expert/explorer/testnet/tx/eb6e524949daaeb8c45e396db122d9b8cca127bc413a05162f687772c0fa0d79) |
+| 8 | yield distributed, the rate moves and no share is minted | `distribute_yield` | [`a4d9ccdaab7b`](https://stellar.expert/explorer/testnet/tx/a4d9ccdaab7b4fc3c484441471568cc828e020ebddafc98a7d328ddeb830c11c) |
+| 9 | unstake requested | `request_unstake` | [`7bb79f9605bb`](https://stellar.expert/explorer/testnet/tx/7bb79f9605bb641d6ba683ea1ceb4d3ff360c5f929e9155277ed793c684d01d3) |
+| 10 | claimed after the cooldown, agUSD back with the yield | `claim` | [`2c557e402c44`](https://stellar.expert/explorer/testnet/tx/2c557e402c440932f05824f3c50cea0a989762bc1275db9519ffb1cb961ada93) |
+| 11 | Soroswap, agUSD swapped for USDC on the AMM | `swap_exact_tokens_for_tokens` | [`67d7b8369e67`](https://stellar.expert/explorer/testnet/tx/67d7b8369e67c6740a01e4ebfeb7b67ebf3f28486ebf7d9933622e1ffd828e8c) |
+| 12 | SDEX, the same pair filled on the orderbook | `path_payment_strict_send` | [`4f5cd34744fc`](https://stellar.expert/explorer/testnet/tx/4f5cd34744fc2792dc589a0d54ded6385667ee685abc751eb565fbc21c5e1fb2) |
+| 13 | withdrawal requested, the Vault queue | `request_withdrawal` | [`71adcef54e73`](https://stellar.expert/explorer/testnet/tx/71adcef54e73bffa5df343b7cbb3d90979c1b709f819b7b0338873875d197c51) |
+| 14 | withdrawal claimed, USDC paid out | `claim_withdrawal` | [`40bfe3fe5bb5`](https://stellar.expert/explorer/testnet/tx/40bfe3fe5bb5102475fc004a9765927f294442870dd082067d2c643bfbf2ba96) |
+
+The account deposited 20 USDC and ended holding more than it started with, the difference being the yield the share price delivered. The run also reconciles what exists of each token against what backs it, through Horizon rather than through the contracts' own counters.
+
+
+## Bytecode provenance
+
+The repository compares every deployed contract against a rebuild of this tree,
+with `bash scripts/check-deployment-record.sh --wasm`. 69 of its 76 assertions pass.
+Seven do not, and the reason is worth stating plainly rather than leaving a reviewer
+to find it.
+
+No contract source has changed since any of these contracts was deployed, and neither
+has `Cargo.toml` or `Cargo.lock`. `git log` shows it: the last change under `contracts/`,
+`adapters/` or `crates/` predates the deployment record's last update. What changed is
+the compiler. The repository carried no toolchain pin, so the build followed Rust stable,
+these contracts were deployed between 14 September and 12 October each with the stable
+of that day, and rustc moved to 1.99.1 on 13 October. The same source now compiles to
+different bytecode.
+
+| Contract | Deployed | On the ledger | Rebuilt today |
+|---|---|---|---|
+| `vault` | 2026-10-05 | `916a02bcfc9946a8` | `8fbd0e1d57428191` |
+| `staking` | 2026-10-06 | `b9e393a95b93ad9b` | `2142a00df3f4dd33` |
+| `allocationEngine` | 2026-10-05 | `d22be492107c0dfd` | `606c8783e223f82c` |
+| `oracleAdapter` | 2026-09-14 | `99fb5d13e208e8fd` | `ad100721ffeb4458` |
+| `private-credit` | 2026-10-05 | `d41e8b8fb6dc1ed3` | `c4d8a4a4f32a1f40` |
+| `etherfuse` | 2026-10-09 | `0797838a5e71934b` | `7bbbd8704080ce70` |
+
+Tested against rustc 1.99.0 as well, dated 28 September: a third hash, matching neither.
+The toolchain is pinned from now on, in `rust-toolchain.toml`, so a rebuild of this tree
+is reproducible from here forward. The gap above cannot be closed by redeploying: agUSD
+and sagUSD are classic Stellar assets whose Stellar Asset Contract admin was handed to
+the Vault and the staking contract, and whose issuer accounts were then locked by setting
+the master key weight to zero. Neither contract exposes a way to hand that admin on, which
+is deliberate and is what guarantees the supply has one minter. A replacement Vault would
+therefore be a replacement agUSD, abandoning the asset that is in circulation, quoted on
+the SDEX and held in a Soroswap pool. The correct trade is to keep the asset and state the
+provenance, which is what this section does.
+
+What remains verifiable without the rebuild: the recorded wasm hash of every superseded
+generation is what the ledger holds, which the same script checks and passes, 18 for 18.
+

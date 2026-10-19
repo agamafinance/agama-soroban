@@ -1,0 +1,16 @@
+# Pinned so the repository's central claim stays true over time.
+#
+# Every deployed contract is meant to be byte for byte the source in this tree,
+# and scripts/check-deployment-record.sh --wasm is what proves it. That proof
+# rebuilds the source and compares the hash, so it holds only while the compiler
+# that produced the deployed bytecode is the compiler that runs here. Without a
+# pin the toolchain follows stable, and the claim decays silently at the next
+# rustc release: the source is untouched, the hash moves, and the check fails on
+# contracts nobody edited. That is exactly what happened between the 14 September
+# and 12 October deployments and rustc 1.99.1 on 13 October.
+#
+# Changing this version means rebuilding and redeploying, not editing the number.
+[toolchain]
+channel = "1.99.1"
+targets = ["wasm32v1-none"]
+profile = "minimal"
