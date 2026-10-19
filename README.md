@@ -228,7 +228,7 @@ replaced. None of them is deleted, and none of them is quietly reused.
 | Private credit adapter, fifth and sixth deployments | [`CDPFTGS6...TWQFYQ`](https://stellar.expert/explorer/testnet/contract/CDPFTGS62IZHPZEGK6ENVTBLUKMLOD4OEPD7UVMJG3FCNDWS65TWQFYQ) · [`CANRYN2H...ZQUIIQ`](https://stellar.expert/explorer/testnet/contract/CANRYN2HGYU6SBQOYKCL52LSNSXKOK54ECK2UFAZTMHNPK47VUZQUIIQ) | Each replaced with the Engine and the Vault it names, and each holding USDC from a written-down position that no entry point can move, which is finding M2 again. |
 
 Two events account for the last sixteen rows. The first seven of them are an
-adversarial security review of this repository, ahead of the OtterSec audit;
+adversarial security review of this repository, ahead of the external audit;
 the findings and the fixes are in
 [The Security Review, On-Chain](#the-security-review-on-chain) below. The nine
 after them are a second review, run against the fixes the first one produced, on
@@ -386,7 +386,7 @@ What re-proves each claim on the generation actually deployed:
 
 ### The Security Review, On-Chain
 
-An adversarial security review of this repository, ahead of the OtterSec audit,
+An adversarial security review of this repository, ahead of the external audit,
 found three critical issues, two high, and four medium. Every one of them is
 fixed, every fix has a test that fails without it, and the fixes are proven
 against the live deployment by `scripts/smoke-hardening.sh`, which makes 58
