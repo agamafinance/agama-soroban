@@ -326,6 +326,7 @@ for name, addr, wasm in [
     ('staking', c['staking'], 'staking.wasm'),
     ('allocationEngine', c['allocationEngine'], 'allocation_engine.wasm'),
     ('oracleAdapter', c['oracleAdapter'], 'oracle_adapter.wasm'),
+    ('cctpAdapter', c['cctpAdapter'], 'cctp_adapter.wasm'),
     ('private-credit', p['private-credit'], 'private_credit.wasm'),
     ('etherfuse', p['etherfuse'], 'etherfuse.wasm'),
 ]:
@@ -353,6 +354,7 @@ import json
 d = json.load(open('deployments/testnet.json'))
 compared = {'contracts.vault', 'contracts.staking',
             'contracts.allocationEngine', 'contracts.oracleAdapter',
+            'contracts.cctpAdapter',
             'poolAdapters.private-credit', 'poolAdapters.etherfuse'}
 declared = set(d.get('notCompared', {}))
 seen = []

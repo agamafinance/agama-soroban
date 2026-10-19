@@ -64,7 +64,7 @@ The account deposited 20 USDC and ended holding more than it started with, the d
 ## Bytecode provenance
 
 The repository compares every deployed contract against a rebuild of this tree,
-with `bash scripts/check-deployment-record.sh --wasm`. 69 of its 76 assertions pass.
+with `bash scripts/check-deployment-record.sh --wasm`. 70 of its 77 assertions pass.
 Seven do not, and the reason is worth stating plainly rather than leaving a reviewer
 to find it.
 
@@ -82,6 +82,7 @@ different bytecode.
 | `staking` | 2026-10-06 | `b9e393a95b93ad9b` | `2142a00df3f4dd33` |
 | `allocationEngine` | 2026-10-05 | `d22be492107c0dfd` | `606c8783e223f82c` |
 | `oracleAdapter` | 2026-09-14 | `99fb5d13e208e8fd` | `ad100721ffeb4458` |
+| `cctpAdapter` | 2026-10-12 | `b2c24917a7cd6a18` | `cdfa63ff3a327d82` |
 | `private-credit` | 2026-10-05 | `d41e8b8fb6dc1ed3` | `c4d8a4a4f32a1f40` |
 | `etherfuse` | 2026-10-09 | `0797838a5e71934b` | `7bbbd8704080ce70` |
 
