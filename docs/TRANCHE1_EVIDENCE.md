@@ -4,7 +4,12 @@ Every claim below is a command anyone can run or a transaction anyone can open.
 
 Generated 2026-10-19. Network: Stellar testnet.
 
-## The four completion criteria
+Tranche 1 is three deliverables. Deliverable 1, the core Soroban contracts, is
+proven in the four sections that follow. Deliverable 2, the dApp, and deliverable 3,
+the indexer, each have their own section further down, with the same rule: a URL to
+open or a command to run, not a description.
+
+## Deliverable 1, the four completion criteria
 
 | Criterion | How to check it | Result |
 |---|---|---|
@@ -59,6 +64,75 @@ Account [`GAWTA6O5...L5QGSTN5G`](https://stellar.expert/explorer/testnet/account
 | 14 | withdrawal claimed, USDC paid out | `claim_withdrawal` | [`40bfe3fe5bb5`](https://stellar.expert/explorer/testnet/tx/40bfe3fe5bb5102475fc004a9765927f294442870dd082067d2c643bfbf2ba96) |
 
 The account deposited 20 USDC and ended holding more than it started with, the difference being the yield the share price delivered. The run also reconciles what exists of each token against what backs it, through Horizon rather than through the contracts' own counters.
+
+
+## Deliverable 2, the dApp
+
+Live on testnet at [app.agama.finance/stellar](https://app.agama.finance/stellar).
+Nothing has to be requested to try it. The faucet page brings the account into
+existence through friendbot, opens the USDC, agUSD and sagUSD trustlines in a single
+signature, and points at Circle's own public faucet for the USDC itself, so a visitor
+with a Stellar wallet goes from an empty address to a staked position without talking
+to us. The USDC is Circle's real testnet issue, not a mock token.
+
+| Page | What can be done there |
+|---|---|
+| `/stellar` | the vaults, their caps and what each one holds |
+| `/stellar/faucet` | friendbot for the reserve, the three trustlines in one signature, Circle's faucet for the USDC |
+| `/stellar/agUSD` | deposit USDC, mint agUSD, queue a withdrawal |
+| `/stellar/sagUSD` | stake, the share price and its history, request an unstake |
+| `/stellar/swap` | agUSD against USDC through Soroswap or the SDEX |
+| `/stellar/portfolio` | holdings plus the two forms a position takes while it is leaving |
+| `/stellar/bridge` | the USDC leg across chains, through the CCTP adapter |
+
+Every write is a transaction signed in the visitor's own wallet. There is no
+custodial step and no server side key: the pages build the invocation, the wallet
+signs it, and the result is a transaction on testnet under the visitor's account,
+not ours. The portfolio page counts a queued withdrawal and a pending unstake as
+holdings, because the agUSD is burned the moment either is requested and the claim
+on it lives in the contract until it is collected.
+
+## Deliverable 3, the indexer
+
+The indexer follows the contract events on the ledger and serves them. Two public
+endpoints, no key:
+
+| Endpoint | What it serves |
+|---|---|
+| [`/api/events`](https://app.agama.finance/api/events) | the event stream, per contract, with the ledger cursor it has reached |
+| [`/api/nav`](https://app.agama.finance/api/nav) | the sagUSD share price history that feeds the chart, and the live figures |
+
+What makes it evidence rather than a feature is that its numbers can be contradicted
+by the chain, and are not. Four reads taken together on 19 October 2026, three of them
+straight off the ledger:
+
+```
+curl -s https://app.agama.finance/api/nav
+  live.sharePrice  16038750
+  live.nav       5451280353
+
+stellar contract invoke --id CBOHG5YG... --network testnet -- exchange_rate
+  "16038750"
+
+stellar contract invoke --id CBOHG5YG... --network testnet \
+  -- get_asset_amounts_per_shares --vault_shares 10000000
+  ["16038750"]
+
+stellar contract invoke --id CBOHG5YG... --network testnet -- fetch_total_managed_funds
+  total_amount "5451280353"
+```
+
+The share price the indexer serves, the scalar `exchange_rate` returns, and the figure
+DeFindex's own entry point returns for one share are one number. The NAV the indexer
+serves and the total `fetch_total_managed_funds` reports are one number. The dApp
+prints the first of them as `1.6038750` at the top of
+[app.agama.finance/stellar](https://app.agama.finance/stellar), which is where
+deliverables 2 and 3 meet: the page is showing the ledger, through the indexer, and
+either of the other two reads would contradict it if it were not.
+
+These figures move. A reader running the same four commands later gets a different
+number four times rather than this one four times, which is the point: none of it is
+typed in by hand.
 
 
 ## Bytecode provenance
