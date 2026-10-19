@@ -187,7 +187,10 @@ assuming. That matters going forward as much as backward: the deploy scripts
 send the upper path, so the next contract deployed will be the optimised one,
 and a check wired to a single file would have started failing then instead.
 
-For a period this check compared only the CLI's copy and reported all seven live
-contracts as no longer rebuilding, with no source change behind it. Three
-explanations were published for that and all three were wrong. What settled it
-was finding the deployed bytes on disk and rebuilding them from a clean tree.
+The check is not vacuous, and that is worth demonstrating rather than claiming.
+Change a constant the contracts actually use, `DAY_LEDGERS` from 17,280 to
+17,281, and it reports `vault differs and nothing declares it (section 10)`.
+Restore the source and it passes again. A constant nothing reads changes no
+bytecode, and the check correctly says so. An earlier revision compared the
+CLI's copy rather than the artefact the ledger holds, which is why this one
+names the artefact it matched instead of assuming which was deployed.
