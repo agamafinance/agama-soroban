@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy one on-chain vault per curated credit vault (3 Qiro + 3 Tenka).
+# Deploy one on-chain vault per curated credit vault (3 Qiro + 3 ABF partner).
 # Each is an instance of the `staking` contract taking USDC as the deposit
 # asset, with its own share token, NAV and cooldown. Merges the resulting
 # contract IDs into deployments/testnet.json under "creditVaults".

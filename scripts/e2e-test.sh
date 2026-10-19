@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # End-to-end test of the Agama Stellar POC against the LIVE testnet,
-# using the REAL Circle USDC (no mint at will — small amounts, recycled).
+# using the REAL Circle USDC (no mint at will: small amounts, recycled).
 #
 # Needs the admin account (agama-poc) to hold >= 10 USDC. Get some at
-# https://faucet.circle.com (USDC / Stellar Testnet) — the admin trustline
+# https://faucet.circle.com (USDC / Stellar Testnet): the admin trustline
 # already exists.
 #
 # Covers, with assertions:
@@ -91,7 +91,7 @@ CLAIMED=$(num "$(inv $SAG claim --from $ADMIN)")
 assert_gt "claim after cooldown: payout > principal (yield!)" "$CLAIMED" "30000000"
 
 echo ""
-echo "== CREDIT VAULTS (3 Qiro + 3 Tenka): 1 USDC each, real USDC =="
+echo "== CREDIT VAULTS (3 Qiro + 3 ABF): 1 USDC each, real USDC =="
 for kv in $VAULTS; do
   slug="${kv%%=*}"; VID="${kv#*=}"
   echo "-- $slug --"

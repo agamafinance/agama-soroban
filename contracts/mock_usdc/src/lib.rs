@@ -1,5 +1,5 @@
 #![no_std]
-//! Mock USDC — a SEP-41 token with an open faucet, used as the base asset of the
+//! Mock USDC, a SEP-41 token with an open faucet, used as the base asset of the
 //! Agama Stellar POC. Anyone can call `faucet` to receive test USDC (capped per call).
 
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String};

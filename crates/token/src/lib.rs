@@ -1,7 +1,7 @@
 #![no_std]
 //! Reusable SEP-41 fungible-token logic shared by the Agama Stellar POC contracts.
 //!
-//! This is NOT a contract itself — it is a plain library crate that exposes storage
+//! This is NOT a contract itself: it is a plain library crate that exposes storage
 //! helpers and high-level token operations. Each token contract (`mock_usdc`, `agusd`)
 //! and the `staking` vault (for its `sagUSD` share token) embeds this module and
 //! delegates the standard SEP-41 entrypoints to it.
@@ -242,7 +242,7 @@ pub fn burn_from(e: &Env, spender: Address, from: Address, amount: i128) {
     burn_unchecked(e, &from, amount);
 }
 
-/// Burn without an auth check — for callers in the same contract frame that have
+/// Burn without an auth check: for callers in the same contract frame that have
 /// already authorized the enclosing invocation (e.g. agUSD `redeem`, vault unstake).
 pub fn burn_unchecked(e: &Env, from: &Address, amount: i128) {
     check_nonneg(e, amount);

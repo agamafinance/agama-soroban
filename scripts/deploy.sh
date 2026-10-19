@@ -10,7 +10,7 @@ NET=testnet
 SRC=agama-poc
 WASM=target/wasm32v1-none/release
 DEC=7
-COOLDOWN=60 # seconds — short for the demo
+COOLDOWN=60 # seconds: short for the demo
 
 ADMIN=$(stellar keys address agama-poc)
 TREASURY=$(stellar keys address agama-treasury)
@@ -37,7 +37,7 @@ inv "$AGUSD" initialize --admin "$ADMIN" --usdc "$USDC" --treasury "$TREASURY" \
 inv "$STAKING" initialize --admin "$ADMIN" --agusd "$AGUSD" --cooldown_seconds "$COOLDOWN" \
   --decimal "$DEC" --name "Staked agUSD" --symbol "sagUSD"
 
-echo "==> curated credit-vault allocations (UI display) — Qiro + Tenka"
+echo "==> curated credit-vault allocations (UI display): Qiro + ABF partner"
 inv "$STAKING" set_allocations --allocations \
   '[{"name":"Payment Financing Vault","target_bps":2500,"apy_bps":1400},{"name":"Private Credit Vault","target_bps":1000,"apy_bps":1300},{"name":"Institutional Credit Vault","target_bps":1500,"apy_bps":1200},{"name":"Flagship Vault","target_bps":2500,"apy_bps":850},{"name":"High Yield Vault","target_bps":1000,"apy_bps":1750},{"name":"DealVaults","target_bps":1500,"apy_bps":1100}]'
 

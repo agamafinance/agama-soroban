@@ -536,7 +536,7 @@ fn the_global_pool_cap_tightens_a_generous_registry_entry() {
     f.engine.register_pool(
         &f.admin,
         &pool_d,
-        &symbol_short!("TENKA"),
+        &symbol_short!("ABF"),
         &symbol_short!("KY"),
         &10_000u32,
     );
@@ -609,7 +609,7 @@ fn allocation_beyond_available_reserves_is_rejected() {
     f.engine.register_pool(
         &f.admin,
         &pool_d,
-        &symbol_short!("TENKA"),
+        &symbol_short!("ABF"),
         &symbol_short!("KY"),
         &10_000u32,
     );
