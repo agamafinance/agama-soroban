@@ -66,6 +66,14 @@ Account [`GAWTA6O5...L5QGSTN5G`](https://stellar.expert/explorer/testnet/account
 
 The account deposited 20 USDC and ended holding more than it started with, the difference being the yield the share price delivered. The run also reconciles what exists of each token against what backs it, through Horizon rather than through the contracts' own counters.
 
+One run proves the path works once. The same script was run again the same day,
+at 14:00 UTC, on an account it created for itself and which had never touched
+the protocol: [`GA7PSQMB...LZFZTG`](https://stellar.expert/explorer/testnet/account/GA7PSQMBN65WOJAA74ZPJYWXCDKRQVXQC7NBJHCCKSWUGSUDE7LZFZTG),
+same twenty one assertions, none failed, every transaction on the account
+successful. Nothing is carried between the two: a reviewer running
+`bash scripts/e2e-generation3.sh` gets a third account and a third set of
+transactions, which is the point of the script creating its own.
+
 
 ## Deliverable 2, the dApp
 
