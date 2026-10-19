@@ -5,15 +5,15 @@ Every claim below is a command anyone can run or a transaction anyone can open.
 Generated 2026-10-19. Network: Stellar testnet.
 
 Tranche 1 is three deliverables. Deliverable 1, the core Soroban contracts, is
-proven in the four sections that follow. Deliverable 2, the dApp, and deliverable 3,
-the indexer, each have their own section further down, with the same rule: a URL to
+proven in the three sections that follow. Deliverable 2, the dApp, and deliverable 3,
+the indexer, each have their own section further down, under the same rule: a URL to
 open or a command to run, not a description.
 
 ## Deliverable 1, the four completion criteria
 
 | Criterion | How to check it | Result |
 |---|---|---|
-| contracts deployed on testnet, transactions publicly verifiable | `bash scripts/check-deployment-record.sh --wasm` | see **Bytecode provenance** below |
+| contracts deployed on testnet, transactions publicly verifiable | `bash scripts/check-deployment-record.sh`, then open any address below | **45 passed, 0 failed**, and every address below answers on testnet. The stricter pass, `--wasm`, rebuilds and compares: see **Bytecode provenance** |
 | the full deposit / mint / stake / unstake / redeem flow end to end | `bash scripts/e2e-generation3.sh` | **21 passed, 0 failed** |
 | sagUSD exchange rate readable through DeFindex assets-per-share | asserted inside the same run, `get_asset_amounts_per_shares` against `exchange_rate` | **PASS**, both return the same figure |
 | unit test suite passing on all core functions | `cargo test --workspace` | **227 passed, 0 failed**, 11 suites |
@@ -34,11 +34,12 @@ Four further checks the repository carries, all green:
 | Vault Contract | [`CCVNCXPJ...PZTTJF`](https://stellar.expert/explorer/testnet/contract/CCVNCXPJXCA5GKJKNUNZRMJEEWYL74ASYYTL2DULPO5TZDGSHUPZTTJF) | USDC deposits, reserve floor, FIFO withdrawal queue |
 | sagUSD Staking | [`CBOHG5YG...4CACV3`](https://stellar.expert/explorer/testnet/contract/CBOHG5YGAE7ORFDE5GIUN6MYYSXMHYWGLZTH3Y563HZCBBWFVQ4CACV3) | share price, yield, unstake cooldown |
 | agUSD (SAC) | [`CADD22PH...AHH33R`](https://stellar.expert/explorer/testnet/contract/CADD22PHOXWHYVCQ3K5DWIHPUNA5USTHBPOCBE2KDCYNUEBUGFAHH33R) | the dollar, as a classic Stellar asset |
+| sagUSD (SAC) | [`CCQG6FDE...M7NBD5`](https://stellar.expert/explorer/testnet/contract/CCQG6FDEYA52IVWLXQ2IFZ56UTNKKBLOADGG5BASXNLTX53SBSM7NBD5) | the share, as a classic Stellar asset, quotable on the SDEX |
 | Allocation Engine | [`CBDVZPMB...ZE6FFD`](https://stellar.expert/explorer/testnet/contract/CBDVZPMBUQQ6OML3WTT4TP6QIOJDRC4BWYXR7UZQAAZG2LETAVZE6FFD) | pool routing and caps |
 | Oracle Adapter | [`CAUOHPPN...TWIQUS`](https://stellar.expert/explorer/testnet/contract/CAUOHPPNHUIYQI3KIVPLP75CGWKFBGSXK3RW75UO52PKY3YKQRTWIQUS) | multi source NAV, staleness and deviation guards |
 | CCTP Adapter | [`CDSO4GJR...WUWFML`](https://stellar.expert/explorer/testnet/contract/CDSO4GJRY7BFVMQ4PYP3ISVOFPQLPA3C7ZFT5HQOUDM3VXTGOUWUWFML) | cross chain USDC leg |
-| Private credit adapter | [`CDNWXGSS...WLP3VE`](https://stellar.expert/explorer/testnet/contract/CDNWXGSSP3BOAIKIYTGDHST2BBSZNWIW6RMDQERM3HOQ24EO43WLP3VE) |  |
-| Etherfuse adapter | [`CCXO2ZIM...KM7BXN`](https://stellar.expert/explorer/testnet/contract/CCXO2ZIMK7KZMMUBE24KOLWDJHVXQKXDNEP4QH7N5ZK5U6ESCWKM7BXN) |  |
+| Private credit adapter | [`CDNWXGSS...WLP3VE`](https://stellar.expert/explorer/testnet/contract/CDNWXGSSP3BOAIKIYTGDHST2BBSZNWIW6RMDQERM3HOQ24EO43WLP3VE) | an off-chain originator behind allocate, deallocate, get_exposure |
+| Etherfuse adapter | [`CCXO2ZIM...KM7BXN`](https://stellar.expert/explorer/testnet/contract/CCXO2ZIMK7KZMMUBE24KOLWDJHVXQKXDNEP4QH7N5ZK5U6ESCWKM7BXN) | a tokenized government bond behind the same three calls |
 | USDC (Circle SAC) | [`CBIELTK6...XQDAMA`](https://stellar.expert/explorer/testnet/contract/CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA) | the real testnet USDC |
 
 ## One run, one account, the whole journey
