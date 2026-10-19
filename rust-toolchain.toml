@@ -1,16 +1,18 @@
-# Pinned so the repository's central claim stays true over time.
+# Pinned to the compiler that produced what is on the ledger, not to the newest.
 #
-# Every deployed contract is meant to be byte for byte the source in this tree,
-# and scripts/check-deployment-record.sh --wasm is what proves it. That proof
-# rebuilds the source and compares the hash, so it holds only while the compiler
-# that produced the deployed bytecode is the compiler that runs here. Without a
-# pin the toolchain follows stable, and the claim decays silently at the next
-# rustc release: the source is untouched, the hash moves, and the check fails on
-# contracts nobody edited. That is exactly what happened between the 14 September
-# and 12 October deployments and rustc 1.99.1 on 13 October.
+# Every deployed contract carries its build stamp in a contractmetav0 section,
+# and every one of them says rustc 1.98.1. Read it yourself with
+# `stellar contract fetch --id <address> --network testnet` and look for rsver.
+# Pinning anything else would mean this tree could not even in principle rebuild
+# what is deployed, which is the claim scripts/check-deployment-record.sh --wasm
+# exists to test.
+#
+# This file was briefly pinned to 1.99.1 on the theory that an unpinned stable
+# had drifted past the deployments. The ledger says that was wrong: the stamp is
+# 1.98.1 and pinning 1.99.1 only moved the rebuild further away.
 #
 # Changing this version means rebuilding and redeploying, not editing the number.
 [toolchain]
-channel = "1.99.1"
+channel = "1.98.1"
 targets = ["wasm32v1-none"]
 profile = "minimal"

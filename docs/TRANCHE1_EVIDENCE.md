@@ -148,38 +148,58 @@ typed in by hand.
 
 The repository compares every deployed contract against a rebuild of this tree,
 with `bash scripts/check-deployment-record.sh --wasm`. 70 of its 77 assertions pass.
-Seven do not, and the reason is worth stating plainly rather than leaving a reviewer
-to find it.
+Seven do not. What follows is what the deployed objects say about themselves, read
+off the ledger, rather than an inference about them.
 
-No contract source has changed since any of these contracts was deployed, and neither
-has `Cargo.toml` or `Cargo.lock`. `git log` shows it: the last change under `contracts/`,
-`adapters/` or `crates/` predates the deployment record's last update. What changed is
-the compiler. The repository carried no toolchain pin, so the build followed Rust stable,
-these contracts were deployed between 14 September and 12 October each with the stable
-of that day, and rustc moved to 1.99.1 on 13 October. The same source now compiles to
-different bytecode.
+Every Soroban contract carries a build stamp in a `contractmetav0` section, and
+`stellar contract fetch --id <address> --network testnet` brings it back, so none
+of this has to be taken on trust.
+
+| | On the ledger | This tree today |
+|---|---|---|
+| rustc | 1.98.1 | 1.98.1, pinned in `rust-toolchain.toml` |
+| soroban-sdk | 23.5.3, commit `d3e1ab24` | 23.5.3, commit `d3e1ab24` |
+| Stellar CLI | no stamp at all | 28.1.0 |
+
+The compiler matches, and the SDK matches down to its commit hash. The source
+matches too: the only commit to touch `contracts/`, `adapters/` or `crates/` since
+the oldest of these deployments is `c15cfa3`, which added the CCTP adapter as a
+new crate and modified no existing one.
+
+What does not match is the Stellar CLI that drove the build. Every object this
+tree builds today carries a second `contractmetav0` section stamped
+`cliver 28.1.0`. The deployed objects carry no such section, which is what a build
+driven by an earlier CLI looks like. The CLI on the build machine was upgraded
+after these deployments, and the code sections moved with it.
 
 | Contract | Deployed | On the ledger | Rebuilt today |
 |---|---|---|---|
-| `vault` | 2026-10-05 | `916a02bcfc9946a8` | `8fbd0e1d57428191` |
-| `staking` | 2026-10-06 | `b9e393a95b93ad9b` | `2142a00df3f4dd33` |
-| `allocationEngine` | 2026-10-05 | `d22be492107c0dfd` | `606c8783e223f82c` |
-| `oracleAdapter` | 2026-09-14 | `99fb5d13e208e8fd` | `ad100721ffeb4458` |
-| `cctpAdapter` | 2026-10-12 | `b2c24917a7cd6a18` | `cdfa63ff3a327d82` |
-| `private-credit` | 2026-10-05 | `d41e8b8fb6dc1ed3` | `c4d8a4a4f32a1f40` |
-| `etherfuse` | 2026-10-09 | `0797838a5e71934b` | `7bbbd8704080ce70` |
+| `vault` | 2026-10-05 | `916a02bcfc9946a8` | `7ed4b8796968bffd` |
+| `staking` | 2026-10-06 | `b9e393a95b93ad9b` | `e6ec1aa15c2796ae` |
+| `allocationEngine` | 2026-10-05 | `d22be492107c0dfd` | `95cd40c5b2abc8b0` |
+| `oracleAdapter` | 2026-09-14 | `99fb5d13e208e8fd` | `dc8de91b20a784d4` |
+| `cctpAdapter` | 2026-10-12 | `b2c24917a7cd6a18` | `8871af05110814bd` |
+| `private-credit` | 2026-10-05 | `d41e8b8fb6dc1ed3` | `729f5ed25232ad65` |
+| `etherfuse` | 2026-10-09 | `0797838a5e71934b` | `26afa013412cddd1` |
 
-Tested against rustc 1.99.0 as well, dated 28 September: a third hash, matching neither.
-The toolchain is pinned from now on, in `rust-toolchain.toml`, so a rebuild of this tree
-is reproducible from here forward. The gap above cannot be closed by redeploying: agUSD
-and sagUSD are classic Stellar assets whose Stellar Asset Contract admin was handed to
-the Vault and the staking contract, and whose issuer accounts were then locked by setting
-the master key weight to zero. Neither contract exposes a way to hand that admin on, which
-is deliberate and is what guarantees the supply has one minter. A replacement Vault would
-therefore be a replacement agUSD, abandoning the asset that is in circulation, quoted on
-the SDEX and held in a Soroswap pool. The correct trade is to keep the asset and state the
-provenance, which is what this section does.
+A correction worth making in the open: an earlier version of this section blamed
+an unpinned rustc that had drifted to 1.99.1 after the deployments. That was a
+guess, and the ledger contradicts it. Pinning 1.99.1 had in fact moved the rebuild
+further from what is deployed, and the pin is now 1.98.1, which is what the stamps
+say. Anyone can check the claim in one command, which is why it had to be right
+rather than plausible.
 
-What remains verifiable without the rebuild: the recorded wasm hash of every superseded
-generation is what the ledger holds, which the same script checks and passes, 18 for 18.
+The gap cannot be closed by redeploying, and that is a consequence of guarantees
+made on purpose. No contract in this repository exposes an upgrade entry point, so
+the bytecode at an address is final. agUSD and sagUSD are classic Stellar assets
+whose Stellar Asset Contract admin was handed to the Vault and to the staking
+contract, and whose issuer accounts were then locked by setting the master key
+weight to zero. Neither contract can hand that admin on, which is what guarantees
+the supply has exactly one minter. A replacement Vault would therefore be a
+replacement agUSD, abandoning the asset that is in circulation, quoted on the SDEX
+and held in a Soroswap pool. Keeping the asset and recording the provenance is the
+better trade, and it is what this section does.
 
+What remains verifiable without the rebuild: the recorded wasm hash of every
+superseded generation is what the ledger holds, which the same script checks and
+passes, 18 for 18.
