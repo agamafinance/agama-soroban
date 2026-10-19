@@ -165,17 +165,29 @@ superseded generations still hold the hashes the record claims for them.
 
 ### The one thing worth knowing if you run this yourself
 
-`stellar contract build` writes two files per contract. The compiler's artefact
-lands in `target/wasm32v1-none/release/deps/<name>.wasm`, and the CLI then writes
-a second, post-processed copy one directory up: it appends a `contractmetav0`
-section carrying its own version and shrinks the module. The two have different
-hashes. **The bytes on the ledger are the first one.**
+`stellar contract build` leaves two artefacts per contract, and they do not have
+the same hash:
 
-For a period this check compared the second, and reported all seven contracts as
-no longer rebuilding, with no source change behind it. The tell was in the
-deployed object the whole time: fetch any of these contracts and look for a
-`cliver` stamp. There is none, because the CLI never touched them. There is an
-`rsver`, and it says 1.98.1, which is what the pin now holds the toolchain to.
+```
+target/wasm32v1-none/release/deps/<name>.wasm    rustc's own output
+target/wasm32v1-none/release/<name>.wasm         the CLI's, optimised and stamped
+```
 
-The check reads the compiler's artefact now, which is the file the deploy scripts
-send, and the comparison is exact.
+The CLI's copy is smaller, 12,917 bytes of code against 17,580 on the Vault,
+because it drops code the compiler emitted, and it carries a second
+`contractmetav0` section with the CLI version in it. The contract spec is
+identical in both, so the interface is the same either way.
+
+Everything deployed so far is the compiler's artefact. The tell is in the
+deployed object: fetch any of these contracts and there is no `cliver` stamp on
+it, because the CLI never touched it. There is an `rsver`, and it says 1.98.1.
+
+The check accepts either artefact and names the one that matched, rather than
+assuming. That matters going forward as much as backward: the deploy scripts
+send the upper path, so the next contract deployed will be the optimised one,
+and a check wired to a single file would have started failing then instead.
+
+For a period this check compared only the CLI's copy and reported all seven live
+contracts as no longer rebuilding, with no source change behind it. Three
+explanations were published for that and all three were wrong. What settled it
+was finding the deployed bytes on disk and rebuilding them from a clean tree.

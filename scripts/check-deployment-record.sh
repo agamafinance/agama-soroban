@@ -256,24 +256,40 @@ for e in d.get('sourceAheadOfLedger', []):
   fi
   TMPW=$(mktemp -d); trap 'rm -rf "$TMPW"' EXIT
   stellar contract build >/dev/null 2>&1 || bad "the release build failed, so nothing was compared"
-  # Compare the compiler's own output, which is what gets deployed.
+  # `stellar contract build` leaves two artefacts per contract, and either one
+  # can legitimately be what is on the ledger.
   #
-  # `stellar contract build` writes rustc's artefact to
-  # target/wasm32v1-none/release/deps/<name>.wasm and then writes a second,
-  # post-processed copy one directory up: the CLI appends a contractmetav0
-  # section carrying its own version and shrinks the module. Those two files
-  # have different hashes, and the one on the ledger is the first.
+  #   target/wasm32v1-none/release/deps/<name>.wasm   rustc's own output
+  #   target/wasm32v1-none/release/<name>.wasm        the CLI's, optimised and
+  #                                                   stamped with cliver
   #
-  # Comparing the second is what made all seven live contracts look as though
-  # they no longer rebuilt, for weeks, with no source change behind it. They
-  # rebuild exactly. The bytes on chain carry no cliver stamp, which is the
-  # tell: read it with `stellar contract fetch` and look for yourself.
-  BUILT=target/wasm32v1-none/release/deps
+  # The CLI did not always do that second step. Everything deployed so far is
+  # the compiler's artefact, which is why none of it carries a cliver stamp;
+  # the deploy scripts send the upper path, so anything deployed from here on
+  # will be the optimised one. Checking only one of the two is how seven live
+  # contracts came to look as though they no longer rebuilt, for weeks, with no
+  # source change behind it.
+  #
+  # So both are accepted, and the one that matched is named, because a silent
+  # switch between them is exactly the thing this check exists to notice.
+  RAW=target/wasm32v1-none/release/deps
+  OPT=target/wasm32v1-none/release
+  artefact_of() {   # artefact_of <wasm name> <chain hash> -> prints path, or nothing
+    local w="$1" want="$2" h
+    h=$(shasum -a 256 "$RAW/$w" 2>/dev/null | cut -d' ' -f1)
+    if [ "$h" = "$want" ]; then echo "$RAW/$w"; return; fi
+    h=$(shasum -a 256 "$OPT/$w" 2>/dev/null | cut -d' ' -f1)
+    if [ "$h" = "$want" ]; then echo "$OPT/$w"; return; fi
+  }
   while IFS='|' read -r name addr wasm; do
     [ -n "$addr" ] || continue
     chain=$(stellar contract fetch --id "$addr" --network testnet 2>/dev/null | shasum -a 256 | cut -d' ' -f1)
-    local_hash=$(shasum -a 256 "$BUILT/$wasm" 2>/dev/null | cut -d' ' -f1)
-    if [ -n "$chain" ] && [ "$chain" = "$local_hash" ]; then
+    MATCHED=$(artefact_of "$wasm" "$chain")
+    # Report the compiler's artefact when neither matched: it is the one a
+    # reader is about to compare by hand, and an empty hash in the message
+    # tells them nothing.
+    local_hash=$(shasum -a 256 "$RAW/$wasm" 2>/dev/null | cut -d' ' -f1)
+    if [ -n "$chain" ] && [ -n "$MATCHED" ]; then
       # A contract that matches must not be sitting in the declared list, or the
       # declaration has outlived the divergence and is now a false statement of
       # its own.
@@ -282,7 +298,10 @@ for e in d.get('sourceAheadOfLedger', []):
       elif echo "$PENDING" | grep -qx "$name"; then
         bad "$name matches the chain but is still declared as pending redeployment"
       else
-        ok "$name"
+        case "$MATCHED" in
+          */deps/*) ok "$name, the compiler's artefact" ;;
+          *)        ok "$name, the optimised artefact" ;;
+        esac
       fi
     else
       # Locate the divergence before judging it. Soroban embeds doc comments in
@@ -292,7 +311,7 @@ for e in d.get('sourceAheadOfLedger', []):
       # changed code section is not, whatever it says, so the code section is
       # checked separately and a declaration cannot excuse it.
       stellar contract fetch --id "$addr" --network testnet > "$TMPW/$name.chain.wasm" 2>/dev/null || true
-      DIFFS=$(python3 - "$TMPW/$name.chain.wasm" "$BUILT/$wasm" <<'PY2'
+      DIFFS=$(python3 - "$TMPW/$name.chain.wasm" "$RAW/$wasm" <<'PY2'
 import subprocess, sys, os
 here = os.path.dirname(os.path.abspath(sys.argv[0])) if False else 'scripts'
 def secs(p):

@@ -47,7 +47,11 @@ while IFS=$'\t' read -r sev pkg; do
   # Match the crate name however it is spelled in a symbol or a panic string.
   pat=$(echo "$pkg" | sed 's/[-_]/[-_]/g')
   hits=0; searched=0
-  for w in target/wasm32v1-none/release/*.wasm; do
+  # Both artefacts, because the CLI's optimiser drops code the compiler emitted
+  # and the ledger holds the compiler's version for everything deployed so far.
+  # Searching only the optimised copy would mean searching something nobody
+  # deployed.
+  for w in target/wasm32v1-none/release/*.wasm target/wasm32v1-none/release/deps/*.wasm; do
     case "$w" in *mock_usdc*) continue;; esac
     searched=$((searched + 1))
     n=$(strings "$w" 2>/dev/null | grep -ciE "$pat" || true)
