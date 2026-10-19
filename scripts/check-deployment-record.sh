@@ -256,10 +256,23 @@ for e in d.get('sourceAheadOfLedger', []):
   fi
   TMPW=$(mktemp -d); trap 'rm -rf "$TMPW"' EXIT
   stellar contract build >/dev/null 2>&1 || bad "the release build failed, so nothing was compared"
+  # Compare the compiler's own output, which is what gets deployed.
+  #
+  # `stellar contract build` writes rustc's artefact to
+  # target/wasm32v1-none/release/deps/<name>.wasm and then writes a second,
+  # post-processed copy one directory up: the CLI appends a contractmetav0
+  # section carrying its own version and shrinks the module. Those two files
+  # have different hashes, and the one on the ledger is the first.
+  #
+  # Comparing the second is what made all seven live contracts look as though
+  # they no longer rebuilt, for weeks, with no source change behind it. They
+  # rebuild exactly. The bytes on chain carry no cliver stamp, which is the
+  # tell: read it with `stellar contract fetch` and look for yourself.
+  BUILT=target/wasm32v1-none/release/deps
   while IFS='|' read -r name addr wasm; do
     [ -n "$addr" ] || continue
     chain=$(stellar contract fetch --id "$addr" --network testnet 2>/dev/null | shasum -a 256 | cut -d' ' -f1)
-    local_hash=$(shasum -a 256 "target/wasm32v1-none/release/$wasm" 2>/dev/null | cut -d' ' -f1)
+    local_hash=$(shasum -a 256 "$BUILT/$wasm" 2>/dev/null | cut -d' ' -f1)
     if [ -n "$chain" ] && [ "$chain" = "$local_hash" ]; then
       # A contract that matches must not be sitting in the declared list, or the
       # declaration has outlived the divergence and is now a false statement of
@@ -279,7 +292,7 @@ for e in d.get('sourceAheadOfLedger', []):
       # changed code section is not, whatever it says, so the code section is
       # checked separately and a declaration cannot excuse it.
       stellar contract fetch --id "$addr" --network testnet > "$TMPW/$name.chain.wasm" 2>/dev/null || true
-      DIFFS=$(python3 - "$TMPW/$name.chain.wasm" "target/wasm32v1-none/release/$wasm" <<'PY2'
+      DIFFS=$(python3 - "$TMPW/$name.chain.wasm" "$BUILT/$wasm" <<'PY2'
 import subprocess, sys, os
 here = os.path.dirname(os.path.abspath(sys.argv[0])) if False else 'scripts'
 def secs(p):

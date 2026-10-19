@@ -13,7 +13,7 @@ open or a command to run, not a description.
 
 | Criterion | How to check it | Result |
 |---|---|---|
-| contracts deployed on testnet, transactions publicly verifiable | `bash scripts/check-deployment-record.sh`, then open any address below | **45 passed, 0 failed**, and every address below answers on testnet. The stricter pass, `--wasm`, rebuilds and compares: see **Bytecode provenance** |
+| contracts deployed on testnet, transactions publicly verifiable | `bash scripts/check-deployment-record.sh --wasm` | **77 passed, 0 failed**. Every deployed contract rebuilds from this tree byte for byte |
 | the full deposit / mint / stake / unstake / redeem flow end to end | `bash scripts/e2e-generation3.sh` | **21 passed, 0 failed** |
 | sagUSD exchange rate readable through DeFindex assets-per-share | asserted inside the same run, `get_asset_amounts_per_shares` against `exchange_rate` | **PASS**, both return the same figure |
 | unit test suite passing on all core functions | `cargo test --workspace` | **227 passed, 0 failed**, 11 suites |
@@ -146,78 +146,36 @@ typed in by hand.
 
 ## Bytecode provenance
 
-The repository compares every deployed contract against a rebuild of this tree,
-with `bash scripts/check-deployment-record.sh --wasm`. 70 of its 77 assertions
-pass. Seven do not: the seven live contracts do not rebuild to the bytecode that
-is on the ledger. This section is the record of what was measured, what was
-eliminated, and what is still unexplained, because a reviewer is better served by
-that than by a tidy cause.
-
-### What matches
-
-Every Soroban contract carries a build stamp, and `stellar contract fetch --id
-<address> --network testnet` brings it back, so none of this has to be taken on
-trust.
+`bash scripts/check-deployment-record.sh --wasm` rebuilds this tree and compares
+every deployed contract against the ledger. **77 assertions, none failing.** All
+seven live contracts are byte for byte what this source compiles to, and the
+superseded generations still hold the hashes the record claims for them.
 
 | | On the ledger | This tree |
 |---|---|---|
-| rustc | 1.98.1, all seven | 1.98.1, pinned in `rust-toolchain.toml` |
+| rustc | 1.98.1 | 1.98.1, pinned in `rust-toolchain.toml` |
 | soroban-sdk | 23.5.3, commit `d3e1ab24` | 23.5.3, commit `d3e1ab24` |
-| exported entry points | 49 on the Vault, 30 on staking | the same names, in the same order |
-| imported host functions | 23 on the Vault | the same 23, in the same order |
+| `vault` | `916a02bcfc9946a8` | `916a02bcfc9946a8` |
+| `staking` | `b9e393a95b93ad9b` | `b9e393a95b93ad9b` |
+| `allocationEngine` | `d22be492107c0dfd` | `d22be492107c0dfd` |
+| `oracleAdapter` | `99fb5d13e208e8fd` | `99fb5d13e208e8fd` |
+| `cctpAdapter` | `b2c24917a7cd6a18` | `b2c24917a7cd6a18` |
+| `private-credit` | `d41e8b8fb6dc1ed3` | `d41e8b8fb6dc1ed3` |
+| `etherfuse` | `0797838a5e71934b` | `0797838a5e71934b` |
 
-The source matches too. The only commit to touch `contracts/`, `adapters/` or
-`crates/` since the oldest of these deployments is `c15cfa3`, which added the CCTP
-adapter as a new crate. Building the tree as it stood immediately before that
-commit produces hashes identical to building it today, so that commit changed
-nothing for the other six contracts.
+### The one thing worth knowing if you run this yourself
 
-The build is deterministic: two runs of `stellar contract build` on the same tree
-produce the same bytes, which `[profile.release]` is set up for with
-`codegen-units = 1` and `lto = true`.
+`stellar contract build` writes two files per contract. The compiler's artefact
+lands in `target/wasm32v1-none/release/deps/<name>.wasm`, and the CLI then writes
+a second, post-processed copy one directory up: it appends a `contractmetav0`
+section carrying its own version and shrinks the module. The two have different
+hashes. **The bytes on the ledger are the first one.**
 
-### What differs
+For a period this check compared the second, and reported all seven contracts as
+no longer rebuilding, with no source change behind it. The tell was in the
+deployed object the whole time: fetch any of these contracts and look for a
+`cliver` stamp. There is none, because the CLI never touched them. There is an
+`rsver`, and it says 1.98.1, which is what the pin now holds the toolchain to.
 
-The code section. On the Vault the ledger holds 17,580 bytes of code and this tree
-compiles 12,917, so the deployed object carries about 36% more code for an
-identical interface. The same gap, between 1.3 and 4.6 KB, is present on all seven.
-
-### What was eliminated, by experiment
-
-| Hypothesis | Result |
-|---|---|
-| a newer rustc drifted past the deployments | the stamp says 1.98.1; rebuilt under 1.99.1, 1.99.0 and 1.98.1, none matches |
-| a different soroban-sdk | identical, down to the SDK's own commit hash |
-| the Stellar CLI that drove the build | rebuilt under CLI 28.0.0 and 28.1.0, neither matches |
-| the source changed after deployment | the pre-`c15cfa3` tree builds to the same hashes as today's |
-| a non-deterministic build | two consecutive builds are byte identical |
-| a different optimisation profile | all 15 combinations of `opt-level` in z, s, 1, 2, 3 against `lto` in true, thin, false; the deployed size falls between two of them and equals none |
-
-### What this does and does not mean
-
-It is not known why the deployed bytecode is larger than anything this tree
-produces, and this file does not guess. An earlier version of this section did
-guess, blamed an unpinned compiler, and was wrong in a way one fetch from the
-ledger disproves. The honest statement is that the rebuild does not reproduce the
-deployment and the reason has not been found.
-
-What is still established about the deployed contracts, by checks that read the
-ledger rather than rebuild it:
-
-- every documented signature has the arity the ledger has, `check-doc-entry-points.sh`, 9 for 9
-- every state-changing entry point requires authorization, `check-authorization.sh`, 69 entry points
-- the advisories hold against the deployed bytecode, `check-advisories.sh`
-- the recorded hash of every superseded generation is what the ledger holds, 18 for 18
-- the whole user path works on the live contracts, twice over, on accounts the test creates for itself
-
-### Why it cannot be repaired
-
-No contract in this repository exposes an upgrade entry point, so the bytecode at
-an address is final. agUSD and sagUSD are classic Stellar assets whose Stellar
-Asset Contract admin was handed to the Vault and to the staking contract, and
-whose issuer accounts were then locked by setting the master key weight to zero.
-Neither contract can hand that admin on, which is what guarantees the supply has
-exactly one minter. A replacement Vault would therefore be a replacement agUSD,
-abandoning the asset that is in circulation, quoted on the SDEX and held in a
-Soroswap pool. The toolchain is pinned from here on, so the next deployment is
-reproducible by construction and this section should not need a successor.
+The check reads the compiler's artefact now, which is the file the deploy scripts
+send, and the comparison is exact.
