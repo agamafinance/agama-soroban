@@ -386,7 +386,7 @@ What re-proves each claim on the generation actually deployed:
 | The CCTP path is still wired to the right contracts | `bash scripts/e2e-cctp-wiring.sh`, 10 assertions, which read the three Circle contracts without spending anything |
 | USDC actually crosses, rather than the wiring merely existing | `EVM_KEY=... AMOUNT=1 bash scripts/e2e-cctp-transfer.sh`, 10 assertions, burning on Base Sepolia and asserting the Stellar balance moved. Needs a funded Base Sepolia account, so it is the one suite that cannot run from a clean checkout |
 | USDC leaves Stellar for the chain the yield is earned on | `AMOUNT=1 bash scripts/e2e-stellar-to-evm.sh`, 11 assertions, burning on Stellar towards Ethereum Sepolia and asserting the recipient was paid the attested amount. The direction the protocol needs: deposits land on Stellar and the credit book is on an EVM chain, so reserves have to leave before anything is earned. Asserts the message cannot be replayed afterwards |
-| Every deployed contract is the source in this tree | `bash scripts/check-deployment-record.sh --wasm`, 73 checks |
+| Every deployed contract is the source in this tree | `bash scripts/check-deployment-record.sh --wasm`, 77 checks |
 | The contracts still answer at all | `bash scripts/check-ttl.sh`, which is the one that catches a deployment quietly archiving itself |
 
 ### The Security Review, On-Chain
