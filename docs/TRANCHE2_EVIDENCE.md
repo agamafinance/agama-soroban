@@ -1,0 +1,112 @@
+# Tranche 2, Evidence
+
+Every claim below is a command anyone can run or a transaction anyone can open.
+
+Generated 2026-10-26. Network: Stellar testnet.
+
+Tranche 2 is three deliverables: the Allocation Engine with on-chain risk caps,
+the oracle pipeline for NAV and yield, and hardening for the audit. Each one
+is taken criterion by criterion, in the words the award was approved on.
+
+A note on what changed since Tranche 1, because it affects how to read this
+file. Nothing here was re-proven on a fixture. Where a criterion could only be
+met in a unit test, it says so and the gap was closed rather than argued; two
+of the criteria below have an on-chain proof that did not exist a week ago.
+
+## Deliverable 1, Allocation Engine with on-chain risk caps
+
+| Criterion | How to check it | Result |
+|---|---|---|
+| engine live on testnet with whitelisted pools | `pools()` on the Engine | **three adapters**, each with its own originator and jurisdiction: ETHERFUS/MX, QIRO/LU, ABF/JE |
+| allocations exceeding any cap rejected on-chain | `bash scripts/e2e-allocation-guards.sh` | **10 passed, 0 failed**: over the per-pool cap is `#407`, breaking the reserve floor is `#410` |
+| the other two caps, on the same Engine | `bash scripts/e2e-concentration-caps.sh` | **10 passed, 0 failed**: the originator cap is `#408`, the jurisdiction cap is `#409` |
+| current exposures readable via contract calls | `get_exposures()`, `get_exposure(pool)`, `caps()`, `reserve_floor_bps()` | pool by pool, and the caps as the ledger holds them: 4000 / 4500 / 5000 bps over a 2500 bps floor |
+| source code public throughout development | [the repository](https://github.com/agamafinance/agama-soroban) | Apache-2.0 from the first commit |
+
+**Why the second script exists.** The first suite reaches the per-pool cap and
+the reserve floor and stops there, and that is the shape of the live book
+rather than an oversight in the Engine. With one pool per originator and one
+per jurisdiction, the per-pool cap at 4000 bps always refuses before the
+originator cap at 4500 or the jurisdiction cap at 5000 can be reached. Those
+two limits were enforced in the contract and covered by unit tests
+(`allocation_is_rejected_when_it_breaches_the_originator_cap`, and the
+jurisdiction twin), and had never been seen to fire against the ledger.
+`e2e-concentration-caps.sh` narrows the cap under test below what one
+allocation charges, allocates into a pool nowhere near its own cap so the
+error that comes back is the one being tested, and restores the caps
+afterwards, asserting they are back even when it exits through a failure.
+
+## Deliverable 2, Oracle pipeline for NAV and yield
+
+| Criterion | How to check it | Result |
+|---|---|---|
+| NAV updates flowing from all three feed types | `get_nav(feed)` and `last_update(feed)` on the Oracle Adapter | all three inside their own windows on 26 October: USDC_USD 14 min into a 60 min window, PC_NAV 69 h into 168 h, EF_BOND 21 h into 48 h |
+| the windows and bounds are the ones approved | `deployments/testnet.json`, `oracleFeeds`, and the contract's own reads | USDC_USD 3600 s / 200 bps, PC_NAV 604800 s / 500 bps, EF_BOND 172800 s / no deviation bound |
+| stale reports revert with OracleStale | `cargo test --workspace` | `stale_read_errors_with_oracle_stale`, `get_nav_reads_the_oracle_and_propagates_staleness` |
+| out-of-bounds reports rejected | same | `out_of_bounds_deviation_fails_push_nav`, `out_of_bounds_deviation_emits_nav_rejected_on_submit_nav`, `the_deviation_bound_is_exact_to_the_stroop`, and on the ledger `NavOutOfBand` (513) and `TooSoon` (514) in `smoke-hardening.sh` |
+| a NAV cannot be moved by one key | `bash scripts/e2e-oracle-quorum.sh` | **11 passed, 0 failed** against a quorum of two: one reporter gets `Pending` and moves nothing, a repeat vote is `#518`, a second distinct reporter commits |
+| yield distribution driven by oracle data | `bash scripts/keeper-yield.sh` | **proven on chain on 26 October**: PC_NAV 10100000 to 10150500 through a quorum of two, 100 USDC of deployed capital, 500000 stroops distributed, share price 16320400 to 16321847, no share minted |
+| reconciled against what backs it | `bash scripts/e2e-generation3.sh`, section 8 | agUSD in circulation against its backing, and sagUSD against the tracked share count, both closing in the same run |
+
+**What drives what, exactly.** The Vault prices its book by reading PC_NAV
+through its own `get_nav`, and a stale feed makes that read revert rather than
+return a number. `keeper-yield.sh` reads the same way, so the keeper stops
+where the Vault stops, and computes `deployed capital x (PC_NAV now / PC_NAV at
+the last distribution - 1)`. The distribution itself still requires the agUSD
+to be transferred: an oracle that doubles overnight asks the strategist for
+agUSD they have to actually hold, which is what keeps a feed from minting
+value. The recorded NAV only advances when the distribution lands.
+
+Until 26 October the yield was delivered by `distribute-yield-loop.sh`, which
+hands over a constant and says so in its own header. It proved the plumbing and
+not this criterion, and it is kept for demos.
+
+## Deliverable 3, Hardening and audit readiness
+
+| Criterion | How to check it | Result |
+|---|---|---|
+| sustained multi-day testnet campaign without critical failures | the keeper logs, and the feeds' own `last_update` | the oracle keeper has run every ten minutes since 14 October: **903 passes, 11 with a failed push**, every one of them the public RPC not answering with a ledger, so nothing was submitted and the next pass carried it. The sagUSD market maker: **1740 quoting cycles, no error**. A third job extends the contracts' TTL every 72 hours, which is why every address in this file still answers |
+| agUSD/USDC swaps through the Stellar DEX | `bash scripts/e2e-generation3.sh`, section 6 | a Soroswap swap, executed in the run |
+| and path payments | same run, section 7 | the order book quoted through Horizon's strict-send paths, then a `path-payment-strict-send`, with the run asserting the fill honoured the quote it was taken at |
+| codebase frozen for the audit | `git rev-parse HEAD` | the tree the audit takes; an adversarial review of the whole repository found three critical, two high and four medium, every one fixed, every fix with a test that fails without it, and the fixes proven on chain by `smoke-hardening.sh`, 58 assertions |
+| handed over to OtterSec | the engagement | **open**: the firm is being engaged through the Soroban Audit Bank. This is the one line in this file that is not yet a command |
+
+## What backs every number above
+
+| Check | Command | Result |
+|---|---|---|
+| every deployed contract is the source in this tree | `bash scripts/check-deployment-record.sh --wasm` | 77 passed, 0 failed |
+| every state-changing entry point authorizes | `bash scripts/check-authorization.sh` | 69 entry points, 5 deliberately permissionless and argued one by one, 0 failures |
+| every documented signature matches the ledger | `bash scripts/check-doc-entry-points.sh` | 9 passed, 0 failed |
+| the contracts have not archived themselves | `bash scripts/check-ttl.sh` | 10 passed, 0 failed |
+| advisories against the deployed bytecode | `bash scripts/check-advisories.sh` | 2 passed, 0 failed |
+| the unit suite | `cargo test --workspace` | 227 passed, 0 failed, 11 suites |
+
+## The contracts this tranche is about
+
+| Contract | Address | What it does here |
+|---|---|---|
+| Allocation Engine | [`CBDVZPMB...ZE6FFD`](https://stellar.expert/explorer/testnet/contract/CBDVZPMBUQQ6OML3WTT4TP6QIOJDRC4BWYXR7UZQAAZG2LETAVZE6FFD) | routes capital, enforces the four limits |
+| Oracle Adapter | [`CAUOHPPN...TWIQUS`](https://stellar.expert/explorer/testnet/contract/CAUOHPPNHUIYQI3KIVPLP75CGWKFBGSXK3RW75UO52PKY3YKQRTWIQUS) | three feed types, staleness, deviation, quorum |
+| Vault | [`CCVNCXPJ...PZTTJF`](https://stellar.expert/explorer/testnet/contract/CCVNCXPJXCA5GKJKNUNZRMJEEWYL74ASYYTL2DULPO5TZDGSHUPZTTJF) | prices its book from PC_NAV, keeps its own floor |
+| sagUSD Staking | [`CBOHG5YG...4CACV3`](https://stellar.expert/explorer/testnet/contract/CBOHG5YGAE7ORFDE5GIUN6MYYSXMHYWGLZTH3Y563HZCBBWFVQ4CACV3) | where the yield lands, as a share price |
+| private credit adapter | [`CDNWXGSS...WLP3VE`](https://stellar.expert/explorer/testnet/contract/CDNWXGSSP3BOAIKIYTGDHST2BBSZNWIW6RMDQERM3HOQ24EO43WLP3VE) | QIRO, LU |
+| Etherfuse adapter | [`CCXO2ZIM...KM7BXN`](https://stellar.expert/explorer/testnet/contract/CCXO2ZIMK7KZMMUBE24KOLWDJHVXQKXDNEP4QH7N5ZK5U6ESCWKM7BXN) | ETHERFUS, MX |
+| cross chain adapter | [`CDSO4GJR...WUWFML`](https://stellar.expert/explorer/testnet/contract/CDSO4GJRY7BFVMQ4PYP3ISVOFPQLPA3C7ZFT5HQOUDM3VXTGOUWUWFML) | ABF, JE, `pool_kind` crosschn, settling on a 1 to 14 day window |
+
+Reproducing all of it from a clone, against testnet, with nothing to set up:
+
+```sh
+bash scripts/e2e-allocation-guards.sh      # 10, the per-pool cap and the floor
+bash scripts/e2e-concentration-caps.sh     # 10, the originator and jurisdiction caps
+bash scripts/e2e-oracle-quorum.sh          # 11, the quorum. Pause the oracle keeper first
+bash scripts/e2e-generation3.sh            # 21, the whole user path, Soroswap and the SDEX
+DRY=1 bash scripts/keeper-yield.sh         # what the feed says the book earned, without sending it
+cargo test --workspace                     # 227
+```
+
+One thing a reviewer should know before running the quorum suite: the feeds are
+live and a keeper reports to them every ten minutes, so an unpaused keeper will
+close the round under the script. That is what a live feed looks like, and it
+is why the script is the one place in this repository that asks you to stop
+something first.
