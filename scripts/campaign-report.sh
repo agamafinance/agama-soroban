@@ -7,10 +7,17 @@
 # number that matters is the one Horizon holds: every submit_nav the registered
 # reporters ever signed, with the day it landed on and whether it succeeded.
 #
-# This needs no key, no identity and nothing of ours. It reads the reporter set
-# out of deployments/testnet.json, asks Horizon for each account's whole
-# history, and counts. Where the local keeper logs happen to exist it prints
-# their counts too, clearly marked as ours, after the part anyone can check.
+# This needs no key, no identity and nothing of ours. It asks Horizon for the
+# history of the dedicated reporter account, the one that has never been used
+# for anything but reporting NAV, and counts. Where the local keeper logs
+# happen to exist it prints their counts too, clearly marked as ours, after
+# the part anyone can check.
+#
+# The reporter set has two keys and the other one is the deployment admin,
+# which has signed every deploy, every allocation and every test run this
+# project has ever made: more than twelve thousand operations, which Horizon
+# serves two hundred at a time. Scanning it takes minutes and proves nothing
+# the dedicated account does not prove faster, so it is behind ALL=1.
 #
 # The two counts do not match and are not meant to: the keeper runs on a timer
 # and submits only when a feed is near the end of its window, so most passes
@@ -23,12 +30,15 @@ cd "$(dirname "$0")/.."
 HORIZON=${HORIZON:-https://horizon-testnet.stellar.org}
 
 python3 - "$HORIZON" <<'PY'
-import base64, collections, json, sys, urllib.request
+import base64, collections, json, os, sys, urllib.request
 from datetime import datetime
 
 horizon = sys.argv[1]
 dep = json.load(open('deployments/testnet.json'))
 reporters = dep['oracleReporters']['addresses']
+if not os.environ.get('ALL'):
+    # the dedicated one: every operation it has ever signed is a submit_nav
+    reporters = [a for a in reporters if a != dep['admin']]
 
 def pages(url):
     # include_failed, because Horizon leaves failed transactions out of this
@@ -61,7 +71,8 @@ def symbol(op):
                 return None
     return None
 
-print('== every submit_nav the reporter set has signed, read off Horizon')
+which = 'the reporter set' if os.environ.get('ALL') else 'the dedicated reporter'
+print(f'== every submit_nav {which} has signed, read off Horizon')
 total, days, stamps, failed = 0, collections.Counter(), [], 0
 for who in reporters:
     n = 0
@@ -76,6 +87,9 @@ for who in reporters:
                 failed += 1
     total += n
     print(f'  {who[:8]}...{who[-4:]}  {n:5d} submit_nav')
+if not os.environ.get('ALL'):
+    print(f'  {dep["admin"][:8]}...{dep["admin"][-4:]}  the other key in the quorum, and the'
+          ' deployment admin: ALL=1 counts it too, slowly')
 
 stamps.sort()
 first, last = stamps[0], stamps[-1]
