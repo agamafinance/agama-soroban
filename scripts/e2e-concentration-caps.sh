@@ -45,11 +45,21 @@ setcaps(){ stellar contract invoke --id "$ENGINE" --source "$SRC" --network "$NE
 # Error(Contract, #N) line on a refusal. Matching the word Success instead
 # catches the token events rather than the call, and misses when the token is
 # not touched at all.
-alloc(){ local out
-  out=$(stellar contract invoke --id "$ENGINE" --source "$SRC" --network "$NET" -- allocate \
-          --admin "$ADMIN" --pool_id "$1" --amount "$2" 2>&1)
-  local e=$(printf '%s' "$out" | grep -oE "Error\(Contract, #[0-9]+\)" | head -1)
-  if [ -n "$e" ]; then printf '%s' "$e"; else printf '%s' "$(printf '%s' "$out" | tail -1)"; fi; }
+# Submission timeouts are the one failure here that says nothing about the
+# contract: the transaction is in flight and the RPC stopped waiting. The
+# keeper treats them the same way, by trying again rather than reporting a
+# refusal that never happened. A contract error is returned immediately: those
+# are the answer, not a hiccup.
+alloc(){ local out e
+  for _ in 1 2 3; do
+    out=$(stellar contract invoke --id "$ENGINE" --source "$SRC" --network "$NET" -- allocate \
+            --admin "$ADMIN" --pool_id "$1" --amount "$2" 2>&1)
+    e=$(printf '%s' "$out" | grep -oE "Error\(Contract, #[0-9]+\)" | head -1)
+    [ -n "$e" ] && { printf '%s' "$e"; return; }
+    case "$out" in (*timeout*|*"not found"*) printf '  (rpc did not answer, trying again)\n' >&2; continue;; esac
+    printf '%s' "$(printf '%s' "$out" | tail -1)"; return
+  done
+  printf 'rpc never answered'; }
 
 ORIG=$(caps | python3 -c "import json,sys;c=json.load(sys.stdin);print(c['pool_bps'],c['originator_bps'],c['jurisdiction_bps'])")
 read -r P O Ju <<<"$ORIG"
