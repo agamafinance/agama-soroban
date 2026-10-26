@@ -242,6 +242,40 @@ echo ""
 echo "== FINDING 2: the Vault enforces the floor itself, not the Engine =="
 # Open the Engine as wide as it goes: every cap at 100%, the floor at zero.
 # Whatever stops an allocation from here on is the Vault, and nothing else.
+# From here until the restore below, the live Engine has no caps and no floor,
+# and the only thing standing between the Vault and its reserves is the Vault.
+# So the restore is armed before the opening rather than written after it: this
+# suite once died at an unbound variable during an RPC outage, with the restore
+# three lines behind it having failed silently in the same outage, and left the
+# deployed Engine at 10000 bps on every cap over a floor of zero. A reviewer
+# reading the Engine at that moment would have found a protocol with its guards
+# switched off, which is exactly what the finding under test is about.
+restore_engine() {
+  local attempt
+  for attempt in 1 2 3 4 5; do
+    stellar contract invoke --id "$ENGINE" --source $SRC --network $NET -- set_caps \
+      --admin "$ADMIN" --pool_cap_bps "$POOL_CAP" --originator_cap_bps "$ORIG_CAP" \
+      --jurisdiction_cap_bps "$JUR_CAP" >/dev/null 2>&1
+    stellar contract invoke --id "$ENGINE" --source $SRC --network $NET -- set_reserve_floor \
+      --admin "$ADMIN" --floor_bps "$FLOOR" >/dev/null 2>&1
+    local now_floor now_caps
+    now_floor=$(stellar contract invoke --id "$ENGINE" --source $SRC --network $NET --send=no \
+                  -- reserve_floor_bps 2>/dev/null | tail -1 | tr -d '"')
+    now_caps=$(stellar contract invoke --id "$ENGINE" --source $SRC --network $NET --send=no \
+                 -- caps 2>/dev/null | tail -1)
+    if [ "$now_floor" = "$FLOOR" ] && printf '%s' "$now_caps" | grep -q "\"pool_bps\":$POOL_CAP"; then
+      [ "$attempt" -gt 1 ] && echo "  engine limits restored on attempt $attempt"
+      return 0
+    fi
+    python3 -c "import time;time.sleep(5)"
+  done
+  echo "  WARNING: the Engine's caps and floor are NOT restored. Run:"
+  echo "    stellar contract invoke --id $ENGINE --source $SRC --network $NET -- set_caps \\"
+  echo "      --admin $ADMIN --pool_cap_bps $POOL_CAP --originator_cap_bps $ORIG_CAP --jurisdiction_cap_bps $JUR_CAP"
+  echo "    stellar contract invoke --id $ENGINE --source $SRC --network $NET -- set_reserve_floor --admin $ADMIN --floor_bps $FLOOR"
+  return 1
+}
+trap restore_engine EXIT
 echo "  engine caps to 100%   tx $(tx "$ENGINE" set_caps --admin "$ADMIN" --pool_cap_bps 10000 --originator_cap_bps 10000 --jurisdiction_cap_bps 10000)"
 echo "  engine floor to 0     tx $(tx "$ENGINE" set_reserve_floor --admin "$ADMIN" --floor_bps 0)"
 assert_eq "the Engine is now unconstrained" "$(q "$ENGINE" reserve_floor_bps)" "0"
@@ -309,8 +343,8 @@ echo "  deallocate $PC_LEG    tx $(tx "$ENGINE" deallocate --pool_id "$PC" --amo
 echo "  deallocate $EF_LEG    tx $(tx "$ENGINE" deallocate --pool_id "$EF" --amount "$EF_LEG")"
 assert_eq "the Vault's book came down with the cash" "$(q "$VAULT" deployed_capital)" "0"
 assert_eq "and the cash is back" "$(q "$VAULT" idle_reserves)" "$IDLE"
-echo "  restore engine caps   tx $(tx "$ENGINE" set_caps --admin "$ADMIN" --pool_cap_bps "$POOL_CAP" --originator_cap_bps "$ORIG_CAP" --jurisdiction_cap_bps "$JUR_CAP")"
-echo "  restore engine floor  tx $(tx "$ENGINE" set_reserve_floor --admin "$ADMIN" --floor_bps "$FLOOR")"
+restore_engine
+assert_eq "the Engine's floor is back" "$(q "$ENGINE" reserve_floor_bps)" "$FLOOR"
 
 echo ""
 echo "== FINDING 4: a third party settles the head claim, and the owner is paid =="
