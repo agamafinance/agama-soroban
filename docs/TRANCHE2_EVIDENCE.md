@@ -67,10 +67,10 @@ not this criterion, and it is kept for demos.
 
 | Criterion | How to check it | Result |
 |---|---|---|
-| sustained multi-day testnet campaign without critical failures | the dedicated reporter's own history on [stellar.expert](https://stellar.expert/explorer/testnet/account/GASAXCP2Z4BSK5RGPFU257FA57K47JSPD6BJYYKH3RDQ2CKYXIYQOM4H) | **364 transactions since 14 October at 01:01, every one a `submit_nav`**. That one is checkable without us. From our own logs: the keeper has run every ten minutes since 14 October, **921 passes, 11 with a failed push**, every one of them the public RPC not answering with a ledger, so nothing was submitted and the next pass carried it; the sagUSD market maker, **1775 quoting cycles, no error**; and a third job extends the contracts' TTL every 72 hours, which is why every address in this file still answers |
+| sustained multi-day testnet campaign without critical failures | `bash scripts/campaign-report.sh`, which needs no key, or the two reporter accounts on stellar.expert: [`GBSX2ZFL`](https://stellar.expert/explorer/testnet/account/GBSX2ZFLIJVE75VFWJURAXPSS4TBOV4FZ34VCRLWM2D7GKI37AD3FFNV) and [`GASAXCP2`](https://stellar.expert/explorer/testnet/account/GASAXCP2Z4BSK5RGPFU257FA57K47JSPD6BJYYKH3RDQ2CKYXIYQOM4H) | **1009 `submit_nav` transactions, none failed, on all 20 of the 20 calendar days from 7 October to 26 October**, longest gap between two submissions 11.5 hours. That is the campaign as the ledger holds it, countable without us. Our own logs add the passes that submitted nothing because every feed was still fresh: the keeper is scheduled every ten minutes and has recorded **924 passes, 11 with a failed push**, every one of them the public RPC not answering with a ledger, so nothing was submitted and the next pass carried it; the sagUSD market maker, **1778 quoting cycles, no error**. The two counts differ because most passes have nothing to push, and because a timer on a laptop does not fire while the laptop sleeps, which is what the 11.5 hour gap is. A third job extends the contracts' TTL every 72 hours, which is why every address in this file still answers |
 | agUSD/USDC swaps through the Stellar DEX | `bash scripts/e2e-generation3.sh`, section 6 | a Soroswap swap, executed in the run |
 | and path payments | same run, section 7 | the order book quoted through Horizon's strict-send paths, then a `path-payment-strict-send`, with the run asserting the fill honoured the quote it was taken at |
-| codebase frozen for the audit | `git diff --name-only aee6c61..HEAD -- contracts/` | **nothing**, which is the freeze. What landed after aee6c61 is this file, two verification scripts and a corrected count in the README |
+| codebase frozen for the audit | `git diff --name-only aee6c61..HEAD -- contracts/` | **nothing**, which is the freeze. What landed after aee6c61 is this file, six new scripts under `scripts/` and fixes to five more, the deployment record and the README. The check is the command, so it stays honest as we go on working on everything around the contracts |
 | the freeze is a frozen tree, not a frozen claim | `bash scripts/smoke-hardening.sh` | **64 passed, 0 failed** on 26 October, against the live addresses. The adversarial review ahead of the audit found three critical, two high and four medium, every one fixed, every fix with a test that fails without it. The hashes the README carries for each finding are from 9 September and point at the retired generation, which is why the suite was re-run rather than cited |
 | handed over to OtterSec | the engagement | **in scheduling**. This is the one line in this file that is not a command, and it is not going to be written as though it were |
 
@@ -99,18 +99,23 @@ not this criterion, and it is kept for demos.
 
 ## If you hold none of our keys
 
-Start here. It needs nothing: no key, no identity, no funding, no config.
+Start here. Neither needs anything: no key, no identity, no funding, no config.
 
 ```sh
 bash scripts/verify-tranche2.sh            # 23, against the live ledger
+bash scripts/campaign-report.sh            # the oracle campaign, counted off Horizon
 ```
 
-It makes its own account, funds it from friendbot, and checks this file against
-the chain, including the deployment record's own pool list against the Engine's. It also reproduces two refusals, because a contract error comes back
+The first makes its own account, funds it from friendbot, and checks this file
+against the chain, including the deployment record's own pool list against the
+Engine's. It also reproduces two refusals, because a contract error comes back
 from simulation before a signature is involved: `#407` over the per-pool cap at
-an account that is nobody, and `#411` for more than the Vault holds idle.
+an account that is nobody, and `#411` for more than the Vault holds idle. The
+second counts the campaign off Horizon, which is the one claim our own logs
+cannot settle.
 
-Six more need no key either, and they are where the numbers above come from:
+Six more need no key either, and they are where the rest of the numbers above
+come from:
 
 ```sh
 cargo test --workspace                           # 227, 11 suites
@@ -121,7 +126,7 @@ bash scripts/check-ttl.sh                        # 10
 bash scripts/check-advisories.sh                 # 2
 ```
 
-And then the five end-to-end suites, which you cannot run, and it is worth
+And then the eight runs that sign, which you cannot, and it is worth
 being exact about why rather than letting you find out: `allocate` and
 `set_caps` require the Engine's admin, `submit_nav` requires a registered
 oracle reporter, and the user-path suite needs an account holding the USDC we

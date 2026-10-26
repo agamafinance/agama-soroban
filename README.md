@@ -76,14 +76,19 @@ The same flowchart, and the reasoning behind every box in it, is in [`docs/ARCHI
 
 ```sh
 bash scripts/verify-tranche2.sh
+bash scripts/campaign-report.sh
 ```
 
-Needs nothing: it makes its own account, funds it from friendbot, and checks
-this README against the ledger. 21 assertions, including two refusals it
-reproduces by simulation at an account that is nobody. The other suites here
-sign as the Engine's admin or as a registered oracle reporter, because
-`allocate`, `set_caps` and `submit_nav` are gated on exactly those keys, so
-they are ours to run and this one is yours.
+Neither needs anything. The first makes its own account, funds it from
+friendbot, and checks this README against the ledger: 23 assertions, including
+two refusals it reproduces by simulation at an account that is nobody. The
+second counts the oracle campaign off Horizon, every `submit_nav` the
+registered reporters have ever signed, with the day each one landed on, so the
+one claim our own logs cannot settle is settled by the ledger instead.
+
+The other suites here sign as the Engine's admin or as a registered oracle
+reporter, because `allocate`, `set_caps` and `submit_nav` are gated on exactly
+those keys, so they are ours to run and these two are yours.
 [`docs/TRANCHE2_EVIDENCE.md`](docs/TRANCHE2_EVIDENCE.md) puts every criterion
 next to the command that settles it.
 
