@@ -409,9 +409,18 @@ What re-proves each claim on the generation actually deployed:
 An adversarial security review of this repository, ahead of the external audit,
 found three critical issues, two high, and four medium. Every one of them is
 fixed, every fix has a test that fails without it, and the fixes are proven
-against the live deployment by `scripts/smoke-hardening.sh`, which makes 58
-assertions and prints a transaction hash for every state change. From the run
-of 9 September 2026:
+against the live deployment by `scripts/smoke-hardening.sh`, which makes 64
+assertions and prints a transaction hash for every state change. **64 passed,
+0 failed on 26 October 2026**, against the addresses in the table above.
+
+The table below is from the run of 9 September 2026, and it is worth saying
+what that means: every transaction in it was sent to `CAOGJDWH` and
+`CCW5EQCVHX`, the Vault and Engine of the generation retired in October. They
+are real and still on the ledger and they prove these findings about contracts
+that no longer run, which is exactly the trap this repository warns about
+elsewhere. The 26 October run is the same suite against the live addresses;
+these are kept because the writing explains each fix, not because the hashes
+still point anywhere that matters:
 
 | Finding | Severity | What the fix does | Transaction |
 |---|---|---|---|
