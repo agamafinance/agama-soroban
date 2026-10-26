@@ -82,7 +82,7 @@ not this criterion, and it is kept for demos.
 | every state-changing entry point authorizes | `bash scripts/check-authorization.sh` | 69 entry points, 5 deliberately permissionless and argued one by one, 0 failures |
 | every documented signature matches the ledger | `bash scripts/check-doc-entry-points.sh` | 9 passed, 0 failed |
 | the contracts have not archived themselves | `bash scripts/check-ttl.sh` | 10 passed, 0 failed |
-| advisories against the deployed bytecode | `bash scripts/check-advisories.sh` | 2 passed, 0 failed |
+| advisories against the deployed bytecode | `bash scripts/check-advisories.sh` | **2 passed, 0 failed**. There are two open Dependabot alerts on this repository and we would rather name them than let you find them: `stellar-xdr` (medium, `StringM::from_str` skipping its length check) and `soroban-env-host` (low, muxed address conversions). Both are in `Cargo.lock` because `soroban-sdk`'s testutils pull the host in for the unit tests, and neither appears in any of the 18 deployed modules, which the script checks by searching the bytecode rather than the dependency graph. Bumping them would rewrite the tree frozen at `aee6c61` and with it every wasm hash on the ledger, so they stay until after the audit |
 | the unit suite | `cargo test --workspace` | 227 passed, 0 failed, 11 suites |
 
 ## The contracts this tranche is about

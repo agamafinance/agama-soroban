@@ -26,10 +26,22 @@ ok()  { PASS=$((PASS+1)); echo "  PASS  $1"; }
 bad() { FAIL=$((FAIL+1)); echo "  FAIL  $1"; }
 
 echo "==> open advisories"
-ALERTS=$(gh api repos/agamafinance/agama-soroban/dependabot/alerts \
-  --jq '.[] | select(.state=="open") | [.security_advisory.severity, .dependency.package.name] | @tsv' 2>/dev/null || true)
+# Asked live, so this answers for today rather than for the day it was
+# written. The two cases have to be told apart: GitHub saying there are no
+# open alerts, and GitHub not answering at all. A reviewer without gh
+# installed or logged in used to be told "none open", which is the one wrong
+# answer this script can give, and it gave it confidently.
+if ! ALERTS=$(gh api repos/agamafinance/agama-soroban/dependabot/alerts \
+  --jq '.[] | select(.state=="open") | [.security_advisory.severity, .dependency.package.name] | @tsv' 2>/dev/null); then
+  echo "  SKIP  gh could not read the alert list here, so nothing was checked."
+  echo "        Not the same as none open: see the repository's own Security tab,"
+  echo "        or run this with gh installed and logged in."
+  echo ""
+  echo "  $PASS passed, $FAIL failed, 1 skipped"
+  exit 0
+fi
 if [ -z "$ALERTS" ]; then
-  ok "none open"
+  ok "GitHub reports no open advisory on this repository"
   echo ""
   echo "  $PASS passed, $FAIL failed"
   exit 0
