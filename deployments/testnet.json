@@ -921,5 +921,10 @@
     "totalSupply": 38000000,
     "heldBy": "admin",
     "note": "The agUSD core this generation used before agUSD became a classic asset. Its supply is not zero, which the Tranche 2 submission first said it was: 3.8 agUSD remains and every unit of it sits in the deployer's own account, so nobody outside was left holding the retired token. Recorded rather than burned: burning our own residue would make the sentence true and the history less legible, and a reviewer reading total_supply on a retired contract should find the number explained rather than gone."
+  },
+  "recoveredNotMinted": {
+    "amount": 4000000,
+    "vault": "CCVNCXPJXCA5GKJKNUNZRMJEEWYL74ASYYTL2DULPO5TZDGSHUPZTTJF",
+    "note": "USDC the Vault holds that no agUSD claims, 0.4 as of 26 October 2026. Engine.recover sweeps cash an adapter held above its booked exposure into the Vault, which books it as reserves and mints nothing, because the agUSD that cash backed was burned when the loss was recognised. Four passes of the hardening suite's credit-loss finding in one day left four tenths of a USDC of it. It is the safe direction, the Vault holding more than the token claims, and e2e-generation3.sh asserts that direction rather than equality: equality would fail the first time a real default was recovered."
   }
 }

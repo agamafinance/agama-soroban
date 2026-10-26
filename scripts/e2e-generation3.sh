@@ -164,7 +164,27 @@ echo "== 8. circulation against backing, the two reconciliations"
 # interpreted: it would have fired the first time anyone allocated in
 # production. get_net_assets is USDC held plus deployed capital minus recognised
 # losses, which is the quantity that actually backs the token.
-ok "agUSD in circulation equals what backs it" "$(circulating agUSD $AG_ISS)" "$(rd $VAULT get_net_assets)"
+# Backing at least covers circulation, rather than equalling it exactly.
+#
+# Equality held while every unit of backing arrived by minting against it, and
+# a recovery breaks that on purpose: Engine.recover sweeps cash an adapter held
+# above its booked exposure into the Vault, and the Vault books it as reserves
+# with no agUSD minted, because the agUSD that cash once backed was burned when
+# the loss was recognised. So after any recovered loss the Vault holds more
+# than the token claims, which is the safe direction, and this assertion failed
+# by exactly the amount recovered: 0.4 USDC, from the hardening suite walking
+# its credit-loss finding four times in one day. It would have fired the first
+# time a real default was recovered in production.
+#
+# Under-collateralised is the failure. Over-collateralised is reported.
+CIRC=$(circulating agUSD $AG_ISS)
+BACKING=$(rd $VAULT get_net_assets)
+if [ "$BACKING" -ge "$CIRC" ] 2>/dev/null; then
+  ok "backing covers agUSD in circulation" "ok" "ok"
+  [ "$BACKING" != "$CIRC" ] && printf '        %s stroops of backing no agUSD claims, from recovered losses\n' "$(( BACKING - CIRC ))"
+else
+  ok "backing covers agUSD in circulation" "short by $(( CIRC - BACKING ))" "ok"
+fi
 ok "sagUSD in circulation equals the tracked count" "$(circulating sagUSD $SAG_ISS)" "$(rd $STAKING total_supply)"
 
 echo "== 9. redeem the rest through the Vault queue"
