@@ -77,14 +77,19 @@ The same flowchart, and the reasoning behind every box in it, is in [`docs/ARCHI
 ```sh
 bash scripts/verify-tranche2.sh
 bash scripts/campaign-report.sh
+bash scripts/check-refusals.sh
 ```
 
-Neither needs anything. The first makes its own account, funds it from
+None of them needs anything. The first makes its own account, funds it from
 friendbot, and checks this README against the ledger: 23 assertions, including
 two refusals it reproduces by simulation at an account that is nobody. The
-second counts the oracle campaign off Horizon, every `submit_nav` the
-registered reporters have ever signed, with the day each one landed on, so the
-one claim our own logs cannot settle is settled by the ledger instead.
+second counts the oracle campaign off Horizon, every `submit_nav` the dedicated
+reporter has ever signed and the day each one landed on, so the one claim our
+own logs cannot settle is settled by the ledger instead. The third takes the
+four refusal transactions this repository points at and reads the contract
+error back out of each one's meta, because a failed invoke's result says only
+`trapped`: without that, the mapping from hash to error code is ours to assert
+and yours to believe.
 
 The other suites here sign as the Engine's admin or as a registered oracle
 reporter, because `allocate`, `set_caps` and `submit_nav` are gated on exactly
