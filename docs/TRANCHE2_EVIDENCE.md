@@ -76,7 +76,7 @@ not this criterion, and it is kept for demos.
 
 | Check | Command | Result |
 |---|---|---|
-| every deployed contract is the source in this tree | `bash scripts/check-deployment-record.sh --wasm` | 77 passed, 0 failed |
+| every deployed contract is the source in this tree | `bash scripts/check-deployment-record.sh --wasm` | 77 passed, 0 failed. From a bare clone it is 65: twelve of them compare the docs site and need the docs repo alongside, and the script prints the skip and both totals |
 | every state-changing entry point authorizes | `bash scripts/check-authorization.sh` | 69 entry points, 5 deliberately permissionless and argued one by one, 0 failures |
 | every documented signature matches the ledger | `bash scripts/check-doc-entry-points.sh` | 9 passed, 0 failed |
 | the contracts have not archived themselves | `bash scripts/check-ttl.sh` | 10 passed, 0 failed |
@@ -112,7 +112,7 @@ Six more need no key either, and they are where the numbers above come from:
 
 ```sh
 cargo test --workspace                           # 227, 11 suites
-bash scripts/check-deployment-record.sh --wasm   # 77
+bash scripts/check-deployment-record.sh --wasm   # 65 from a clone, 77 with the docs repo
 bash scripts/check-authorization.sh              # 69 entry points
 bash scripts/check-doc-entry-points.sh           # 9
 bash scripts/check-ttl.sh                        # 10
