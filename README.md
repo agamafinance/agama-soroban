@@ -72,6 +72,21 @@ Legend, as coloured in the diagram: green = Integration List protocol · orange 
 
 The same flowchart, and the reasoning behind every box in it, is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and in [`docs/Agama_Technical_Architecture.pdf`](docs/Agama_Technical_Architecture.pdf). The two copies of the diagram are byte identical, so they cannot drift.
 
+## Check it yourself, holding none of our keys
+
+```sh
+bash scripts/verify-tranche2.sh
+```
+
+Needs nothing: it makes its own account, funds it from friendbot, and checks
+this README against the ledger. 21 assertions, including two refusals it
+reproduces by simulation at an account that is nobody. The other suites here
+sign as the Engine's admin or as a registered oracle reporter, because
+`allocate`, `set_caps` and `submit_nav` are gated on exactly those keys, so
+they are ours to run and this one is yours.
+[`docs/TRANCHE2_EVIDENCE.md`](docs/TRANCHE2_EVIDENCE.md) puts every criterion
+next to the command that settles it.
+
 ## Live on Testnet
 
 Network: **Stellar Testnet** · RPC: `https://soroban-testnet.stellar.org`

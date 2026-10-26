@@ -95,19 +95,51 @@ not this criterion, and it is kept for demos.
 | Etherfuse adapter | [`CCXO2ZIM...KM7BXN`](https://stellar.expert/explorer/testnet/contract/CCXO2ZIMK7KZMMUBE24KOLWDJHVXQKXDNEP4QH7N5ZK5U6ESCWKM7BXN) | ETHERFUS, MX |
 | cross chain adapter | [`CDSO4GJR...WUWFML`](https://stellar.expert/explorer/testnet/contract/CDSO4GJRY7BFVMQ4PYP3ISVOFPQLPA3C7ZFT5HQOUDM3VXTGOUWUWFML) | ABF, JE, `pool_kind` crosschn, settling on a 1 to 14 day window |
 
-Reproducing all of it from a clone, against testnet, with nothing to set up:
+## If you hold none of our keys
+
+Start here. It needs nothing: no key, no identity, no funding, no config.
 
 ```sh
-bash scripts/e2e-allocation-guards.sh      # 10, the per-pool cap and the floor
-bash scripts/e2e-concentration-caps.sh     # 10, the originator and jurisdiction caps
-bash scripts/e2e-oracle-quorum.sh          # 11, the quorum. Pause the oracle keeper first
-bash scripts/e2e-generation3.sh            # 21, the whole user path, Soroswap and the SDEX
-DRY=1 bash scripts/keeper-yield.sh         # what the feed says the book earned, without sending it
-cargo test --workspace                     # 227
+bash scripts/verify-tranche2.sh            # 21, against the live ledger
 ```
 
-One thing a reviewer should know before running the quorum suite: the feeds are
-live and a keeper reports to them every ten minutes, so an unpaused keeper will
-close the round under the script. That is what a live feed looks like, and it
-is why the script is the one place in this repository that asks you to stop
-something first.
+It makes its own account, funds it from friendbot, and checks this file against
+the chain. It also reproduces two refusals, because a contract error comes back
+from simulation before a signature is involved: `#407` over the per-pool cap at
+an account that is nobody, and `#411` for more than the Vault holds idle.
+
+Six more need no key either, and they are where the numbers above come from:
+
+```sh
+cargo test --workspace                           # 227, 11 suites
+bash scripts/check-deployment-record.sh --wasm   # 77
+bash scripts/check-authorization.sh              # 69 entry points
+bash scripts/check-doc-entry-points.sh           # 9
+bash scripts/check-ttl.sh                        # 10
+bash scripts/check-advisories.sh                 # 2
+```
+
+And then the five end-to-end suites, which you cannot run, and it is worth
+being exact about why rather than letting you find out: `allocate` and
+`set_caps` require the Engine's admin, `submit_nav` requires a registered
+oracle reporter, and the user-path suite needs an account holding the USDC we
+issue on testnet. A reviewer holds none of those, by design. That is the same
+property the tranche is about.
+
+```sh
+bash scripts/e2e-allocation-guards.sh      # 10, #407 and #410
+bash scripts/e2e-concentration-caps.sh     # 10, #408 and #409
+bash scripts/e2e-oracle-quorum.sh          # 11, a NAV one key cannot move
+bash scripts/e2e-oracle-staleness.sh       #  4, OracleStale on the peg feed
+bash scripts/e2e-generation3.sh            # 21, deposit to redemption, and the SDEX
+DRY=1 bash scripts/keeper-yield.sh         # what the feed says the book earned, unsent
+```
+
+Two things to know before running those, if you ever do. The feeds are live and
+a keeper reports to them every ten minutes, so an unpaused keeper closes the
+quorum round under the script; it is the one place in this repository that asks
+you to stop something first. And the staleness suite is allowed to let a feed
+expire only because that feed, the peg check, is read by nothing on chain.
+
+Send us an address and we will fund it with testnet USDC within the day, if you
+would rather run the write path yourself than watch it in the video.
