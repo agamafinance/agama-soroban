@@ -20,6 +20,7 @@ of the criteria below have an on-chain proof that did not exist a week ago.
 | engine live on testnet with whitelisted pools | `pools()` on the Engine | **three adapters**, each with its own originator and jurisdiction: ETHERFUS/MX, QIRO/LU, ABF/JE |
 | allocations exceeding any cap rejected on-chain | `bash scripts/e2e-allocation-guards.sh` | **10 passed, 0 failed**: over the per-pool cap is `#407`, breaking the reserve floor is `#410` |
 | the other two caps, on the same Engine | `bash scripts/e2e-concentration-caps.sh` | **10 passed, 0 failed**: the originator cap is `#408`, the jurisdiction cap is `#409` |
+| and that run is in the ledger, not just in our terminal | `caps_updated` events, ledgers 5401518 to 5401526, at [/api/events](https://app.agama.finance/api/events) | 500 bps in and back out, twice. A cap at 500 bps in that stream is the script proving the limit it narrowed |
 | current exposures readable via contract calls | `get_exposures()`, `get_exposure(pool)`, `caps()`, `reserve_floor_bps()` | pool by pool, and the caps as the ledger holds them: 4000 / 4500 / 5000 bps over a 2500 bps floor |
 | source code public throughout development | [the repository](https://github.com/agamafinance/agama-soroban) | Apache-2.0 from the first commit |
 
