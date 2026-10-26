@@ -49,6 +49,16 @@ printf 'net assets %s, per pool cap %s, deployable before the floor %s\n\n' "$NE
 # empty protocol is also a state that stops recurring the moment this is real.
 BASE_ENGINE=$(rd $ENGINE total_allocated)
 BASE_VAULT=$(rd $VAULT deployed_capital)
+# Per pool as well as in total. This suite used to end by emptying the two
+# pools it touches, which is the same thing as the baseline only while the
+# baseline is zero. Leave a standing allocation in either pool, the way a book
+# with positions on it looks, and the closing assertions failed on the book
+# this suite had just wiped rather than on anything it was testing.
+BASE_PC=$(expo $PC); BASE_EF=$(expo $EF)
+# And the pool's own USDC balance, for the same reason: a pool that already
+# holds a position holds that much more than this run put there.
+BASE_PC_USDC=$(stellar contract invoke --id "$USDC" --source "$SRC" --network "$NET" --send=no -- balance --id "$PC" 2>/dev/null | tr -d '"')
+BASE_PC_USDC=${BASE_PC_USDC:-0}
 printf '  baseline: engine %s, vault %s\n' "$BASE_ENGINE" "$BASE_VAULT"
 # The invariant that matters at the start is not that the book is empty, it is
 # that the Engine's book and the Vault's agree about what is deployed.
@@ -58,7 +68,7 @@ echo "== capital out through the Engine"
 ok "first allocation accepted" "$(err $PC 10000000000)" "Success"
 ok "the Engine booked it" "$(( $(rd $ENGINE total_allocated) - BASE_ENGINE ))" "10000000000"
 ok "the Vault booked the same" "$(( $(rd $VAULT deployed_capital) - BASE_VAULT ))" "10000000000"
-ok "the pool holds the USDC" "$(stellar contract invoke --id $USDC --source $SRC --network $NET --send=no -- balance --id $PC 2>/dev/null | tr -d '\"')" "10000000000"
+ok "the pool holds the USDC" "$(( $(stellar contract invoke --id $USDC --source $SRC --network $NET --send=no -- balance --id $PC 2>/dev/null | tr -d '\"') - BASE_PC_USDC ))" "10000000000"
 
 echo "== guard 1, the per pool concentration cap"
 ok "over cap on one pool refused" "$(err $PC $(( CAP )) )" "Error(Contract, #407)"
@@ -72,12 +82,14 @@ printf '  deployed now %s against a ceiling of %s\n' "$(rd $VAULT deployed_capit
 ok "the step that breaches the floor refused" "$(err $EF 200000000)" "Error(Contract, #410)"
 
 echo "== and it all comes back"
-for p in "$PC" "$EF"; do
-  X=$(expo "$p")
-  [ "${X:-0}" -gt 0 ] 2>/dev/null && \
+unwind(){ # back down to where this pool started, not to zero
+  local X; X=$(expo "$1"); local DELTA=$(( ${X:-0} - $2 ))
+  [ "$DELTA" -gt 0 ] 2>/dev/null && \
     stellar contract invoke --id "$ENGINE" --source "$SRC" --network "$NET" -- \
-      deallocate --pool_id "$p" --amount "$X" >/dev/null 2>&1
-done
+      deallocate --pool_id "$1" --amount "$DELTA" >/dev/null 2>&1
+  return 0; }
+unwind "$PC" "$BASE_PC"
+unwind "$EF" "$BASE_EF"
 ok "the Engine is back to its baseline" "$(rd $ENGINE total_allocated)" "$BASE_ENGINE"
 ok "the Vault is back to its baseline" "$(rd $VAULT deployed_capital)" "$BASE_VAULT"
 ok "reserves whole again" "$(rd $VAULT free_reserves)" "$(rd $VAULT idle_reserves)"
