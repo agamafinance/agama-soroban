@@ -47,7 +47,7 @@ afterwards, asserting they are back even when it exits through a failure.
 | stale reports revert with OracleStale | `cargo test --workspace` | `stale_read_errors_with_oracle_stale`, `get_nav_reads_the_oracle_and_propagates_staleness` |
 | out-of-bounds reports rejected | same | `out_of_bounds_deviation_fails_push_nav`, `out_of_bounds_deviation_emits_nav_rejected_on_submit_nav`, `the_deviation_bound_is_exact_to_the_stroop`, and on the ledger `NavOutOfBand` (513) and `TooSoon` (514) in `smoke-hardening.sh` |
 | a NAV cannot be moved by one key | `bash scripts/e2e-oracle-quorum.sh` | **11 passed, 0 failed** against a quorum of two: one reporter gets `Pending` and moves nothing, a repeat vote is `#518`, a second distinct reporter commits |
-| yield distribution driven by oracle data | `bash scripts/keeper-yield.sh` | **proven on chain on 26 October**: PC_NAV 10100000 to 10150500 through a quorum of two, 100 USDC of deployed capital, 500000 stroops distributed, share price 16320400 to 16321847, no share minted |
+| yield distribution driven by oracle data | `bash scripts/keeper-yield.sh` | **proven on chain twice on 26 October**: PC_NAV 10150500 to 10181000 through a quorum of two, 1210 USDC of deployed capital, 36357814 stroops distributed, share price moved with it, no share minted. Earlier the same day on 100 USDC: 10100000 to 10150500, 500000 stroops, 16320400 to 16321847 |
 | reconciled against what backs it | `bash scripts/e2e-generation3.sh`, section 8 | agUSD in circulation against its backing, and sagUSD against the tracked share count, both closing in the same run |
 
 **What drives what, exactly.** The Vault prices its book by reading PC_NAV
