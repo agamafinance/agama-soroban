@@ -7,3 +7,6 @@ target
 
 # Test snapshots (auto-generated)
 test_snapshots
+
+# Keeper state, which is a reading from a particular run and not source
+state
