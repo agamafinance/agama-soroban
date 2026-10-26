@@ -91,5 +91,16 @@ normalise_book() {
     echo "    paused now: $(_nb_q "$VAULT" is_paused)"
   fi
 
+  # What normalising could not bring home, published for the suite to measure
+  # against. A cross-chain adapter holds its cash on the other chain, so it is
+  # booked here and not held here, and no deallocation can move it: the step
+  # above correctly leaves it alone. Suites then asserted a deployed book of
+  # zero and failed by exactly that position, which reads as a broken Vault and
+  # is a parked leg on another chain. Zero for this protocol is this number.
+  BOOK_RESIDUE=$(_nb_q "$VAULT" deployed_capital)
+  BOOK_RESIDUE=${BOOK_RESIDUE:-0}
+  export BOOK_RESIDUE
   echo "    idle $(_nb_q "$VAULT" idle_reserves) booked $(_nb_q "$VAULT" booked_reserves) deployed $(_nb_q "$VAULT" deployed_capital) owed $(_nb_q "$VAULT" outstanding_liabilities)"
+  [ "$BOOK_RESIDUE" != "0" ] && echo "    $BOOK_RESIDUE is booked at a pool that does not hold it here, which is this run's zero"
+  return 0
 }

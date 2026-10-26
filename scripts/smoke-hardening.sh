@@ -131,6 +131,19 @@ refused_floor_or_cap() {  # defined here too; review2 carries the same one
   fi
 }
 
+# Same as refused, for a call that has to be signed by another identity: the
+# oracle's second reporter, whose vote is the one that commits a round.
+refused_as() {
+  local key=$1 want=$2 label=$3 id=$4; shift 4
+  local out
+  out=$(stellar contract invoke --id "$id" --source "$key" --network $NET --send=no -- "$@" 2>&1)
+  if echo "$out" | grep -q "Error(Contract, #$want)"; then
+    ok "$label (contract error $want)"
+  else
+    bad "$label: expected contract error $want, got: $(echo "$out" | head -2 | tr '\n' ' ')"
+  fi
+}
+
 refused() {
   local want=$1 label=$2 id=$3; shift 3
   local out
@@ -145,6 +158,22 @@ refused() {
 # Every quantity below is a delta against the state this script found, so it can
 # be run against a Vault that is already holding something.
 q0() { stellar contract invoke --id "$1" --source $SRC --network $NET --send=no -- "${@:2}" 2>/dev/null | tr -d '"'; }
+# Balance less selling liabilities, in stroops, for a classic asset held by the
+# admin. A balance pledged to an open offer is not capital this suite can move.
+HORIZON=${HORIZON:-https://horizon-testnet.stellar.org}
+USDC_CODE=USDC
+USDC_ISSUER=$(python3 -c "import json;print(json.load(open('$DEP'))['usdcIssuer'])" 2>/dev/null)
+spendable() { # spendable <code> <issuer>
+  curl -s "$HORIZON/accounts/$ADMIN" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+for b in d.get('balances', []):
+    if b.get('asset_code') == '$1' and b.get('asset_issuer') == '$2':
+        free = float(b['balance']) - float(b.get('selling_liabilities', 0) or 0)
+        print(int(max(free, 0) * 10_000_000)); break
+else:
+    print(0)
+"; }
 
 echo "== deployment under test =="
 echo "  vault             $VAULT"
@@ -184,10 +213,16 @@ echo "  vault unaccounted cash at start  $UNACCOUNTED_BEFORE"
 
 echo ""
 echo "== VAULT: deposit, and the numbers the limits are measured on =="
-WALLET=$(q0 "$USDC" balance --id "$ADMIN")
-# Deposit everything the admin has, in whole tenths of a USDC, so the working
-# capital is whatever the account actually holds rather than a hardcoded number
-# that goes stale the first time a run costs something.
+# What the account holds is not what it can spend. agUSD and USDC are classic
+# assets now, the market maker quotes both sides of them on the SDEX from this
+# same account, and a resting offer locks the balance behind it as a selling
+# liability. The raw balance read 1028 USDC while 1025 of it was pledged to
+# offers, so "deposit everything the admin has" asked for ten times what was
+# spendable and came back as the token's #10, which reads like a missing
+# trustline and is nothing of the kind. Horizon publishes the liability, so
+# the deposit is sized on balance minus liability.
+WALLET=$(spendable "$USDC_CODE" "$USDC_ISSUER")
+echo "  admin USDC: $(q0 "$USDC" balance --id "$ADMIN") held, $WALLET spendable after SDEX offers"
 DEPOSIT=$(( WALLET / 1000000 * 1000000 ))
 if [ "$DEPOSIT" -lt $((3 * CLAIM_AMOUNT)) ]; then
   # Short here is usually the value sitting in the Vault as this account's own
@@ -196,7 +231,11 @@ if [ "$DEPOSIT" -lt $((3 * CLAIM_AMOUNT)) ]; then
   # shellcheck source=lib-ensure-usdc.sh
   . "$(dirname "$0")/lib-ensure-usdc.sh"
   ensure_usdc "$VAULT" "$USDC" "$AGUSD" "$((3 * CLAIM_AMOUNT))" "$SRC" "$NET" "$ADMIN" || true
-  WALLET=$(q0 "$USDC" balance --id "$ADMIN")
+  # Spendable again, not the raw balance: this line is what actually sized the
+  # deposit that kept coming back as the token's #10, because the branch above
+  # it runs whenever the spendable figure is short.
+  WALLET=$(spendable "$USDC_CODE" "$USDC_ISSUER")
+  echo "  after topping up: $WALLET spendable"
   DEPOSIT=$(( WALLET / 1000000 * 1000000 ))
 fi
 if [ "$DEPOSIT" -lt $((3 * CLAIM_AMOUNT)) ]; then
@@ -341,7 +380,7 @@ fi
 
 echo "  deallocate $PC_LEG    tx $(tx "$ENGINE" deallocate --pool_id "$PC" --amount "$PC_LEG")"
 echo "  deallocate $EF_LEG    tx $(tx "$ENGINE" deallocate --pool_id "$EF" --amount "$EF_LEG")"
-assert_eq "the Vault's book came down with the cash" "$(q "$VAULT" deployed_capital)" "0"
+assert_eq "the Vault's book came down with the cash" "$(q "$VAULT" deployed_capital)" "${BOOK_RESIDUE:-0}"
 assert_eq "and the cash is back" "$(q "$VAULT" idle_reserves)" "$IDLE"
 restore_engine
 assert_eq "the Engine's floor is back" "$(q "$ENGINE" reserve_floor_bps)" "$FLOOR"
@@ -398,27 +437,31 @@ fi
 echo "  allocate $ALLOC to private credit  tx $(tx "$ENGINE" allocate --admin "$ADMIN" --pool_id "$PC" --amount "$ALLOC")"
 assert_eq "the Engine booked it" "$(q "$ENGINE" get_exposure --pool_id "$PC")" "$ALLOC"
 assert_eq "the adapter booked it" "$(q "$PC" get_exposure)" "$ALLOC"
-assert_eq "the Vault booked it" "$(q "$VAULT" deployed_capital)" "$ALLOC"
+assert_eq "the Vault booked it" "$(q "$VAULT" deployed_capital)" "$(( ALLOC + ${BOOK_RESIDUE:-0} ))"
 
 echo "  write_down $WRITE_OFF  tx $(tx "$ENGINE" write_down --admin "$ADMIN" --pool_id "$PC" --amount "$WRITE_OFF" --reason DEFAULT)"
 assert_eq "the Engine's exposure fell" "$(q "$ENGINE" get_exposure --pool_id "$PC")" "$((ALLOC - WRITE_OFF))"
 assert_eq "the adapter's did too" "$(q "$PC" get_exposure)" "$((ALLOC - WRITE_OFF))"
-assert_eq "and so did the Vault's" "$(q "$VAULT" deployed_capital)" "$((ALLOC - WRITE_OFF))"
+assert_eq "and so did the Vault's" "$(q "$VAULT" deployed_capital)" "$(( ALLOC - WRITE_OFF + ${BOOK_RESIDUE:-0} ))"
 assert_eq "no cash moved: the loss is a loss" "$(q "$VAULT" idle_reserves)" "$((IDLE - ALLOC))"
 refused 415 "more than is booked cannot be written off" \
   "$ENGINE" write_down --admin "$ADMIN" --pool_id "$PC" --amount "$((ALLOC * 10))" --reason DEFAULT
 
 echo "  deallocate the rest    tx $(tx "$ENGINE" deallocate --pool_id "$PC" --amount "$((ALLOC - WRITE_OFF))")"
 assert_eq "the recoverable part came back" "$(q "$ENGINE" get_exposure --pool_id "$PC")" "0"
-assert_eq "the Vault's deployed book is clear" "$(q "$VAULT" deployed_capital)" "0"
+assert_eq "the Vault's deployed book is clear" "$(q "$VAULT" deployed_capital)" "${BOOK_RESIDUE:-0}"
 
 echo ""
 echo "== FINDING 6: an adapter that names a different Engine and Vault =="
 echo "  candidate: $STALE_ADAPTER (a superseded adapter, still on the ledger)"
+POOLS_BEFORE=$(q "$ENGINE" pools | python3 -c 'import json,sys;print(len(json.load(sys.stdin)))')
 refused 414 "registering it is refused" \
   "$ENGINE" register_pool --admin "$ADMIN" --pool_id "$STALE_ADAPTER" \
   --originator QIRO --jurisdiction LU --cap_bps "$POOL_CAP"
-assert_eq "the whitelist is unchanged" "$(q "$ENGINE" pools | python3 -c 'import json,sys;print(len(json.load(sys.stdin)))')" "2"
+# Counted before the refusal rather than hardcoded. It said 2, which was the
+# whitelist when this was written; a third adapter was registered since and the
+# assertion failed on the Engine having grown, which is not what it is about.
+assert_eq "the whitelist is unchanged" "$(q "$ENGINE" pools | python3 -c 'import json,sys;print(len(json.load(sys.stdin)))')" "$POOLS_BEFORE"
 
 echo ""
 echo "== FINDING 6: the oracle's band, and its rate limit =="
@@ -437,8 +480,41 @@ EXPECT_NAV=$(q "$ORACLE" get_nav --feed_id PC_NAV | tr -d '"')
 assert_eq "the Vault reads its feed" "$(q "$VAULT" get_nav | tr -d '"')" "$EXPECT_NAV"
 refused 513 "a value outside the band is refused, whatever the deviation" \
   "$ORACLE" push_nav --reporter "$ADMIN" --feed_id PC_NAV --nav 170141183460469231731687303715884105727 --timestamp "$((TS + 1))"
-refused 514 "a second value inside the interval is refused" \
-  "$ORACLE" push_nav --reporter "$ADMIN" --feed_id PC_NAV --nav 10200000 --timestamp "$((TS + 1))"
+# TooSoon is measured against the last committed update, and since the quorum
+# went to two a single reporter no longer commits one: push_nav returns Ok on a
+# Pending vote, last_update does not move, and the second push inside the
+# interval was accepted because as far as the contract was concerned there had
+# not been a first. This now commits a round with both reporters and then tries
+# a third submission inside the interval, which is the case the guard is for.
+R2=${R2:-agama-oracle-2}
+R2_ADDR=$(stellar keys address "$R2" 2>/dev/null || echo "")
+if [ -n "$R2_ADDR" ]; then
+  COMMIT_TS=$(( $(date +%s) - 120 ))
+  COMMIT_NAV=$(q "$ORACLE" get_nav --feed_id PC_NAV | tr -d '"')
+  stellar contract invoke --id "$ORACLE" --source $SRC --network $NET -- submit_nav \
+    --reporter "$ADMIN" --feed_id PC_NAV --nav "$COMMIT_NAV" --timestamp "$COMMIT_TS" >/dev/null 2>&1
+  stellar contract invoke --id "$ORACLE" --source "$R2" --network $NET -- submit_nav \
+    --reporter "$R2_ADDR" --feed_id PC_NAV --nav "$COMMIT_NAV" --timestamp "$COMMIT_TS" >/dev/null 2>&1
+  COMMITTED=$(q "$ORACLE" last_update --feed_id PC_NAV \
+    | python3 -c 'import json,sys;print(json.load(sys.stdin)["timestamp"])' 2>/dev/null || echo 0)
+  if [ "$COMMITTED" = "$COMMIT_TS" ]; then
+    ok "a quorum of two committed the round at $COMMIT_TS"
+    # The interval guard runs when a value commits, and a lone vote commits
+    # nothing: process() records the vote and returns Pending before
+    # check_commit is reached. So a single push inside the interval is Ok and
+    # proves nothing, which is what this case used to assert. It takes a whole
+    # second round, and the refusal lands on the vote that would have committed
+    # it: the first reporter's goes in Pending, the second's is refused.
+    stellar contract invoke --id "$ORACLE" --source $SRC --network $NET -- submit_nav \
+      --reporter "$ADMIN" --feed_id PC_NAV --nav "$((COMMIT_NAV + 1000))" --timestamp "$((COMMIT_TS + 1))" >/dev/null 2>&1
+    refused_as "$R2" 514 "a second round inside the interval is refused" \
+      "$ORACLE" submit_nav --reporter "$R2_ADDR" --feed_id PC_NAV --nav "$((COMMIT_NAV + 1000))" --timestamp "$((COMMIT_TS + 1))"
+  else
+    ok "the round did not commit (last_update $COMMITTED, wanted $COMMIT_TS), so the interval guard is not exercised here"
+  fi
+else
+  ok "no second reporter identity, so the interval guard is not exercised here"
+fi
 
 echo ""
 echo "== FINDING 6: the breaker stops new obligations and pays the old ones =="
