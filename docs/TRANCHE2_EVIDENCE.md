@@ -68,8 +68,9 @@ not this criterion, and it is kept for demos.
 | sustained multi-day testnet campaign without critical failures | the keeper logs, and the feeds' own `last_update` | the oracle keeper has run every ten minutes since 14 October: **903 passes, 11 with a failed push**, every one of them the public RPC not answering with a ledger, so nothing was submitted and the next pass carried it. The sagUSD market maker: **1740 quoting cycles, no error**. A third job extends the contracts' TTL every 72 hours, which is why every address in this file still answers |
 | agUSD/USDC swaps through the Stellar DEX | `bash scripts/e2e-generation3.sh`, section 6 | a Soroswap swap, executed in the run |
 | and path payments | same run, section 7 | the order book quoted through Horizon's strict-send paths, then a `path-payment-strict-send`, with the run asserting the fill honoured the quote it was taken at |
-| codebase frozen for the audit | `git rev-parse HEAD` | the tree the audit takes; an adversarial review of the whole repository found three critical, two high and four medium, every one fixed, every fix with a test that fails without it, and the fixes proven on chain by `smoke-hardening.sh`, 58 assertions |
-| handed over to OtterSec | the engagement | **open**: the firm is being engaged through the Soroban Audit Bank. This is the one line in this file that is not yet a command |
+| codebase frozen for the audit | `git diff --name-only aee6c61..HEAD -- contracts/` | **nothing**, which is the freeze. What landed after aee6c61 is this file, two verification scripts and a corrected count in the README |
+| the freeze is a frozen tree, not a frozen claim | `bash scripts/smoke-hardening.sh` | 58 assertions on the live contracts. The adversarial review ahead of the audit found three critical, two high and four medium, every one fixed, every fix with a test that fails without it |
+| handed over to OtterSec | the engagement | **in scheduling**. This is the one line in this file that is not a command, and it is not going to be written as though it were |
 
 ## What backs every number above
 
