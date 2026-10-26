@@ -906,5 +906,11 @@
       "theLiquidityPrecondition": "A redemption is paid in cash the vault holds, and most of its assets are off chain with the fund administrator. So a NAV that was raised is a claim and not money, and the vault refuses a redemption it cannot fund rather than paying part of it. Cash has to come back and the book be written down before anything can be sold, and on the real system those two calls are the partner's and not ours.",
       "castReadsCHAINFromTheEnvironment": "The source chain variable is called CCTP_CHAIN and not CHAIN because cast reads a CHAIN environment variable as its own --chain option. Exporting one called CHAIN made every cast call in the suite fail with 'invalid value for --chain', naming a flag the script never passed."
     }
+  },
+  "retiredAgusdResidue": {
+    "contract": "CDO7WPJHUFTM3Q6ZLT5FRQIK4OYX5ZG7ERDC2B5W3BWXBRPPMXV2L6PL",
+    "totalSupply": 38000000,
+    "heldBy": "admin",
+    "note": "The agUSD core this generation used before agUSD became a classic asset. Its supply is not zero, which the Tranche 2 submission first said it was: 3.8 agUSD remains and every unit of it sits in the deployer's own account, so nobody outside was left holding the retired token. Recorded rather than burned: burning our own residue would make the sentence true and the history less legible, and a reviewer reading total_supply on a retired contract should find the number explained rather than gone."
   }
 }
