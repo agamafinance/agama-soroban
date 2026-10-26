@@ -102,11 +102,11 @@ not this criterion, and it is kept for demos.
 Start here. It needs nothing: no key, no identity, no funding, no config.
 
 ```sh
-bash scripts/verify-tranche2.sh            # 21, against the live ledger
+bash scripts/verify-tranche2.sh            # 23, against the live ledger
 ```
 
 It makes its own account, funds it from friendbot, and checks this file against
-the chain. It also reproduces two refusals, because a contract error comes back
+the chain, including the deployment record's own pool list against the Engine's. It also reproduces two refusals, because a contract error comes back
 from simulation before a signature is involved: `#407` over the per-pool cap at
 an account that is nobody, and `#411` for more than the Vault holds idle.
 
@@ -132,7 +132,9 @@ property the tranche is about.
 bash scripts/e2e-allocation-guards.sh      # 10, #407 and #410
 bash scripts/e2e-concentration-caps.sh     # 10, #408 and #409
 bash scripts/e2e-oracle-quorum.sh          # 11, a NAV one key cannot move
-bash scripts/e2e-oracle-staleness.sh       #  4, OracleStale on the peg feed
+bash scripts/e2e-oracle-staleness.sh       #  3, OracleStale on the peg feed
+bash scripts/refusals-on-ledger.sh         #  6, the four refusals, submitted not simulated
+bash scripts/smoke-hardening.sh            # 64, the security review on the live addresses
 bash scripts/e2e-generation3.sh            # 21, deposit to redemption, and the SDEX
 DRY=1 bash scripts/keeper-yield.sh         # what the feed says the book earned, unsent
 ```
