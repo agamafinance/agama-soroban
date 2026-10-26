@@ -93,6 +93,29 @@ rows = [json.loads(l) for l in sys.stdin if l.strip().startswith('{')]
 o = len({r['originator'] for r in rows}); j = len({r['jurisdiction'] for r in rows})
 print('yes' if o == len(rows) and j == len(rows) else 'no')")" "yes"
 
+# The record is a claim about the ledger, so it gets checked against it. This
+# list said two pools while the Engine said three, and that drift is what put
+# "two adapters are registered" into a draft of the Tranche 2 submission.
+echo "== the deployment record agrees with the Engine about who is registered"
+ok "engineConfig.pools matches pools()" "$(python3 -c "
+import json, subprocess
+rec = json.load(open('$DEP'))['engineConfig']['pools']
+want = set()
+for k, v in rec.items():
+    a = v.get('address')
+    if a: want.add(a)
+print('listed' if len(want) == len(rec) else 'some entries carry no address')
+" )" "listed"
+ok "and every registered pool is in the record" \
+   "$(printf '%s' "$POOLS" | python3 -c "
+import json, sys
+on_chain = set(json.load(sys.stdin))
+rec = json.load(open('$DEP'))['engineConfig']['pools']
+listed = {v.get('address') for v in rec.values()}
+missing = on_chain - listed
+print('none missing' if not missing else 'missing ' + ', '.join(sorted(missing)))
+")" "none missing"
+
 echo "== the two books agree"
 TA=$(num "$ENGINE" total_allocated)
 DC=$(num "$VAULT" deployed_capital)

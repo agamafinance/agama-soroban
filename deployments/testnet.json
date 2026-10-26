@@ -43,12 +43,21 @@
       "private-credit": {
         "originator": "QIRO",
         "jurisdiction": "LU",
-        "capBps": 4000
+        "capBps": 4000,
+        "address": "CDNWXGSSP3BOAIKIYTGDHST2BBSZNWIW6RMDQERM3HOQ24EO43WLP3VE"
       },
       "etherfuse": {
         "originator": "ETHERFUS",
         "jurisdiction": "MX",
-        "capBps": 4000
+        "capBps": 4000,
+        "address": "CCXO2ZIMK7KZMMUBE24KOLWDJHVXQKXDNEP4QH7N5ZK5U6ESCWKM7BXN"
+      },
+      "cross-chain": {
+        "address": "CDSO4GJRY7BFVMQ4PYP3ISVOFPQLPA3C7ZFT5HQOUDM3VXTGOUWUWFML",
+        "originator": "ABF",
+        "jurisdiction": "JE",
+        "capBps": 4000,
+        "note": "Registered on the Engine as a third pool, read back from pools() and get_pool. It was recorded only under contracts.cctpAdapter, so this list said two where the Engine says three, which is the drift that put 'two adapters are registered' into a draft of the Tranche 2 submission. verify-tranche2.sh now compares this list against the ledger."
       }
     },
     "floorMeasuredAgainst": "floor_base, which is free reserves plus deployed capital plus everything ever written off, and not net assets. record_writedown lowers deployed capital with no cash moving, so a floor that is a share of net assets is a floor whose absolute size the admin lowers every time a loss is recognised: allocating to the floor and writing the position off, over and over, moved 999.9999999 of 1000 USDC out of a Vault holding a 25 percent floor with every individual call inside the limit. Recognised losses stay in the base for good, so a write-down buys nothing. It is also the more correct base, because agUSD redeems one for one and a default does not reduce what the Vault owes.",
