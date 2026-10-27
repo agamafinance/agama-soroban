@@ -373,7 +373,9 @@ if [ "$((PC_LEG + EF_LEG))" = "$MAX" ]; then
   refused 316 "and nothing more leaves, however small" \
     "$ENGINE" allocate --admin "$ADMIN" --pool_id "$EF" --amount 1
 else
-  ok "the reserve ratio sits at $(q "$ENGINE" get_reserve_ratio) rather than the $FLOOR floor, because the caps withheld $((MAX - PC_LEG - EF_LEG)) of what the floor would have released"
+  echo "  SKIP  the reserve ratio sits at $(q "$ENGINE" get_reserve_ratio) rather than the"
+  echo "        $FLOOR floor, because the caps withheld $((MAX - PC_LEG - EF_LEG)) of what the floor"
+  echo "        would have released, so the floor is not the binding limit here"
   refused_floor_or_cap "and nothing more leaves, however small" \
     "$ENGINE" allocate --admin "$ADMIN" --pool_id "$EF" --amount 1
 fi
@@ -474,7 +476,8 @@ if [ $(( $(date +%s) - LAST_AT )) -ge "$PC_INTERVAL" ]; then
 else
   # A re-run inside the hour hits the feed's own rate limit, which is the guard
   # under test doing exactly what it is for. The last accepted value stands.
-  ok "PC_NAV was accepted $(( $(date +%s) - LAST_AT ))s ago, inside its ${PC_INTERVAL}s interval, so a push now is refused"
+  echo "  SKIP  PC_NAV was accepted $(( $(date +%s) - LAST_AT ))s ago, inside its"
+  echo "        ${PC_INTERVAL}s interval, so no push was attempted here"
 fi
 EXPECT_NAV=$(q "$ORACLE" get_nav --feed_id PC_NAV | tr -d '"')
 assert_eq "the Vault reads its feed" "$(q "$VAULT" get_nav | tr -d '"')" "$EXPECT_NAV"
@@ -510,10 +513,12 @@ if [ -n "$R2_ADDR" ]; then
     refused_as "$R2" 514 "a second round inside the interval is refused" \
       "$ORACLE" submit_nav --reporter "$R2_ADDR" --feed_id PC_NAV --nav "$((COMMIT_NAV + 1000))" --timestamp "$((COMMIT_TS + 1))"
   else
-    ok "the round did not commit (last_update $COMMITTED, wanted $COMMIT_TS), so the interval guard is not exercised here"
+    echo "  SKIP  the round did not commit (last_update $COMMITTED, wanted $COMMIT_TS),"
+    echo "        so the interval guard is not exercised here"
   fi
 else
-  ok "no second reporter identity, so the interval guard is not exercised here"
+  echo "  SKIP  no second reporter identity, so the interval guard is not"
+  echo "        exercised here"
 fi
 
 echo ""

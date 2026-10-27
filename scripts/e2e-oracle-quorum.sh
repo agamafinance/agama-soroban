@@ -87,13 +87,28 @@ if [ "$WAIT" -gt 0 ]; then
   perl -e "select(undef,undef,undef,$WAIT)"
 fi
 
+stamp_now() {   # the timestamp the feed currently carries
+  stellar contract invoke --id "$ORACLE" --source "$K1" --network "$NET" --send=no -- \
+    last_update --feed_id $FEED 2>/dev/null \
+    | python3 -c "import sys,json;print(json.load(sys.stdin)['timestamp'])"
+}
+
 TS=$(ledger_now)
-VALUE=$BEFORE   # the value the feed already holds: this tests quorum, not drift
-echo "  feed at $BEFORE, opening a round at timestamp $TS"
+# One stroop above what the feed holds, and not the value it already has.
+#
+# Submitting the stored value made "nothing committed, the feed is unchanged"
+# hold whether or not the lone vote had committed, which is the single thing
+# this suite exists to prove: the assertion could not fail, so it was not
+# evidence. A stroop is far inside both the 200 bps bound and the band, so it
+# tests the quorum without testing drift, which was the original intent.
+VALUE=$((BEFORE + 1))
+STAMP_BEFORE=$(stamp_now)
+echo "  feed at $BEFORE, opening a round at timestamp $TS on $VALUE"
 
 echo "== one reporter is not a quorum"
 ok "the first submission is pending" "$(sub "$K1" "$A1" "$VALUE" "$TS")" "Pending"
 ok "nothing committed, the feed is unchanged" "$(rd get_nav --feed_id $FEED)" "$BEFORE"
+ok "and the stored round did not advance" "$(stamp_now)" "$STAMP_BEFORE"
 ok "the vote was recorded, not discarded" "$(rd quorum_votes --feed_id $FEED --timestamp $TS --nav $VALUE)" "1"
 
 echo "== the same reporter cannot carry it alone"
@@ -102,10 +117,7 @@ ok "still one vote after the repeat" "$(rd quorum_votes --feed_id $FEED --timest
 
 echo "== a second distinct reporter commits it"
 ok "the second submission is accepted" "$(sub "$K2" "$A2" "$VALUE" "$TS")" "Accepted"
-LAST=$(stellar contract invoke --id "$ORACLE" --source "$K1" --network "$NET" --send=no -- \
-  last_update --feed_id $FEED 2>/dev/null \
-  | python3 -c "import sys,json;print(json.load(sys.stdin)['timestamp'])")
-ok "the feed now carries this round's timestamp" "$LAST" "$TS"
+ok "the feed now carries this round's timestamp" "$(stamp_now)" "$TS"
 ok "and the agreed value" "$(rd get_nav --feed_id $FEED)" "$VALUE"
 
 echo
