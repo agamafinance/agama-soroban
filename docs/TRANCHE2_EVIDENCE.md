@@ -46,13 +46,21 @@ afterwards, asserting they are back even when it exits through a failure.
 | the windows and bounds are the ones approved | `deployments/testnet.json`, `oracleFeeds`, and the contract's own reads | USDC_USD 3600 s / 200 bps, PC_NAV 604800 s / 500 bps, EF_BOND 172800 s / no deviation bound |
 | stale reports revert with OracleStale | `cargo test --workspace` | `stale_read_errors_with_oracle_stale`, `get_nav_reads_the_oracle_and_propagates_staleness` |
 | out-of-bounds reports rejected | same | `out_of_bounds_deviation_fails_push_nav`, `out_of_bounds_deviation_emits_nav_rejected_on_submit_nav`, `the_deviation_bound_is_exact_to_the_stroop`, and on the ledger `NavOutOfBand` (513) and `TooSoon` (514) in `smoke-hardening.sh` |
-| a NAV cannot be moved by one key | `bash scripts/e2e-oracle-quorum.sh` | **11 passed, 0 failed** against a quorum of two: one reporter gets `Pending` and moves nothing, a repeat vote is `#518`, a second distinct reporter commits |
+| a NAV cannot be moved by one reporter | `bash scripts/e2e-oracle-quorum.sh` | **11 passed, 0 failed** against a quorum of two: one reporter gets `Pending` and moves nothing, a repeat vote is `#518`, a second distinct reporter commits. What it does not cover, stated here rather than left to be found: the threshold is admin settable with no floor above one, and the admin is also the first reporter, so the quorum holds against a compromised reporter and not against the admin key. A threshold that only ratchets upward is a one line change we are taking to the audit rather than redeploying under a submitted milestone |
 | yield distribution driven by oracle data | `bash scripts/keeper-yield.sh` | **proven on chain twice on 26 October**: PC_NAV 10150500 to 10181000 through a quorum of two, 1210 USDC of deployed capital, 36357814 stroops distributed, share price moved with it, no share minted. Earlier the same day on 100 USDC: 10100000 to 10150500, 500000 stroops, 16320400 to 16321847 |
 | reconciled against what backs it | `bash scripts/e2e-generation3.sh`, section 8 | agUSD in circulation against its backing, and sagUSD against the tracked share count, both closing in the same run |
 
 **What drives what, exactly.** The Vault prices its book by reading PC_NAV
 through its own `get_nav`, and a stale feed makes that read revert rather than
-return a number. `keeper-yield.sh` reads the same way, so the keeper stops
+return a number. Staleness is measured against the timestamp the reporter
+attests to, and `keeper-oracle.sh` reposts the value already on the feed with
+the current time once half a window has gone, because testnet has no upstream
+private credit NAV to re-source from. So on this deployment a feed expires when
+its reporters stop, not when the number behind it gets old, which is why the
+staleness suite has to pause the keeper to show the guard at all. Re-sourcing
+on every pass, and refusing a report already outside its own window on the way
+in, are what make this mechanism mean on mainnet what it reads like here.
+`keeper-yield.sh` reads the same way, so the keeper stops
 where the Vault stops, and computes `deployed capital x (PC_NAV now / PC_NAV at
 the last distribution - 1)`. The distribution itself still requires the agUSD
 to be transferred: an oracle that doubles overnight asks the strategist for
@@ -136,7 +144,7 @@ property the tranche is about.
 ```sh
 bash scripts/e2e-allocation-guards.sh      # 10, #407 and #410
 bash scripts/e2e-concentration-caps.sh     # 10, #408 and #409
-bash scripts/e2e-oracle-quorum.sh          # 11, a NAV one key cannot move
+bash scripts/e2e-oracle-quorum.sh          # 11, a NAV one reporter cannot move
 bash scripts/e2e-oracle-staleness.sh       #  3, OracleStale on the peg feed
 bash scripts/refusals-on-ledger.sh         #  6, the four refusals, submitted not simulated
 bash scripts/smoke-hardening.sh            # 64, the security review on the live addresses
