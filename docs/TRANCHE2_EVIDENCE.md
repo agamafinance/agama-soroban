@@ -147,7 +147,7 @@ the code did are corrected above.
 Start here. Neither needs anything: no key, no identity, no funding, no config.
 
 ```sh
-bash scripts/verify-tranche2.sh            # 23, against the live ledger
+bash scripts/verify-tranche2.sh            # 24, against the live ledger
 bash scripts/campaign-report.sh            # the oracle campaign, counted off Horizon
 ```
 
@@ -158,6 +158,14 @@ from simulation before a signature is involved: `#407` over the per-pool cap at
 an account that is nobody, and `#411` for more than the Vault holds idle. The
 second counts the campaign off Horizon, which is the one claim our own logs
 cannot settle.
+
+The video says twenty three assertions and this file says twenty four. The
+video is right about the day it was recorded. The twenty fourth was added on
+27 October, when a reading of our own scripts found that the six originator
+and jurisdiction values were printed and never compared to the record that
+repeats them in prose, which is how a record and a ledger drift apart. Running
+the command is what settles which number is current, and that is the point of
+handing you the command rather than the number.
 
 Five more need no key either, and a sixth needs a GitHub push access rather
 than a Stellar one. They are where the rest of the numbers above come from:

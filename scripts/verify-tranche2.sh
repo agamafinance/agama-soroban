@@ -85,6 +85,34 @@ print('%-9s %-3s cap %s bps' % (m['originator'], m['jurisdiction'], m['cap_bps']
   printf '%s' "$META" | grep -q '"originator"' && printf '%s' "$META" | grep -q '"jurisdiction"' && NAMED=$((NAMED+1))
 done
 ok "each carries an originator and a jurisdiction" "$NAMED" "3"
+# The six values above are the reason the aggregate caps cannot bind, and the
+# record repeats them in prose. Printed and never compared is how a record and
+# a ledger drift apart, so the classification itself is checked too.
+ok "the record names the same originator and jurisdiction the Engine does" \
+   "$(for p in $(printf '%s' "$POOLS" | python3 -c "import sys,json;print(' '.join(json.load(sys.stdin)))"); do
+        printf '%s %s\n' "$p" "$(call "$ENGINE" get_pool --pool_id "$p" | tr -d '\n')"; done | python3 -c "
+import sys, json
+# dict() and not a literal: bash brace-expands a comma inside braces, even
+# inside double quotes, and turns one python program into two broken ones.
+rec = json.load(open('$DEP'))['engineConfig']['pools']
+by_addr = dict()
+for v in rec.values():
+    if v.get('address'):
+        by_addr[v['address']] = (v['originator'], v['jurisdiction'])
+bad = []
+for line in sys.stdin:
+    addr, _, blob = line.partition(' ')
+    if not blob.strip().startswith('{'):
+        continue
+    m = json.loads(blob)
+    want = by_addr.get(addr)
+    got = (m['originator'], m['jurisdiction'])
+    if want is None:
+        bad.append(addr[:8] + ' is not in the record')
+    elif want != got:
+        bad.append(addr[:8] + ': record says ' + str(want) + ', Engine says ' + str(got))
+print('the same' if not bad else '; '.join(bad))
+")" "the same"
 ok "and no two share either, so the pool cap binds first" \
    "$(for p in $(printf '%s' "$POOLS" | python3 -c "import sys,json;print(' '.join(json.load(sys.stdin)))"); do
         call "$ENGINE" get_pool --pool_id "$p"; done | python3 -c "

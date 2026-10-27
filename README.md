@@ -81,7 +81,7 @@ bash scripts/check-refusals.sh
 ```
 
 None of them needs anything. The first makes its own account, funds it from
-friendbot, and checks this README against the ledger: 23 assertions, including
+friendbot, and checks this README against the ledger: 24 assertions, including
 two refusals it reproduces by simulation at an account that is nobody. The
 second counts the oracle campaign off Horizon, every `submit_nav` the dedicated
 reporter has ever signed and the day each one landed on, so the one claim our
