@@ -419,9 +419,12 @@ What re-proves each claim on the generation actually deployed:
 An adversarial security review of this repository, ahead of the external audit,
 found three critical issues, two high, and four medium. Every one of them is
 fixed, every fix has a test that fails without it, and the fixes are proven
-against the live deployment by `scripts/smoke-hardening.sh`, which makes 64
-assertions and prints a transaction hash for every state change. **64 passed,
-0 failed on 26 October 2026**, against the addresses in the table above.
+against the live deployment by `scripts/smoke-hardening.sh`, which asserts
+against the chain and prints a transaction hash for every state change.
+**62 passed, 0 failed, 2 skipped on 27 October 2026**, against the addresses
+in the table above. It read 64 on 26 October, and four of those were passes
+the suite awarded to branches it had not run: a guard that is not exercised
+now prints `SKIP` and is not counted.
 
 The table below is from the run of 9 September 2026, and it is worth saying
 what that means: every transaction in it was sent to `CAOGJDWH` and
