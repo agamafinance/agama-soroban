@@ -79,7 +79,7 @@ not this criterion, and it is kept for demos.
 | agUSD/USDC swaps through the Stellar DEX | `bash scripts/e2e-generation3.sh`, section 6 | a Soroswap swap, executed in the run |
 | and path payments | same run, section 7 | the order book quoted through Horizon's strict-send paths, then a `path-payment-strict-send`, with the run asserting the fill honoured the quote it was taken at |
 | codebase frozen for the audit | `git diff --name-only aee6c61..HEAD -- contracts/ adapters/ crates/ Cargo.toml Cargo.lock` | **nothing**, which is the freeze. What landed after aee6c61 is this file, six new scripts under `scripts/` and fixes to five more, the deployment record and the README. The check is the command, so it stays honest as we go on working on everything around the contracts |
-| the freeze is a frozen tree, not a frozen claim | `bash scripts/smoke-hardening.sh` | **64 passed, 0 failed** on 26 October, against the live addresses, and that 64 is four too many: the suite awarded a pass to four branches it had not run, each one saying so in its own message. They print `SKIP` since 27 October, as the suite already did elsewhere, so the next run reports a smaller number and a truer one. It is not re-run here because it needs three spendable USDC on the admin and the account's balance is pledged to the sagUSD market maker's own offers. The adversarial review ahead of the audit found three critical, two high and four medium, every one fixed, every fix with a test that fails without it. The hashes the README carries for each finding are from 9 September and point at the retired generation, which is why the suite was re-run rather than cited |
+| the freeze is a frozen tree, not a frozen claim | `bash scripts/smoke-hardening.sh` | **62 passed, 0 failed, 2 skipped** on 27 October, against the live addresses. It read 64 the day before, and four of those were passes awarded to branches the suite had not run, each one saying so in its own message: the interval guard with no second round to test, and the floor with the caps binding before it. They print `SKIP` now, which the suite already did correctly elsewhere, so the number went down because the counting got honest and not because anything broke. The adversarial review ahead of the audit found three critical, two high and four medium, every one fixed, every fix with a test that fails without it. The hashes the README carries for each finding are from 9 September and point at the retired generation, which is why the suite was re-run rather than cited |
 | handed over to OtterSec | the engagement | **in scheduling**. This is the one line in this file that is not a command, and it is not going to be written as though it were |
 
 ## A second review, on 27 October, and what it found
@@ -184,7 +184,7 @@ bash scripts/e2e-concentration-caps.sh     # 10, #408 and #409
 bash scripts/e2e-oracle-quorum.sh          # 12, a NAV one reporter cannot move
 bash scripts/e2e-oracle-staleness.sh       #  3, OracleStale on the peg feed
 bash scripts/refusals-on-ledger.sh         #  6, the four refusals, submitted not simulated
-bash scripts/smoke-hardening.sh            # 64, the security review on the live addresses
+bash scripts/smoke-hardening.sh            # 62, the security review on the live addresses
 bash scripts/e2e-generation3.sh            # 21, deposit to redemption, and the SDEX
 DRY=1 bash scripts/keeper-yield.sh         # what the feed says the book earned, unsent
 ```
