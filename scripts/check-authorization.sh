@@ -39,6 +39,7 @@ FILES = {
     "oracle-adapter": "contracts/oracle-adapter/src/lib.rs",
     "adapters/private-credit": "adapters/private-credit/src/lib.rs",
     "adapters/etherfuse": "adapters/etherfuse/src/lib.rs",
+    "adapters/cctp": "adapters/cctp/src/lib.rs",
 }
 
 # Permissionless on purpose. Each one is a decision, with the reason it was made.

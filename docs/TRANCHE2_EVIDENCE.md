@@ -124,7 +124,7 @@ the code did are corrected above.
 | Check | Command | Result |
 |---|---|---|
 | every contract we deploy is the source in this tree | `bash scripts/check-deployment-record.sh --wasm` | 77 passed, 0 failed. Seven addresses are compared byte for byte, which is every contract this repository builds: the Vault, staking, the Engine, the Oracle Adapter and the three pool adapters. The other eight the record names are declared in `notCompared` with a reason and the pass fails on any address in neither list, because a hand written list is how six credit vaults, generation 1 agUSD and the USDC contract sat outside the claim for weeks without anyone deciding they should. Circle's USDC and the Stellar Asset Contracts carry no uploaded WASM at all, so there is nothing to rebuild; the six credit vaults are one build of `staking.wasm` with its ledger hash recorded. From a bare clone it is 65: twelve of them compare the docs site and need the docs repo alongside, and the script prints the skip and both totals |
-| every state-changing entry point authorizes | `bash scripts/check-authorization.sh` | 69 entry points, 5 deliberately permissionless and argued one by one, 0 failures |
+| every state-changing entry point authorizes | `bash scripts/check-authorization.sh` | **77 entry points, 5 deliberately permissionless and argued one by one, 0 failures**. It was 69 until 27 October, because the file list was written by hand and the cross-chain adapter was never added to it while being live and registered as the Engine's third pool. Adding it found no violation, which is the good outcome and not the one that excuses the gap: the number now covers every contract this repository deploys |
 | every documented signature matches the ledger | `bash scripts/check-doc-entry-points.sh` | 9 passed, 0 failed |
 | the contracts have not archived themselves | `bash scripts/check-ttl.sh` | 10 passed, 0 failed |
 | advisories against the deployed bytecode | `bash scripts/check-advisories.sh` | **2 passed, 0 failed**. There are two open Dependabot alerts on this repository and we would rather name them than let you find them: `stellar-xdr` (medium, `StringM::from_str` skipping its length check) and `soroban-env-host` (low, muxed address conversions). Both are in `Cargo.lock` because `soroban-sdk`'s testutils pull the host in for the unit tests, and neither appears in any of the 18 deployed modules, which the script checks by searching the bytecode rather than the dependency graph. Bumping them would rewrite the tree frozen at `aee6c61` and with it every wasm hash on the ledger, so they stay until after the audit |
@@ -165,7 +165,7 @@ come from:
 ```sh
 cargo test --workspace                           # 227, 11 suites
 bash scripts/check-deployment-record.sh --wasm   # 65 from a clone, 77 with the docs repo
-bash scripts/check-authorization.sh              # 69 entry points
+bash scripts/check-authorization.sh              # 77 entry points
 bash scripts/check-doc-entry-points.sh           # 9
 bash scripts/check-ttl.sh                        # 10
 bash scripts/check-advisories.sh                 # 2
