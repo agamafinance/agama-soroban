@@ -110,8 +110,7 @@ ok "DeFindex agrees with the rate" "$(stellar contract invoke --id $STAKING --so
 
 echo "== 5. unstake, shares burnt through the SAC"
 stellar contract invoke --id "$STAKING" --source "$KEY" --network "$NET" -- request_unstake --from "$E" --shares "$S" >/dev/null 2>&1
-ok "shares gone" "$(bal $SAG $E)" "0"
-ok "this user's shares all burnt" "$(bal $SAG $E)" "0"
+ok "this user's shares are all burnt" "$(bal $SAG $E)" "0"
 perl -e 'select(undef,undef,undef,65)'
 stellar contract invoke --id "$STAKING" --source "$KEY" --network "$NET" -- claim --from "$E" >/dev/null 2>&1
 gt "agUSD returned with the yield" "$(bal $AGUSD $E)" "$AG_BEFORE_STAKE"
@@ -147,7 +146,18 @@ stellar tx new path-payment-strict-send --source-account "$KEY" --destination "$
   --network "$NET" >/tmp/e2e-pp.log 2>&1 || sed -n '1,2p' /tmp/e2e-pp.log
 perl -e 'select(undef,undef,undef,6)'
 gt "path payment executed on the book" "$(bal $USDC $E)" "$B"
-gt "the fill honoured the quote it was taken at" "$(( $(bal $USDC $E) - B ))" "$(( MIN - 1 ))"
+# Against the quote, not against the floor. dest-min is a number this script
+# handed the network and the network enforces, so comparing the fill to it
+# asks Stellar whether Stellar kept its own rule: it cannot fail. The claim
+# worth making is that the venue filled within the tolerance of the price it
+# quoted, so that is what is measured.
+FILL=$(( $(bal $USDC $E) - B ))
+ok "the fill is within 50 bps of the quote it was taken at" \
+   "$(python3 -c "
+q = $SDEXQ
+f = $FILL
+print('within %d bps' % 50 if q and abs(f - q) * 10000 <= q * 50 else 'off by %d bps' % (abs(f - q) * 10000 // q if q else -1))
+")" "within 50 bps"
 
 echo "== 8. circulation against backing, the two reconciliations"
 # agUSD is minted one for one against USDC, so what exists of it and what backs

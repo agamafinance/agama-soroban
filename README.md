@@ -405,7 +405,7 @@ What re-proves each claim on the generation actually deployed:
 
 | Claim | Proven today by |
 |---|---|
-| The whole user path, deposit through redemption | `bash scripts/e2e-generation3.sh`, 21 assertions, which also reconciles each token's circulation against what backs it |
+| The whole user path, deposit through redemption | `bash scripts/e2e-generation3.sh`, 20 assertions, which also reconciles each token's circulation against what backs it |
 | The concentration cap and the reserve floor | `bash scripts/e2e-allocation-guards.sh`, 10 assertions, both guards made to bind on the live Engine |
 | A NAV cannot be moved by one key | `bash scripts/e2e-oracle-quorum.sh`, 11 assertions, against a quorum of two |
 | The CCTP path is still wired to the right contracts | `bash scripts/e2e-cctp-wiring.sh`, 10 assertions, which read the three Circle contracts without spending anything |
