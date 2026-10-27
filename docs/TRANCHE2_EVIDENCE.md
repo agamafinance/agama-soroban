@@ -123,7 +123,7 @@ the code did are corrected above.
 
 | Check | Command | Result |
 |---|---|---|
-| every deployed contract is the source in this tree | `bash scripts/check-deployment-record.sh --wasm` | 77 passed, 0 failed. From a bare clone it is 65: twelve of them compare the docs site and need the docs repo alongside, and the script prints the skip and both totals |
+| every contract we deploy is the source in this tree | `bash scripts/check-deployment-record.sh --wasm` | 77 passed, 0 failed. Seven addresses are compared byte for byte, which is every contract this repository builds: the Vault, staking, the Engine, the Oracle Adapter and the three pool adapters. The other eight the record names are declared in `notCompared` with a reason and the pass fails on any address in neither list, because a hand written list is how six credit vaults, generation 1 agUSD and the USDC contract sat outside the claim for weeks without anyone deciding they should. Circle's USDC and the Stellar Asset Contracts carry no uploaded WASM at all, so there is nothing to rebuild; the six credit vaults are one build of `staking.wasm` with its ledger hash recorded. From a bare clone it is 65: twelve of them compare the docs site and need the docs repo alongside, and the script prints the skip and both totals |
 | every state-changing entry point authorizes | `bash scripts/check-authorization.sh` | 69 entry points, 5 deliberately permissionless and argued one by one, 0 failures |
 | every documented signature matches the ledger | `bash scripts/check-doc-entry-points.sh` | 9 passed, 0 failed |
 | the contracts have not archived themselves | `bash scripts/check-ttl.sh` | 10 passed, 0 failed |
