@@ -38,7 +38,10 @@ if ! ALERTS=$(gh api repos/agamafinance/agama-soroban/dependabot/alerts \
   echo "        or run this with gh installed and logged in."
   echo ""
   echo "  $PASS passed, $FAIL failed, 1 skipped"
-  exit 0
+  # Not zero. A reviewer holds no push access on this repository, so this is
+  # the branch they land in, and an exit of 0 makes "nothing was checked" read
+  # from the outside exactly like "nothing was found".
+  exit 2
 fi
 if [ -z "$ALERTS" ]; then
   ok "GitHub reports no open advisory on this repository"
@@ -63,6 +66,10 @@ while IFS=$'\t' read -r sev pkg; do
   # and the ledger holds the compiler's version for everything deployed so far.
   # Searching only the optimised copy would mean searching something nobody
   # deployed.
+  # Two artefacts per crate, so count the crates and not the files: saying
+  # eighteen modules when there are nine, each compiled twice, overstates the
+  # search by exactly a factor of two.
+  modules=$(ls target/wasm32v1-none/release/*.wasm 2>/dev/null | grep -vc mock_usdc)
   for w in target/wasm32v1-none/release/*.wasm target/wasm32v1-none/release/deps/*.wasm; do
     case "$w" in *mock_usdc*) continue;; esac
     searched=$((searched + 1))
@@ -70,7 +77,7 @@ while IFS=$'\t' read -r sev pkg; do
     hits=$((hits + ${n:-0}))
   done
   if [ "$hits" = "0" ]; then
-    ok "$pkg ($sev) appears in none of the $searched deployed modules"
+    ok "$pkg ($sev) appears in none of the $modules deployed modules, in both the compiler's and the optimiser's artefact"
   else
     bad "$pkg ($sev) appears $hits times in the deployed modules, so it is on the ledger"
   fi

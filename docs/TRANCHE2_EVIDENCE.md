@@ -127,7 +127,7 @@ the code did are corrected above.
 | every state-changing entry point authorizes | `bash scripts/check-authorization.sh` | **77 entry points, 5 deliberately permissionless and argued one by one, 0 failures**. It was 69 until 27 October, because the file list was written by hand and the cross-chain adapter was never added to it while being live and registered as the Engine's third pool. Adding it found no violation, which is the good outcome and not the one that excuses the gap: the number now covers every contract this repository deploys |
 | every documented signature matches the ledger | `bash scripts/check-doc-entry-points.sh` | 9 passed, 0 failed |
 | the contracts have not archived themselves | `bash scripts/check-ttl.sh` | 10 passed, 0 failed |
-| advisories against the deployed bytecode | `bash scripts/check-advisories.sh` | **2 passed, 0 failed**. There are two open Dependabot alerts on this repository and we would rather name them than let you find them: `stellar-xdr` (medium, `StringM::from_str` skipping its length check) and `soroban-env-host` (low, muxed address conversions). Both are in `Cargo.lock` because `soroban-sdk`'s testutils pull the host in for the unit tests, and neither appears in any of the 18 deployed modules, which the script checks by searching the bytecode rather than the dependency graph. Bumping them would rewrite the tree frozen at `aee6c61` and with it every wasm hash on the ledger, so they stay until after the audit |
+| advisories against the deployed bytecode | `bash scripts/check-advisories.sh` | **2 passed, 0 failed**. There are two open Dependabot alerts on this repository and we would rather name them than let you find them: `stellar-xdr` (medium, `StringM::from_str` skipping its length check) and `soroban-env-host` (low, muxed address conversions). Both are in `Cargo.lock` because `soroban-sdk`'s testutils pull the host in for the unit tests, and neither appears in any of the 9 deployed modules, searched in both the compiler's and the optimiser's artefact, which the script checks by searching the bytecode rather than the dependency graph. Bumping them would rewrite the tree frozen at `aee6c61` and with it every wasm hash on the ledger, so they stay until after the audit |
 | the unit suite | `cargo test --workspace` | 227 passed, 0 failed, 11 suites |
 
 ## The contracts this tranche is about
@@ -159,8 +159,8 @@ an account that is nobody, and `#411` for more than the Vault holds idle. The
 second counts the campaign off Horizon, which is the one claim our own logs
 cannot settle.
 
-Six more need no key either, and they are where the rest of the numbers above
-come from:
+Five more need no key either, and a sixth needs a GitHub push access rather
+than a Stellar one. They are where the rest of the numbers above come from:
 
 ```sh
 cargo test --workspace                           # 227, 11 suites
@@ -168,7 +168,10 @@ bash scripts/check-deployment-record.sh --wasm   # 65 from a clone, 77 with the 
 bash scripts/check-authorization.sh              # 77 entry points
 bash scripts/check-doc-entry-points.sh           # 9
 bash scripts/check-ttl.sh                        # 10
-bash scripts/check-advisories.sh                 # 2
+bash scripts/check-advisories.sh                 # 2, and this one alone needs a GitHub
+                                                 #    push access to read the alert list.
+                                                 #    Without it it prints SKIP and exits 2,
+                                                 #    which is not the same as none open
 ```
 
 And then the eight runs that sign, which you cannot, and it is worth
@@ -182,7 +185,10 @@ property the tranche is about.
 bash scripts/e2e-allocation-guards.sh      # 10, #407 and #410
 bash scripts/e2e-concentration-caps.sh     # 10, #408 and #409
 bash scripts/e2e-oracle-quorum.sh          # 12, a NAV one reporter cannot move
-bash scripts/e2e-oracle-staleness.sh       #  3, OracleStale on the peg feed
+bash scripts/e2e-oracle-staleness.sh       #  3, OracleStale on the peg feed. Every call
+                                           #    it makes is a simulation, so what you cannot
+                                           #    do is not sign it but pause our keeper, which
+                                           #    is what lets the feed expire in the first place
 bash scripts/refusals-on-ledger.sh         #  6, the four refusals, submitted not simulated
 bash scripts/smoke-hardening.sh            # 62, the security review on the live addresses
 bash scripts/e2e-generation3.sh            # 21, deposit to redemption, and the SDEX

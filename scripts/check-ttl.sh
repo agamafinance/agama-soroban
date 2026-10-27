@@ -67,7 +67,7 @@ if not latest:
 by_key = {e['key']: e for e in res.get('entries', [])}
 print('  latest ledger %d, about five seconds each' % latest)
 print()
-passed = failed = 0
+passed = failed = warned = 0
 for name, k in sorted(keys.items()):
     e = by_key.get(k)
     if not e:
@@ -80,8 +80,12 @@ for name, k in sorted(keys.items()):
         print('  FAIL  %-28s %5.0f days left, under the %.0f this fails at' % (name, days, min_days))
         failed += 1
     elif days < warn_days:
+        # Counted apart from the passes. A contract eight days from archiving
+        # is not a contract that answered the question this check asks, and
+        # folding it into the pass total is how "10 passed, 0 failed" came to
+        # be compatible with one of them being days from gone.
         print('  WARN  %-28s %5.0f days left, under the %.0f worth watching' % (name, days, warn_days))
-        passed += 1
+        warned += 1
     else:
         print('  PASS  %-28s %5.0f days left' % (name, days))
         passed += 1
@@ -90,6 +94,7 @@ print()
 print('  extend with: stellar contract extend --id <address> --durability persistent \\')
 print('                 --ledgers-to-extend 535679 --source-account agama-poc --network testnet')
 print()
-print('  %d passed, %d failed' % (passed, failed))
+print('  %d passed, %d failed%s' % (passed, failed,
+      ', %d warned' % warned if warned else ''))
 raise SystemExit(1 if failed else 0)
 PY

@@ -97,7 +97,7 @@ print('yes' if o == len(rows) and j == len(rows) else 'no')")" "yes"
 # list said two pools while the Engine said three, and that drift is what put
 # "two adapters are registered" into a draft of the Tranche 2 submission.
 echo "== the deployment record agrees with the Engine about who is registered"
-ok "engineConfig.pools matches pools()" "$(python3 -c "
+ok "every record entry carries an address" "$(python3 -c "
 import json, subprocess
 rec = json.load(open('$DEP'))['engineConfig']['pools']
 want = set()
@@ -106,15 +106,25 @@ for k, v in rec.items():
     if a: want.add(a)
 print('listed' if len(want) == len(rec) else 'some entries carry no address')
 " )" "listed"
-ok "and every registered pool is in the record" \
+# Both directions. The drift that put "two adapters are registered" into a
+# draft was the record naming fewer than the Engine, so that is the direction
+# this check was written for; a record naming a pool the Engine does not have
+# is the same class of claim and was not caught at all.
+ok "the record and the Engine name the same pools" \
    "$(printf '%s' "$POOLS" | python3 -c "
 import json, sys
 on_chain = set(json.load(sys.stdin))
 rec = json.load(open('$DEP'))['engineConfig']['pools']
-listed = {v.get('address') for v in rec.values()}
+listed = {v.get('address') for v in rec.values() if v.get('address')}
 missing = on_chain - listed
-print('none missing' if not missing else 'missing ' + ', '.join(sorted(missing)))
-")" "none missing"
+extra = listed - on_chain
+if missing:
+    print('the record is missing ' + ', '.join(sorted(missing)))
+elif extra:
+    print('the record names ' + ', '.join(sorted(extra)) + ', which the Engine does not')
+else:
+    print('the same pools')
+")" "the same pools"
 
 echo "== the two books agree"
 TA=$(num "$ENGINE" total_allocated)
