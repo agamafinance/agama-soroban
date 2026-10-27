@@ -324,11 +324,16 @@ def secs(p):
     out = subprocess.run(['python3', 'scripts/wasm-sections.py', p],
                          capture_output=True, text=True)
     return [l.split('|') for l in out.stdout.strip().split('\n') if l]
+# A diff that could not be computed is not a diff that came back empty. Exiting
+# zero here made the caller read "no section differs", and a declared contract
+# then passed on the strength of a comparison that never ran.
 try:
     a, b = secs(sys.argv[1]), secs(sys.argv[2])
-except Exception:
+except Exception as e:
+    print('the section diff could not run: %s' % e)
     sys.exit(0)
 if not a or not b:
+    print('the section diff returned nothing for one of the two modules')
     sys.exit(0)
 names = {(x[0], x[1]) for x in a} | {(x[0], x[1]) for x in b}
 da = {(x[0], x[1]): (x[2], x[3]) for x in a}
@@ -343,6 +348,10 @@ PY2
       if echo "$PENDING" | grep -qx "$name"; then
         if [ "$CODE_DIFF" != 0 ]; then
           bad "$name is declared, but the difference reaches the code section: $DLIST"
+        elif echo "$DIFFS" | grep -q "could not run\|returned nothing"; then
+          bad "$name is declared, and the comparison that would justify it did not run: $DLIST"
+        elif [ -z "$DIFFS" ]; then
+          bad "$name is declared as differing and no section differs, so the declaration is stale"
         else
           ok "$name differs and is declared, outside the code section: $DLIST"
         fi
