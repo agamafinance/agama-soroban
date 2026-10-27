@@ -64,6 +64,13 @@ if [ "$BAL" -lt "$AMOUNT" ]; then
   exit 1
 fi
 
+# What the submission says this keeper proves is that the share price moves and
+# no share is minted. The script printed the rate afterwards and compared it to
+# nothing, so the claim rested on a different suite driving a hand picked
+# constant. Read both sides here instead.
+RATE_BEFORE=$(rd "$STAKING" exchange_rate)
+SHARES_BEFORE=$(rd "$STAKING" total_shares)
+
 # distribute_yield takes the amount only: the contract reads its own admin and
 # pulls the agUSD from them, which is what stops this keeper inventing yield.
 OUT=$(stellar contract invoke --id "$STAKING" --source "$SRC" --network "$NET" -- \
@@ -78,4 +85,22 @@ if [ "$STATUS" -ne 0 ] || printf '%s' "$OUT" | grep -q "Error(Contract"; then
   exit 1
 fi
 python3 -c "import json;json.dump({'nav': $NAV_NOW}, open('$STATE','w'))"
-echo "rate now $(rd "$STAKING" exchange_rate)"
+
+RATE_AFTER=$(rd "$STAKING" exchange_rate)
+SHARES_AFTER=$(rd "$STAKING" total_shares)
+echo "  rate  $RATE_BEFORE -> $RATE_AFTER"
+echo "  share $SHARES_BEFORE -> $SHARES_AFTER"
+BAD=0
+if [ "$RATE_AFTER" -le "$RATE_BEFORE" ]; then
+  echo "  FAIL  the share price did not move, which is what a distribution is for"
+  BAD=1
+else
+  echo "  PASS  the share price rose with the distribution"
+fi
+if [ "$SHARES_AFTER" != "$SHARES_BEFORE" ]; then
+  echo "  FAIL  the share count moved: a distribution must mint nothing"
+  BAD=1
+else
+  echo "  PASS  no share was minted"
+fi
+exit $BAD

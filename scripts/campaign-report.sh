@@ -36,6 +36,7 @@ from datetime import date, datetime
 horizon = sys.argv[1]
 dep = json.load(open('deployments/testnet.json'))
 reporters = dep['oracleReporters']['addresses']
+signed_other = 0
 if not os.environ.get('ALL'):
     # the dedicated one: every operation it has ever signed is a submit_nav
     reporters = [a for a in reporters if a != dep['admin']]
@@ -76,9 +77,16 @@ print(f'== every submit_nav {which} has signed, read off Horizon')
 total, days, stamps, failed = 0, collections.Counter(), [], 0
 for who in reporters:
     n = 0
+    other = collections.Counter()
     for recs in pages(f'{horizon}/accounts/{who}/operations?limit=200&order=asc&include_failed=true'):
         for op in recs:
             if op['type'] != 'invoke_host_function' or symbol(op) != 'submit_nav':
+                # The sentence this report is evidence for says the dedicated
+                # reporter has never signed anything else, which is what makes
+                # its operation count readable as a campaign. Discarding the
+                # rest silently left that half unchecked.
+                if op['type'] != 'create_account':
+                    other[symbol(op) or op['type']] += 1
                 continue
             n += 1
             days[op['created_at'][:10]] += 1
@@ -87,6 +95,10 @@ for who in reporters:
                 failed += 1
     total += n
     print(f'  {who[:8]}...{who[-4:]}  {n:5d} submit_nav')
+    if other and who != dep['admin']:
+        rest = ', '.join(f'{k} x{v}' for k, v in other.most_common(5))
+        print(f'  {"":8}            and {sum(other.values())} other operations: {rest}')
+        signed_other += sum(other.values())
 if not os.environ.get('ALL'):
     print(f'  {dep["admin"][:8]}...{dep["admin"][-4:]}  the other key in the quorum, and the'
           ' deployment admin: ALL=1 counts it too, slowly')
@@ -131,9 +143,11 @@ for name, path, mark in (
 # the claim this script is the evidence for is a comparison: no failed
 # submission, and no calendar day without one.
 print()
-if failed or len(days) != span_days:
-    print(f'  FAIL  {failed} failed, {len(days)} of {span_days} calendar days covered')
+if failed or len(days) != span_days or signed_other:
+    print(f'  FAIL  {failed} failed, {len(days)} of {span_days} calendar days covered,'
+          f' {signed_other} operations other than submit_nav on the dedicated reporter')
     sys.exit(1)
 print(f'  PASS  {total} submissions, none failed, every one of the {span_days} '
-      f'calendar days in the span covered')
+      f'calendar days in the span covered, and the dedicated reporter has signed '
+      f'nothing else')
 PY
