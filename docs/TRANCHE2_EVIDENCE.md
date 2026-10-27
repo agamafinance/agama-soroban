@@ -93,6 +93,7 @@ than one we hand them.
 |---|---|---|
 | Generation 1 agUSD (`contracts/agusd`, superseded) has an `initialize` with no `require_auth` and no re-entry guard, so anyone can claim its admin role and sweep its reserve | critical, on a retired contract | **reserve swept to the treasury on 27 October**, `reserve()` reads 0, nothing in service points at it. The contract is immutable so the source fix cannot reach it; `SECURITY.md` now names it as the exception to the constructor rule |
 | `staking::stake` has no minimum first stake and no virtual offset, so a one stroop stake held through a distribution raises the share price permanently: later stakers below the new price are refused, above it they lose the truncation to the incumbent | critical on a fresh deployment | **open, for the audit**. Not reachable on the live contract, which has 3.48e9 shares outstanding. The fix is a minimum first stake or an ERC-4626 virtual offset, and it is a redeployment |
+| A round is keyed on `(feed, timestamp)` and a reporter cannot change its vote, while the tally is keyed on the value. Two reporters who disagree on one timestamp split the tally one and one and neither can revote: that round is dead, and a reporter that disagrees on every round stops the feed for good | critical, needs a reporter key | **open, for the audit**. Raised by an outside reader of the repository on 27 October and verified in `contracts/oracle-adapter/src/lib.rs:838-849` the same day. The fix is to let a reporter replace its vote, or to key the round on the value with a timeout, and either is a redeployment |
 | `staking::distribute_yield` does not check that the share supply is non zero, so a distribution into an empty pool is taken whole by the next staker | high | **open, for the audit**, and pinned by `yield_with_no_shares_goes_to_whoever_stakes_next` |
 | Nothing stops staking immediately before a distribution and requesting immediately after: the cooldown delays the cash, not the pricing | high | **open, for the audit** |
 | `vault::set_agusd` gates on this vault having taken no deposit, which stopped being the same statement as the token having no supply when agUSD became a classic asset | high | **open, for the audit**. The deployment record carries the case that proves the gap, `retiredAgusdResidue` |
@@ -106,6 +107,12 @@ than one we hand them.
 | `smoke-hardening.sh` counts four skipped branches as passes, so its 64 is compatible with the interval guard never having been exercised on that run | medium, in the evidence rather than the code | **open**. The suite prints `SKIP` correctly elsewhere and should here |
 | `e2e-oracle-quorum.sh` submits the value the feed already holds, so "one reporter moves nothing" cannot fail | medium, in the evidence | **open**. Submitting a different value and asserting `last_update` did not advance is the fix |
 | `check-authorization.sh` does not scan `adapters/cctp`, which is live and registered | medium, in the evidence | **open**. The 69 is the count for the files it does scan |
+
+One word about who ran these. The adversarial reviews this file and the
+README refer to are ours, run internally, not a third party engagement, and
+the only external audit is the OtterSec one in the row above, in scheduling.
+A reader who takes "adversarial review" for an outside report would be reading
+more into it than it says, so here it is said plainly.
 
 Two things this pass fixed in place rather than listing: `campaign-report.sh`
 now ends in a verdict and exits non zero when a day is missing or a submission
