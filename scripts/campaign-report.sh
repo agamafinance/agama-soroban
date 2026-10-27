@@ -31,7 +31,7 @@ HORIZON=${HORIZON:-https://horizon-testnet.stellar.org}
 
 python3 - "$HORIZON" <<'PY'
 import base64, collections, json, os, sys, urllib.request
-from datetime import datetime
+from datetime import date, datetime
 
 horizon = sys.argv[1]
 dep = json.load(open('deployments/testnet.json'))
@@ -93,8 +93,11 @@ if not os.environ.get('ALL'):
 
 stamps.sort()
 first, last = stamps[0], stamps[-1]
-span = (datetime.strptime(last, '%Y-%m-%dT%H:%M:%SZ')
-        - datetime.strptime(first, '%Y-%m-%dT%H:%M:%SZ'))
+# Calendar dates, not elapsed time. Counting the span as a timedelta made the
+# denominator the number of whole 24 hour periods, so a run from the 9th at
+# 13:11 to the 27th at 10:49 printed "19 of 18", which is the sort of line
+# that makes a reader stop trusting the rest of the output.
+span_days = ((date.fromisoformat(last[:10]) - date.fromisoformat(first[:10])).days + 1)
 ts = [datetime.strptime(s, '%Y-%m-%dT%H:%M:%SZ') for s in stamps]
 gap = max((ts[i + 1] - ts[i]).total_seconds() for i in range(len(ts) - 1)) / 3600
 
@@ -102,7 +105,7 @@ print(f'  total                       {total}')
 print(f'  failed                      {failed}')
 print(f'  first                       {first}')
 print(f'  last                        {last}')
-print(f'  calendar days with activity {len(days)} of {span.days + 1} in the span')
+print(f'  calendar days with activity {len(days)} of {span_days} in the span')
 print(f'  longest gap between two     {gap:.1f} hours')
 print()
 print('  per day:')
