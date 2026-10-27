@@ -93,7 +93,7 @@
       "generation": 1,
       "address": "CCXEP6QAAYEMFMV2JGBULD2NS6AQB6KQSBHLPPBJSDBCN6HOYIHNQ6H3",
       "supersededBy": "agusdCore",
-      "reason": "Generation 1 agUSD is a self contained vault, not a plain token: it mints only inside its own deposit() and exposes no mint entry point, so the Vault cannot mint against a deposit. It stays deployed, it keeps its holders, and it is still the token the deployed sagUSD staking contract accepts.",
+      "reason": "Generation 1 agUSD is a self contained vault, not a plain token: it mints only inside its own deposit() and exposes no mint entry point, so the Vault cannot mint against a deposit. It stays deployed, it keeps its holders, and it is still the token the deployed sagUSD staking contract accepts. Its initialize() has no require_auth and no re-entry guard, which our own review of 27 October found: anyone can claim its admin role, and the contract is immutable so it stays that way. Its USDC reserve was swept to the treasury on 27 October and reads zero, so the role is worth nothing. Send it nothing. 68.2 agUSD of its supply is outstanding, held by addresses of ours, against no reserve.",
       "label": "agUSD (`contracts/agusd`), first deployment"
     },
     {

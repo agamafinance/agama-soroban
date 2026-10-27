@@ -30,7 +30,7 @@ cd "$(dirname "$0")/.."
 HORIZON=${HORIZON:-https://horizon-testnet.stellar.org}
 
 python3 - "$HORIZON" <<'PY'
-import base64, collections, json, os, sys, urllib.request
+import base64, collections, json, os, re, sys, urllib.request
 from datetime import date, datetime
 
 horizon = sys.argv[1]
@@ -123,6 +123,17 @@ for name, path, mark in (
         print(f'  {name:28s} no log here, which is expected on any machine but ours')
         continue
     runs = sum(1 for l in lines if l.startswith(mark) or mark in l)
-    bad = sum(1 for l in lines if 'failed 1' in l or 'failed 2' in l or 'failed 3' in l)
+    bad = sum(1 for l in lines if re.search(r'failed [1-9]', l))
     print(f'  {name:28s} {runs}' + (f', {bad} with a failed push' if bad else ', no error'))
+
+# A report a reviewer runs has to be able to say no. Printing the two numbers
+# and exiting 0 whatever they are leaves the reader to do the comparison, and
+# the claim this script is the evidence for is a comparison: no failed
+# submission, and no calendar day without one.
+print()
+if failed or len(days) != span_days:
+    print(f'  FAIL  {failed} failed, {len(days)} of {span_days} calendar days covered')
+    sys.exit(1)
+print(f'  PASS  {total} submissions, none failed, every one of the {span_days} '
+      f'calendar days in the span covered')
 PY

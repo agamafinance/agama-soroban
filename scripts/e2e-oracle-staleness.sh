@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # The staleness guard, on the live oracle rather than in a unit test.
 #
-# Every other guard in this repository has an on-chain proof: NavOutOfBand and
-# TooSoon in smoke-hardening.sh, the four allocation caps in the two guard
-# suites, the quorum in e2e-oracle-quorum.sh. OracleStale did not, because
+# Several guards in this repository have an on-chain proof: the four allocation
+# caps as failed transactions in refusals-on-ledger.sh, the quorum in
+# e2e-oracle-quorum.sh. NavOutOfBand and TooSoon are shown by simulation in
+# smoke-hardening.sh and not on the ledger, which that script says and this one
+# used to get wrong. OracleStale did not have one either, because
 # making it fire means letting a feed actually go stale, and the only feed that
 # can safely go stale is the one nothing on chain reads.
 #
