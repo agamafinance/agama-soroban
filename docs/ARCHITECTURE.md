@@ -298,6 +298,9 @@ The dApp includes a "Bridge" tab using Circle's Bridge Kit SDK.
 | `get_total_assets() → i128` | Gross: idle reserves + deployed allocations. Counts USDC owed to the withdrawal queue, which is still an asset until it is paid. `get_net_assets()` is the figure the caps and the floor use. |
 | `get_nav() → i128` | Latest validated NAV from Oracle Adapter. Propagates `OracleStale` rather than returning an old number. |
 | `get_claim(claim_id) → Claim` | The stored claim record. |
+| `agusd() → Address` | The agUSD this Vault mints and burns. Fixed for good once `deposits()` is non zero, which is what `set_agusd` refuses on. |
+| `allocation_engine() → Address` | The Engine this Vault authorizes to move capital. Changing it requires the deployed book to be unwound first. |
+| `paused() → bool` | Whether deposits and allocations are stopped. It does not stop a withdrawal request: exits are held by `freeze_exits`, which is bounded, and not by this flag. |
 | `claim_status(claim_id) → ClaimStatus` | Pending, Ready or Claimed. `Ready` is computed, not stored: a claim becomes payable when the queue reaches it and reserves cover it, without anyone touching it. |
 | `queue_head() → u64` | Next claim id that may be paid. |
 | `queue_tail() → u64` | Next claim id to be handed out. |
@@ -343,6 +346,8 @@ Standard SEP-41 interface: `transfer`, `transfer_from`, `approve`, `allowance`, 
 | `pending(addr) → Pending` | The caller's queued unstake: assets owed and the timestamp it becomes claimable. |
 | `distribute_yield(amount)` | Deposits yield, increases assets-per-share. Authorized distributor only, which in V1 is the stored admin: the call takes no distributor argument and authorizes the recorded admin address, whose own agUSD is what moves. |
 | `exchange_rate() → i128` | Current agUSD per sagUSD share (scaled to 7 decimals). |
+| `agusd() → Address` | The agUSD this contract accepts. Fixed at construction in practice: `set_agusd` refuses once the contract has taken custody. |
+| `stakes() → u64` | How many stakes this contract has ever taken. Part of what makes `set_agusd` refuse, and the counter an indexer reconciles against. |
 | `share_price() → i128` | Alias of `exchange_rate()`, the name this contract shipped with. Same computation, retained because the generation 1 agUSD calls it on the credit vaults. |
 | `nav() → i128` | Total agUSD the contract is accountable for. It moves only through `stake`, `request_unstake` and `distribute_yield`, all three backed by a transfer. |
 | `total_shares() → i128` | sagUSD in circulation. |

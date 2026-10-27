@@ -70,9 +70,13 @@ cache = sys.argv[1]
 md = '\n'.join(io.open(d, encoding='utf-8').read() for d in sys.argv[2:])
 # SEP-41 is a published standard; its methods are described once as "SEP-41"
 # rather than re-listed per token, and listing them would not make the doc truer.
+# The token interface the host provides, not code in this repository. `trust`
+# belongs with them: it is the Stellar Asset Contract's own trustline call,
+# which appeared on the ledger the day agUSD became a classic asset and which
+# no documentation here could be expected to specify.
 SEP41 = {'balance','transfer','transfer_from','approve','allowance','burn','burn_from',
          'decimals','name','symbol','mint','set_admin','admin','clawback',
-         'set_authorized','authorized','total_supply'}
+         'set_authorized','authorized','total_supply','trust'}
 clean = True
 for fn_file in sorted(os.listdir(cache)):
     if not fn_file.endswith('.txt'):
@@ -81,7 +85,11 @@ for fn_file in sorted(os.listdir(cache)):
     src = io.open(os.path.join(cache, fn_file), encoding='utf-8').read()
     fns = sorted({f for f in re.findall(r'\bfn ([a-z_][a-z0-9_]*)\(', src)
                   if not f.startswith('__') and f not in SEP41})
-    absent = [f for f in fns if f not in md]
+    # Named as a call, not merely present as a word. admin, nav, pools, claim
+    # and balance all occur in ordinary prose, so a substring test called them
+    # documented wherever the word happened to fall.
+    absent = [f for f in fns
+              if ('`' + f + '(') not in md and ('`' + f + '`') not in md]
     if absent:
         clean = False
         print('bad|%s: %d entry point(s) the docs never name: %s'
@@ -108,6 +116,7 @@ for fn_file in os.listdir(cache):
         arity.setdefault(m.group(1), set()).add(len([p for p in ps if not p.startswith('env')]))
 
 bad = []
+checked = 0
 lines = []
 for d in docs:
     lines += [(d, i, l) for i, l in
@@ -128,13 +137,20 @@ for doc, i, line in lines:
         n = len([x for x in args.split(',') if x.strip()])
         if n == 0:            # a bare name reference
             continue
+        checked += 1
         if n not in arity[fn]:
             bad.append('bad|%s:%d declares %s with %d argument(s), the ledger has %s'
                        % (doc, i, fn, n, sorted(arity[fn])))
 for b in bad:
     print(b)
 if not bad:
-    print('ok|no declared signature disagrees with the ledger')
+    # The count, so that zero is visible. One pass printed whatever the number
+    # of signatures examined was, including none, which is a pass for having
+    # looked at nothing.
+    if checked:
+        print('ok|%d declared signature(s) checked, none disagrees with the ledger' % checked)
+    else:
+        print('bad|no declared signature was found to check, which is not a pass')
 PY
 report "$CACHE/result"
 
