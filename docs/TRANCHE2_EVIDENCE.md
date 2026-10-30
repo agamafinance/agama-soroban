@@ -328,3 +328,30 @@ unwound by a call, and this one cannot.
 
 It stays registered on testnet because unregistering it would hide it, and
 because the Engine's cap arithmetic is exercised by having a third pool.
+
+## Every suite, as of 2026-10-30
+
+Each line is a command, and each number is what it printed on the generation
+currently deployed.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace` | **255 passed**, 0 failed |
+| `bash scripts/verify-tranche2.sh` | **24 passed**, 0 failed |
+| `bash scripts/check-deployment-record.sh` | **45 passed**, 0 failed |
+| `bash scripts/check-doc-entry-points.sh` | **9 passed**, 0 failed, 68 signatures agreeing with the ledger |
+| `bash scripts/check-advisories.sh` | **2 passed**, 0 failed |
+| `bash scripts/check-ttl.sh` | **10 passed**, 0 failed |
+| `bash scripts/smoke-hardening.sh` | **64 passed**, 0 failed |
+| `bash scripts/e2e-etherfuse.sh` | **24 passed**, 0 failed, D1's subscription and redemption on testnet |
+| `bash scripts/e2e-reconciliation.sh` | **10 passed**, 0 failed, D2's tape to NAV to yield |
+| `bash scripts/e2e-peg-gate.sh` | **11 passed**, 0 failed, D2's peg feed refusing and permitting |
+| `bash scripts/e2e-anchor.sh` | D3's round trip, both anchor transactions `completed` |
+| `bash scripts/keeper-reflector.sh` | `USDC_USD` 10013012, Reflector's number |
+| `bash scripts/keeper-etherfuse.sh` | `EF_BOND` 10787040, Etherfuse's USTRY |
+| `bash scripts/keeper-oracle.sh` | dispatches the two above, reports PC_NAV's window |
+
+Three of the reviewer's seven items were fixes to numbers that were wrong rather
+than missing, and those are the ones worth re-reading: the keeper applying one
+pool's feed to every pool, the Etherfuse adapter booking exposure it had not
+invested, and the criteria in this file not being the criteria on the record.
