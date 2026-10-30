@@ -29,8 +29,10 @@ reconcile-nav.py on that tape at that date and you get that integer.
   adapters name PC_NAV: all of it is in the cross-chain CCTP adapter
   (CDSO4GJR...), and the private credit adapter holds nothing. That adapter is
   outside the awarded scope and is declared as such in docs/TRANCHE2_EVIDENCE.md.
-  The exposure belongs in the private credit adapter and moving it there comes
-  before the next distribution.
+  The exposure belongs in the private credit adapter. It cannot be moved by a
+  call: deallocate on that adapter fails with ReturnNotArrived (714) because the
+  USDC was burned through CCTP and has not come back, so the ways out are a CCTP
+  return or a write_down.
 
   distribute_yield         amount 1897996
   event                    YieldDistributed amount 1897996 nav 5969097190 supply 3481817847

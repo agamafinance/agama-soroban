@@ -10,3 +10,6 @@ test_snapshots
 
 # Keeper state, which is a reading from a particular run and not source
 state
+
+# SEP client venv
+.venv-sep

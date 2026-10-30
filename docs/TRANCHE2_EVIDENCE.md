@@ -59,7 +59,9 @@ with no deviation bound, that NAV being deterministic.
 | D2 yield distribution driven by oracle data | **met 2026-10-30** | `keeper-yield.sh` now prices each pool from the feed that pool names; the 26 October run applied the private credit move to all deployed capital |
 | D2 reconciliation documented and executed end to end | **met 2026-10-30** | `docs/NAV_RECONCILIATION.md`, `scripts/e2e-reconciliation.sh`, run in `docs/evidence/reconciliation-2026-10-30.log` |
 | D2 the peg feed validating the base asset | **built, not deployed** | the gate and nine cases are in `contracts/vault/src`; no contract here has an `upgrade` entry point, so carrying it to testnet is a generation migration |
-| D3 SEP-10 and SEP-24 end to end | **in progress** | the record names the SDF Stellar Test Anchor as covering these flows during MoneyGram onboarding, so that is what is being built against |
+| D3 SEP-10 end to end | **met 2026-10-30** | `anchor/sep_client.py`, challenge verified before signing, JWT from `testanchor.stellar.org`; `docs/ANCHOR_RAMP.md` |
+| D3 SEP-24 interactive deposit and withdrawal end to end | **protocol met, one manual link** | the client opens the transaction and polls it to a terminal state; the anchor's own KYC webview is completed by a person, which is what "interactive" means in SEP-24. `scripts/e2e-anchor.sh`, 7 assertions |
+| D3 cash to USDC to agUSD and the reverse | **blocked on the link above** | the Vault mint and the withdrawal queue are both live and proven elsewhere; the chain is complete the moment a settled deposit arrives |
 | D3 sustained multi-day campaign | **met** | `campaign-report.sh`, 21 consecutive days |
 | D3 codebase frozen and handed to audit | **not yet** | follows D3's first clause |
 
@@ -312,8 +314,16 @@ a private credit servicing tape against the `PC_NAV` feed, were earned on
 capital sitting in a book on another chain, through an adapter the award does
 not fund, priced from a feed whose rationale is that the crossing is transport.
 That is the reviewer's concern not as a hypothetical but as the current state of
-the book, and the honest order of operations is to move that exposure into the
-private credit adapter, where the award put it, before the next distribution.
+the book.
+
+And it cannot simply be moved, which is the part worth writing down. Asking the
+Engine to `deallocate` those 10 USDC from the cross-chain adapter fails with
+`ReturnNotArrived` (714): the adapter holds no USDC, because the USDC was burned
+through CCTP, and it refuses to repay the Vault out of money that has not come
+back. So the two honest ways out are a CCTP message bringing it home, or a
+`write_down` recognising that it will not. There is no third one, and that is
+the risk model changing rather than a bug: every other adapter here can be
+unwound by a call, and this one cannot.
 
 It stays registered on testnet because unregistering it would hide it, and
 because the Engine's cap arithmetic is exercised by having a third pool.
