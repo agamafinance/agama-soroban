@@ -39,8 +39,8 @@ The protocol composes existing Stellar ecosystem primitives rather than reimplem
 - **Backend API & Indexer**: Node.js services ingesting Soroban contract events for NAV history, yield accrual, portfolio analytics, transparency reporting, and settlement management.
 - **Soroban Smart Contracts (Rust)**: On-chain core: Vault (deposits/withdrawals, agUSD mint/redeem), agUSD and sagUSD SEP-41 tokens, Allocation Engine (pool routing, caps, multi-adapter), and Oracle Adapter (multi-source NAV validation).
 - **Allocation Engine**: Routes deposited capital across Etherfuse Stablebonds and private credit pools via a uniform adapter interface, enforcing on-chain concentration caps.
-- **Oracle Integration**: Multi-source NAV pipeline: Reflector for asset prices, custom reporter for private credit NAV, Etherfuse feed for bond pricing. Staleness and deviation checks on-chain.
-- **On/Off-Ramp & Cross-Chain**: MoneyGram (SEP-24) for retail fiat ramp. Bridge for institutional wires. CCTP for native USDC bridging from Ethereum/Arbitrum.
+- **Oracle Integration**: Multi-source NAV pipeline, each feed from its own source rather than from a keeper reposting the stored value. `USDC_USD` from Reflector's SEP-40 oracle (`lastprice(Other("USDC"))`, rescaled from its 14 decimals), read on chain by the Vault's peg gate on every deposit. `EF_BOND` from the Etherfuse bond cost API for USTRY, with a cross-source agreement check in the keeper because that feed carries no deviation bound on chain, read by the Etherfuse adapter's `oracle_value()`. `PC_NAV` from an originator servicing tape through `scripts/reconcile-nav.py`, a pure function of the tape and the as-of date. Staleness, deviation, band and interval checks on chain, two-reporter quorum.
+- **On/Off-Ramp & Cross-Chain**: SEP-10 and SEP-24 implemented in `anchor/sep_client.py`, with the full round trip closed on testnet against the SDF Stellar Test Anchor: cash to USDC to agUSD and back out to cash, every leg a transaction in `docs/evidence/anchor-roundtrip-2026-10-30.log`. MoneyGram Access is the same two SEPs against their home domain once that onboarding completes, which is commercial rather than technical. Bridge for institutional wires. CCTP for native USDC bridging from Ethereum/Arbitrum, declared in `docs/TRANCHE2_EVIDENCE.md` as outside the awarded scope.
 - **Liquidity**: agUSD/USDC and sagUSD/agUSD pools on Soroswap. Stellar DEX order books as secondary liquidity venue.
 
 ### 1.3 Definitions and Acronyms
@@ -512,7 +512,34 @@ All three expose the same interface, which is what lets the Engine treat a new R
 | `settlement_window() → (u32, u32)` | Cash conversion time in days, as `(min, max)`. **Nothing on-chain enforces it.** It is published so the Engine's operators and the withdrawal queue can be sized against the real settlement time of the book. Private credit reports `(15, 90)`; Etherfuse reports `(0, 0)`, redemption there being on-chain and immediate. The two adapters answered this under different names and different return types until October 2026, `settlement_days() → u32` on Etherfuse against `settlement_window()` here, which nothing read and so nothing caught: a caller sizing the queue had to know which adapter it was holding, and every adapter added was another case. Etherfuse keeps `settlement_days() → u32` for anything already reading it. |
 | `propose_admin` / `accept_admin` / `admin` / `pending_admin` | The same two-step handover every contract here carries. |
 
-An adapter never holds less USDC than it has booked.
+An adapter is never worth less than it has booked. For private credit and cross
+chain that is the USDC on the contract; for Etherfuse it is the position, because
+that adapter invests what it is given.
+
+##### The Etherfuse adapter's own entry points
+
+It used to share the interface above and nothing else, and `allocate(amount)`
+incremented a counter: the USDC the Vault released sat on the adapter earning
+nothing while the Engine's book, the NAV and the yield keeper all read it as
+deployed into Stablebonds. It now subscribes, which gives it a position to
+describe and four readings of it rather than one.
+
+| Function | Description |
+|---|---|
+| `set_pool(admin, pool)` | Names the Stablebond pool `allocate` subscribes into. Only while the adapter is empty, counting bond units as well as cash, because repointing under a live position would strand units in a pool this adapter no longer calls while still reporting them as exposure. `allocate` refuses with `PoolNotSet` before one is named, rather than booking exposure it has not invested. |
+| `pool() → Address` | The pool, or `PoolNotSet`. |
+| `set_oracle(admin, oracle)` / `oracle() → Address` | The Oracle Adapter this position is priced from. Interrogated at the point of setting: an address that cannot answer `get_feed(EF_BOND)` is refused with `OracleMismatch`, so every later valuation does not fail with a feed error from a contract the operator never meant to point at. |
+| `units() → i128` | Bond units held. The quantity that does not move when the bond price does, which is the point of holding it separately from the cost basis. |
+| `market_value() → i128` | What the position is worth at the pool's own quote, plus any cash not yet invested. What a redemption would pay. |
+| `oracle_value() → i128` | What it is worth at the validated `EF_BOND` price. What the protocol books. A stale feed surfaces as `OracleStale` rather than as an old number. |
+| `price_drift_bps() → i128` | The gap between the two, signed, in basis points of the feed. Zero when they agree. Positive means the pool claims more than the oracle validates, which is the shape of an issuer marking its own book up; negative is the shape of a redemption that will not pay what the protocol has booked. |
+| `uninvested() → i128` | USDC held here rather than in the pool. Non-zero only between a failed subscription and a `recover_surplus`, or where a redemption rounded up. |
+
+`get_exposure()` is deliberately none of these. It stays the capital the Vault
+released, because that is what the Engine's concentration caps are measured on,
+and a cap that drifted with a bond price would mean something different every
+day. Cost basis for limits, market value for NAV, and the drift between the
+pool and the feed readable on its own.
 
 #### 4.6.1 The cross chain adapter
 
