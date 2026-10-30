@@ -19,6 +19,10 @@
 # waits, and then proves what happened on chain either way.
 #
 #   bash scripts/e2e-anchor.sh                  deposit 5 USDC and wait
+#   HOME_DOMAIN=extmgxanchor.moneygram.com CLIENT_DOMAIN=agama.finance AMOUNT=20 \
+#     bash scripts/e2e-anchor.sh               the same run against MoneyGram,
+#                                              which needs their whitelist to
+#                                              get past rampsservice's 500
 #   AMOUNT=3 WAIT=600 bash scripts/e2e-anchor.sh
 #   TX=<id> bash scripts/e2e-anchor.sh          resume an existing transaction
 set -uo pipefail
@@ -28,11 +32,19 @@ USER_KEY=${USER_KEY:-agama-user}
 AMOUNT=${AMOUNT:-5}
 WAIT=${WAIT:-420}
 HOME_DOMAIN=${HOME_DOMAIN:-testanchor.stellar.org}
+# The wallet provider's domain, for anchors that need to know who is driving.
+# MoneyGram is one: without it their widget opens with wallet_provider empty.
+# Empty by default, because the SDF Test Anchor does not ask and sending one it
+# did not ask for would be answering a question nobody put.
+CLIENT_DOMAIN=${CLIENT_DOMAIN:-}
+CLIENT_DOMAIN_KEY=${CLIENT_DOMAIN_KEY:-agama-client-domain}
+CD_ARGS=""
+[ -n "$CLIENT_DOMAIN" ] && CD_ARGS="--client-domain $CLIENT_DOMAIN --client-domain-key $CLIENT_DOMAIN_KEY"
 PY=${PY:-.venv-sep/bin/python}
 DEP=deployments/testnet.json
 
 [ -x "$PY" ] || { echo "the SEP client needs its venv: python3 -m venv .venv-sep && .venv-sep/bin/pip install stellar-sdk requests"; exit 1; }
-sep() { "$PY" anchor/sep_client.py "$@" 2>&1 | grep -vE "NotOpenSSLWarning|warnings.warn"; }
+sep() { "$PY" anchor/sep_client.py "$@" $CD_ARGS 2>&1 | grep -vE "NotOpenSSLWarning|warnings.warn"; }
 
 j() { python3 -c "import json;print(json.load(open('$DEP'))$1)"; }
 VAULT=$(j "['contracts']['vault']")

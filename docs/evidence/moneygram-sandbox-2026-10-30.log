@@ -118,3 +118,43 @@ So the attestation moved it forward: the widget got far enough to try, where
 before it failed immediately. What remains is the partner whitelist, and the
 ask is now exact rather than general: whitelist agama.finance as a wallet
 provider on the Stellar SEP path, not the widget path.
+
+== Addendum 2: what RMP-01 and RMP-02 actually are
+
+Instrumented the widget rather than reading its error text. With the client
+domain attested, two of MoneyGram's own backend calls fail, and both fail with
+a server error rather than a refusal:
+
+  POST https://extramps.moneygram.com/rampsservice/v3/transactions/prepare      500
+  GET  https://extramps.moneygram.com/rampsservice/v3/reference-data/countries  500
+
+Everything else the page loads returns 200: fifty-odd asset requests, their
+Sentry and PostHog beacons, the US flag. Only those two.
+
+`transactions/prepare` is where the widget would resolve the partner
+configuration for the session, and `reference-data/countries` is what drives
+"Finding nearby locations...". Both return 500 for a session whose
+`client_domain` is attested and whose wallet provider is not registered.
+
+Worth saying precisely, because it is the content of the support request: their
+sandbox does not answer 401 or 403 for an unregistered partner, it answers 500.
+From outside the app those paths fall through to the SPA's index.html, so they
+cannot be probed directly; the status codes above are from the widget's own
+session.
+
+== What is left, and what it is not
+
+Not code. The integration drives their anchor end to end: SEP-1, SEP-10 with
+client domain attestation, SEP-24 with their limits enforced and a transaction
+opened. The two calls that fail are theirs, on their host, for a partner they
+have not registered.
+
+The request to make is therefore narrow: whitelist agama.finance as a wallet
+provider on the Stellar SEP path, not the widget path, and the evidence that it
+is worth doing is that everything up to their own 500 already works.
+
+  client domain     agama.finance
+  SIGNING_KEY       GCGRQ2LCB4RJ65XNKKIWGHLK3TDHPM7LNKX5DN4SRJH6K5NGQTS6YOSG
+  toml              https://agama.finance/.well-known/stellar.toml   HTTP 200
+  account           GC35EAQJPYWZDPOUMOOLGETVTDMG3KQDKOX4ISGOLXS2RR4JLLLGBFF2
+  last transaction  4ddb0b16-b40a-41f7-8ce6-6698f7c0dead
