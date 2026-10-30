@@ -86,7 +86,9 @@ echo "== 3. the bond accrues: the feed moves and no unit is minted"
 UNITS_BEFORE=$(rd "$EF" units)
 VAL_BEFORE=$(rd "$EF" oracle_value)
 NEW_NAV=$(( EF_NAV + EF_NAV / 100 ))   # plus 1%
-NOW=$(date -u +%s)
+# A minute back, because the ledger's close time trails the wall clock and a
+# timestamp in its future is refused with TimestampInFuture, 509.
+NOW=$(( $(date -u +%s) - 60 ))
 MININT=$(stellar contract invoke --id "$ORACLE" --source "$SRC" --network "$NET" --send=no -- \
           get_feed --feed_id EF_BOND 2>&1 | tail -1 \
           | python3 -c "import json,sys;print(json.load(sys.stdin)['min_interval_secs'])")

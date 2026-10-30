@@ -89,7 +89,9 @@ MININT=$(printf '%s' "$GUARD" | python3 -c "import json,sys;print(json.load(sys.
 LASTTS=$(stellar contract invoke --id "$ORACLE" --source "$SRC" --network "$NET" --send=no -- \
           last_update --feed_id PC_NAV 2>&1 | tail -1 \
           | python3 -c "import json,sys;print(json.load(sys.stdin)['timestamp'])")
-NOW=$(date -u +%s)
+# A minute back: the ledger's close time trails the wall clock, and a timestamp
+# in the ledger's future is refused with TimestampInFuture, 509.
+NOW=$(( $(date -u +%s) - 60 ))
 AGE=$(( NOW - LASTTS ))
 if [ "$AGE" -lt "$MININT" ]; then
   # The feed accepts one point per hour, so a rerun inside that hour cannot

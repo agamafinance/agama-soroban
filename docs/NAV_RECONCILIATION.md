@@ -122,3 +122,30 @@ the keeper would correctly distribute nothing, and moving a live feed down four
 percent and back up for the sake of a demonstration would leave two
 unexplained points in its history. The behaviour itself is covered in the unit
 suite.
+
+## The peg feed, and what it gates
+
+The reviewer asked us to say this plainly, so: **`Vault::deposit`**.
+
+agUSD is minted one for one against USDC and withdrawals are paid one for one
+in USDC, so both are exchanges at par, and both hand the difference to one side
+when the base asset is not at par. Below par a deposit buys agUSD at a discount
+and dilutes everyone who came in at a dollar. Above par a withdrawal at par
+takes out more value than was put in, at the expense of whoever stays. The
+bound is on the absolute deviation for that reason, and it is 200 basis points,
+the figure the award names.
+
+Staleness is not a separate check. The read goes through the Oracle Adapter's
+`get_nav`, so a peg feed nobody has updated inside its one hour window stops
+deposits with `OracleStale`, for the same reason an off-peg one does.
+
+The feed itself is sourced from Reflector by `scripts/keeper-reflector.sh`, not
+reposted. It currently reads `10013012`, which is Reflector's
+`lastprice(Other("USDC"))` of 1.00130125419644 rescaled from its 14 decimals to
+our 7.
+
+Demonstrated on chain by `scripts/e2e-peg-gate.sh`, 11 assertions, on a Vault
+deployed for the purpose and declared as such in the deployment record under
+`demonstrations.pegGate`. The live Vault predates the gate and no contract in
+this repository has an `upgrade` entry point, so carrying it there is the
+generation migration in `scripts/deploy-vault-generation.sh`.

@@ -969,5 +969,13 @@
       "keeper": "scripts/keeper-etherfuse.sh",
       "note": "USTRY, the US Treasury stablebond, because this protocol's base asset is a dollar. CETES is the same instrument in pesos and carries an FX leg that would put MXN/USD risk inside a USD NAV. EF_BOND is registered with a zero deviation bound because the award calls that NAV deterministic, which means the Adapter will accept any move inside the band and there is no second line of defence on our side. So the checks live in the keeper: Etherfuse's own clock, each independent source's updated_at with only the recent ones counted, and agreement between those sources around their median within 50 bps. A single drifted source is exactly what a zero deviation bound cannot catch."
     }
+  },
+  "demonstrations": {
+    "pegGate": {
+      "vault": "CBGTQQTZNAANMHG6DKSND7QGYG7M7L3OJVWTFZYYBNJMJB3VK4FQ3FNR",
+      "feed": "PEGTEST",
+      "script": "scripts/e2e-peg-gate.sh",
+      "note": "Not part of the protocol and not pointed at by anything. The peg gate is in the Vault source with nine unit cases, and the deployed Vault predates it: no contract in this repository has an upgrade entry point, so carrying it to the live instance means the generation migration in scripts/deploy-vault-generation.sh, which retires the Vault, agUSD and staking and is a decision rather than a deployment step. This is the same wasm, built from the same tree, deployed on its own so the gate can be demonstrated on chain without retiring anything. It uses its own feed, PEGTEST, so that moving a price around to show a refusal does not put invented points into the history of USDC_USD, which is sourced from Reflector and has to stay sourced. It cannot show a successful deposit, having no agUSD to mint, and that is the cleaner demonstration: require_peg runs before the mint, so PegBroken (331) means the gate refused and NotInitialized (301) means it let the call through."
+    }
   }
 }

@@ -130,7 +130,13 @@ if [ $(( NOW2 - LASTTS )) -lt "$MININT" ]; then
   exit 0
 fi
 
-TS=$(date -u +%s)
+# Backdated, and this is not cosmetic. Soroban judges a submitted timestamp
+# against the ledger's close time, which trails the wall clock by however long
+# the current ledger has been open, so a timestamp taken from `date` is
+# routinely a few seconds in the ledger's future and is refused with
+# TimestampInFuture, 509. A minute back is comfortably inside every staleness
+# window here and comfortably ahead of the last accepted point.
+TS=$(( $(date -u +%s) - 60 ))
 V1=$(stellar contract invoke --id "$ORACLE" --source "$SRC" --network "$NET" -- \
        submit_nav --reporter "$ADMIN" --feed_id EF_BOND --nav "$NAV" --timestamp "$TS" 2>&1)
 printf '   reporter 1  %s\n' "$(printf '%s' "$V1" | tail -1)"
