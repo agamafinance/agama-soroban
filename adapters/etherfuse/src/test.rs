@@ -737,3 +737,87 @@ fn valuing_before_an_oracle_is_named_says_so() {
         Err(Ok(AdapterError::OracleNotSet))
     );
 }
+
+#[test]
+fn a_full_unwind_is_not_defeated_by_one_stroop_of_rounding() {
+    // The real case, with the numbers it happened on. At a price that does not
+    // divide the amount, subscribing buys units whose value floors below what
+    // was booked, and redeeming them rounds down again. Ceil on the way in and
+    // floor on the way out used to leave the position a single stroop short of
+    // its own cost basis, and the entire unwind failed with RedemptionShort.
+    let f = setup();
+    f.pool.set_price(&f.admin, &10_787_230);
+    f.usdc.faucet(&f.adapter_id, &(100 * USDC));
+    f.adapter.allocate(&(100 * USDC));
+
+    let booked = f.adapter.get_exposure();
+    assert_eq!(booked, 100 * USDC);
+    // The pool is funded for the accrual so that nothing here is about
+    // liquidity: the only question is whether the arithmetic closes.
+    f.usdc.faucet(&f.admin, &(10 * USDC));
+    f.pool.fund(&f.admin, &(10 * USDC));
+
+    // Every stroop of it, in one call.
+    f.adapter.deallocate(&booked);
+    assert_eq!(f.adapter.get_exposure(), 0, "the book closes");
+    assert_eq!(f.usdc.balance(&f.vault), booked, "and the Vault was paid in full");
+}
+
+#[test]
+fn an_unwind_in_two_halves_closes_as_well() {
+    let f = setup();
+    f.pool.set_price(&f.admin, &10_787_230);
+    f.usdc.faucet(&f.adapter_id, &(100 * USDC));
+    f.adapter.allocate(&(100 * USDC));
+    f.usdc.faucet(&f.admin, &(10 * USDC));
+    f.pool.fund(&f.admin, &(10 * USDC));
+
+    let half = 50 * USDC;
+    f.adapter.deallocate(&half);
+    assert_eq!(f.adapter.get_exposure(), half);
+    f.adapter.deallocate(&half);
+    assert_eq!(f.adapter.get_exposure(), 0, "the second half closes too");
+    assert_eq!(f.usdc.balance(&f.vault), 100 * USDC);
+}
+
+#[test]
+fn a_gain_that_is_not_cash_is_not_swept_out_of_the_position() {
+    // Selling units to realise a mark-to-market gain leaves fewer units behind
+    // the same cost basis, and the next time the price retraces the position
+    // cannot return what the Engine booked. So a gain in bonds is left in
+    // bonds, and only cash is swept.
+    let f = setup();
+    f.usdc.faucet(&f.adapter_id, &(100 * USDC));
+    f.adapter.allocate(&(100 * USDC));
+    let units_before = f.adapter.units();
+
+    f.pool.set_price(&f.admin, &1_1000000); // the bond is up 10%
+    assert_eq!(f.adapter.market_value(), 110 * USDC);
+    assert_eq!(
+        f.adapter.try_recover_surplus(&f.admin),
+        Err(Ok(AdapterError::NothingToRecover)),
+        "the gain is not cash, so there is nothing to send home"
+    );
+    assert_eq!(f.adapter.units(), units_before, "and no unit was sold for it");
+
+    // Which is what keeps the full unwind possible after the price comes back.
+    f.pool.set_price(&f.admin, &ONE_PRICE_BACK);
+    f.adapter.deallocate(&(100 * USDC));
+    assert_eq!(f.adapter.get_exposure(), 0);
+}
+
+const ONE_PRICE_BACK: i128 = 1_0000000;
+
+#[test]
+fn a_position_that_backs_nothing_is_still_liquidated_home() {
+    // The exception, and the reason the branch exists: after a write-down the
+    // units protect no book entry, so redeeming them is the only way the
+    // capital gets home.
+    let f = setup();
+    f.usdc.faucet(&f.adapter_id, &(100 * USDC));
+    f.adapter.allocate(&(100 * USDC));
+    f.adapter.write_down(&(100 * USDC));
+    assert_eq!(f.adapter.get_exposure(), 0);
+    assert_eq!(f.adapter.recover_surplus(&f.admin), 100 * USDC);
+    assert_eq!(f.adapter.units(), 0, "the position was liquidated");
+}

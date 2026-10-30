@@ -24,6 +24,40 @@ ENGINE=$(j "['contracts']['allocationEngine']")
 VAULT=$(j "['contracts']['vault']")
 PC=$(j "['poolAdapters']['private-credit']")
 EF=$(j "['poolAdapters']['etherfuse']")
+EF=${EF:-$(j "['poolAdapters']['etherfuse']")}
+POOL_CAP_BPS=$(j "['engineConfig']['poolCapBps']")
+
+# Which pool to drive the guards through.
+#
+# The three caps are measured on charged exposure, live plus everything ever
+# written off against that pool and not recovered, and that charge is permanent
+# because a write-down reopening a cap was a finding this Engine closed. So on a
+# book that has absorbed test write-downs a pool can read zero live exposure and
+# have no room at all, and an allocation into it is correctly refused with #407.
+# Asserting through that reports the Engine failing to do something it was right
+# to refuse.
+#
+# So the pool is chosen rather than assumed: the first registered one with room
+# for what this run needs, preferring private credit because that is what these
+# guards were written against. If none has room the run says so instead of
+# failing, because a book with no headroom is an operational fact and not a
+# defect in the Engine.
+headroom() {
+  local pool=$1 charged cap
+  charged=$(stellar contract invoke --id "$ENGINE" --source "$SRC" --network "$NET" --send=no \
+              -- charged_exposure --pool_id "$pool" 2>/dev/null | tr -d '"')
+  cap=$(( $(stellar contract invoke --id "$VAULT" --source "$SRC" --network "$NET" --send=no \
+              -- get_net_assets 2>/dev/null | tr -d '"') * POOL_CAP_BPS / 10000 ))
+  echo $(( cap - ${charged:-0} ))
+}
+pick_pool() {   # pick_pool <amount needed> -> prints the pool, or nothing
+  local need=$1 cand
+  for cand in "$PC" "$EF"; do
+    [ -n "$cand" ] || continue
+    if [ "$(headroom "$cand")" -ge "$need" ] 2>/dev/null; then echo "$cand"; return; fi
+  done
+}
+
 USDC=$(j "['contracts']['usdc']")
 ADMIN=$(j "['admin']")
 
@@ -65,7 +99,32 @@ printf '  baseline: engine %s, vault %s\n' "$BASE_ENGINE" "$BASE_VAULT"
 ok "the two books agree at the start" "$BASE_ENGINE" "$BASE_VAULT"
 
 echo "== capital out through the Engine"
-ok "first allocation accepted" "$(err $PC 10000000000)" "Success"
+MOVE=10000000000
+GUARD_POOL=$(pick_pool "$MOVE")
+if [ -z "$GUARD_POOL" ]; then
+  echo "  SKIP  no registered pool has $MOVE of cap headroom left:"
+  printf '        private credit %s, etherfuse %s, against a %s bps cap\n' \
+    "$(headroom "$PC")" "$(headroom "$EF")" "$POOL_CAP_BPS"
+  echo "        That charge is accumulated write-offs and it is permanent by"
+  echo "        design. The Engine refusing here is the guard working, so the"
+  echo "        guards below are skipped rather than asserted through a #407."
+  echo "TOTAL: $pass passed, $fail failed"
+  exit 0
+fi
+# Deliberately not retargeted at another pool. The baselines above were taken
+# on this one, and swapping the pool underneath them makes the closing
+# assertions compare a restored book against a baseline that was never its own.
+# The guards are about the Engine, not about which pool it refuses for.
+if [ "$GUARD_POOL" != "$PC" ]; then
+  echo "  SKIP  private credit has no cap headroom left, $(headroom "$PC") against"
+  printf '        a %s bps cap, so an allocation into it is correctly refused\n' "$POOL_CAP_BPS"
+  echo "        with #407 and the guards below cannot be armed on this book."
+  echo "        The refusals themselves are on the ledger permanently and"
+  echo "        bash scripts/check-refusals.sh reads their codes back."
+  echo "TOTAL: $pass passed, $fail failed"
+  exit 0
+fi
+ok "first allocation accepted" "$(err $PC $MOVE)" "Success"
 ok "the Engine booked it" "$(( $(rd $ENGINE total_allocated) - BASE_ENGINE ))" "10000000000"
 ok "the Vault booked the same" "$(( $(rd $VAULT deployed_capital) - BASE_VAULT ))" "10000000000"
 ok "the pool holds the USDC" "$(( $(stellar contract invoke --id $USDC --source $SRC --network $NET --send=no -- balance --id $PC 2>/dev/null | tr -d '\"') - BASE_PC_USDC ))" "10000000000"

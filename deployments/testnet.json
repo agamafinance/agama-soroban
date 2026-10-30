@@ -28,7 +28,7 @@
   "usdcReal": true,
   "poolAdapters": {
     "private-credit": "CDNWXGSSP3BOAIKIYTGDHST2BBSZNWIW6RMDQERM3HOQ24EO43WLP3VE",
-    "etherfuse": "CDNR4WLEOIP5J2ZD6RQ6UQ2JU6I6E4YPE33DOC7N6ORXZAASRVH6EEMI"
+    "etherfuse": "CCXSQEUMW42BNEB7HUNBVAAYRPAJ5SAR5VUWVSCE735HDMG7M7DBNJKC"
   },
   "engineConfig": {
     "poolCapBps": 4000,
@@ -941,6 +941,18 @@
       "reason": "Its allocate() incremented an exposure counter and returned, so the USDC the Vault released sat on the adapter earning nothing while the Engine's book, the NAV and the yield keeper all read it as deployed into Stablebonds. The Stellar reviewer put it as 'allocate() only books an exposure counter ... so there is no Stablebond subscription or redemption path, mock or real'. The replacement subscribes into a pool, holds bond units, redeems to raise cash, and values the position from the EF_BOND feed through the Oracle Adapter. Exposure was zero when it was replaced, so it stranded nothing.",
       "replacedBy": "CDNR4WLEOIP5J2ZD6RQ6UQ2JU6I6E4YPE33DOC7N6ORXZAASRVH6EEMI",
       "date": "2026-10-30"
+    },
+    "CDNR4WLEOIP5J2ZD6RQ6UQ2JU6I6E4YPE33DOC7N6ORXZAASRVH6EEMI": {
+      "what": "Etherfuse pool adapter, generation before the Tranche 2 review",
+      "reason": "Its allocate() incremented an exposure counter and returned, so the USDC the Vault released sat on the adapter earning nothing while the Engine's book, the NAV and the yield keeper all read it as deployed into Stablebonds. The Stellar reviewer put it as 'allocate() only books an exposure counter ... so there is no Stablebond subscription or redemption path, mock or real'. The replacement subscribes into a pool, holds bond units, redeems to raise cash, and values the position from the EF_BOND feed through the Oracle Adapter. Exposure was zero when it was replaced, so it stranded nothing.",
+      "replacedBy": "CAB6YVPAHUWDKUKJY3EGA256UN4D36ONLFHFNJP5EOJFQ2ROQADKMRMY",
+      "date": "2026-10-30"
+    },
+    "CAB6YVPAHUWDKUKJY3EGA256UN4D36ONLFHFNJP5EOJFQ2ROQADKMRMY": {
+      "what": "Etherfuse pool adapter, generation before the Tranche 2 review",
+      "reason": "Its allocate() incremented an exposure counter and returned, so the USDC the Vault released sat on the adapter earning nothing while the Engine's book, the NAV and the yield keeper all read it as deployed into Stablebonds. The Stellar reviewer put it as 'allocate() only books an exposure counter ... so there is no Stablebond subscription or redemption path, mock or real'. The replacement subscribes into a pool, holds bond units, redeems to raise cash, and values the position from the EF_BOND feed through the Oracle Adapter. Exposure was zero when it was replaced, so it stranded nothing.",
+      "replacedBy": "CCXSQEUMW42BNEB7HUNBVAAYRPAJ5SAR5VUWVSCE735HDMG7M7DBNJKC",
+      "date": "2026-10-31"
     }
   },
   "pegGate": {

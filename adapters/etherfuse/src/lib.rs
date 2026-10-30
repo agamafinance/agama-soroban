@@ -486,6 +486,16 @@ impl EtherfuseAdapter {
             // landing a stroop below it. Any surplus stays here as idle cash
             // and is spent by the next deallocation.
             let mut want = (short * PRICE_ONE + price - 1) / price;
+            // And then checked, because rounding up the units does not
+            // guarantee the proceeds reach the shortfall: the redemption pays
+            // `want * price / ONE`, which floors, so a ceil followed by a floor
+            // can land one stroop below what was asked for. A full unwind of a
+            // position then failed with RedemptionShort over a single stroop,
+            // which is how 463506725 units worth 499999999 could not satisfy a
+            // 500000000 deallocation.
+            if want * price / PRICE_ONE < short {
+                want += 1;
+            }
             let held = Self::units(e.clone());
             if want > held {
                 want = held;
@@ -622,14 +632,24 @@ impl EtherfuseAdapter {
         if surplus <= 0 {
             return Err(AdapterError::NothingToRecover);
         }
-        // The surplus can be sitting in bonds rather than in cash, and that is
-        // the ordinary case now: a position written down to zero leaves units
-        // backing nothing, and a bond price above cost leaves a gain that no
-        // `deallocate` will ever ask for. Redeem exactly what the sweep is
-        // short of, so the cash that goes home is the cash the position no
-        // longer needs and not a stroop more.
+        // Only cash, unless the position backs nothing.
+        //
+        // The first version of this redeemed units to realise a gain, and that
+        // was wrong in a way that took a full unwind failing to show. Selling
+        // units to sweep a mark-to-market gain leaves fewer units behind the
+        // same cost basis, so the moment the price retraces by a hair the
+        // position can no longer return what the Engine booked, and
+        // `deallocate` fails with RedemptionShort for four stroops on a
+        // thousand USDC. A gain that is not cash is not a surplus: it is the
+        // position being worth more than it cost, which is the point of holding
+        // it.
+        //
+        // The exception is a position that backs nothing. After a write-down
+        // the exposure is zero and the units are no longer protecting a book
+        // entry, so redeeming them is the only way to get that capital home,
+        // and nothing can be left short by doing it.
         let mut raised = cash;
-        if surplus > cash {
+        if surplus > cash && Self::get_exposure(e.clone()) == 0 {
             let pool: Address = e
                 .storage()
                 .instance()
@@ -637,24 +657,22 @@ impl EtherfuseAdapter {
                 .ok_or(AdapterError::PoolNotSet)?;
             let bond = StablebondClient::new(&e, &pool);
             let price = bond.price();
-            if price <= 0 {
-                return Err(AdapterError::NothingToRecover);
-            }
-            let short = surplus - cash;
-            let mut want = (short * PRICE_ONE + price - 1) / price;
-            let held = Self::units(e.clone());
-            if want > held {
-                want = held;
-            }
-            if want > 0 {
-                let got = bond.redeem(&e.current_contract_address(), &want);
-                e.storage().instance().set(&Cfg::Units, &(held - want));
-                raised = cash + got;
+            if price > 0 {
+                let short = surplus - cash;
+                let mut want = (short * PRICE_ONE + price - 1) / price;
+                let held = Self::units(e.clone());
+                if want > held {
+                    want = held;
+                }
+                if want > 0 {
+                    let got = bond.redeem(&e.current_contract_address(), &want);
+                    e.storage().instance().set(&Cfg::Units, &(held - want));
+                    raised = cash + got;
+                }
             }
         }
         // Whichever is smaller: what the position does not need, and what this
-        // adapter could actually raise. A pool that cannot pay caps the sweep
-        // instead of failing it.
+        // adapter could actually raise without touching what it does.
         let surplus = if surplus < raised { surplus } else { raised };
         if surplus <= 0 {
             return Err(AdapterError::NothingToRecover);

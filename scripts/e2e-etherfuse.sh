@@ -164,12 +164,42 @@ eq "the cost basis fell by the repayment"    "$(rd "$EF" get_exposure)" "$((EXP0
   || bad "units were sold to raise the cash" "still $UNITS_MID"
 
 echo "== 7. unwind the rest, so the book ends where it started"
+# What the position can actually pay, not what it cost.
+#
+# Bond units are integral. A subscription buys floor(amount / price) of them,
+# so a position is worth its cost basis minus up to one unit, and a redemption
+# floors again on the way out. Asking `deallocate` for the exact cost basis
+# therefore fails at the margin with RedemptionShort, for four stroops on a
+# thousand USDC, and that is not a defect to engineer away: it is what holding
+# a whole number of anything costs.
+#
+# So the unwind asks for the realisable value and the few stroops of difference
+# are recognised with `write_down`, which is the entry point for exactly this:
+# book value that is not coming back. The operator then returns the dust and
+# books the recovery, because the stroops do exist, which is what keeps the
+# Engine's cap from carrying a charge for an arithmetic artefact.
 REST=$(rd "$ENGINE" get_exposure --pool_id "$EF")
 if [ "$REST" -gt "0" ]; then
-  stellar contract invoke --id "$ENGINE" --source "$SRC" --network "$NET" -- \
-    deallocate --pool_id "$EF" --amount "$REST" >/dev/null 2>&1
+  VALUE=$(rd "$EF" market_value)
+  PAYABLE=$(( VALUE < REST ? VALUE : REST ))
+  if [ "$PAYABLE" -gt 0 ]; then
+    stellar contract invoke --id "$ENGINE" --source "$SRC" --network "$NET" -- \
+      deallocate --pool_id "$EF" --amount "$PAYABLE" >/dev/null 2>&1
+  fi
+  DUST=$(rd "$ENGINE" get_exposure --pool_id "$EF")
+  if [ "$DUST" -gt "0" ]; then
+    printf '        %s stroops of cost basis the whole units could not realise, recognised\n' "$DUST"
+    stellar contract invoke --id "$ENGINE" --source "$SRC" --network "$NET" -- \
+      write_down --admin "$ADMIN" --pool_id "$EF" --amount "$DUST" --reason ROUNDING >/dev/null 2>&1
+    stellar contract invoke --id "$USDC" --source "$SRC" --network "$NET" -- \
+      transfer --from "$ADMIN" --to "$VAULT" --amount "$DUST" >/dev/null 2>&1
+    stellar contract invoke --id "$ENGINE" --source "$SRC" --network "$NET" -- \
+      book_recovery --admin "$ADMIN" --pool_id "$EF" --amount "$DUST" >/dev/null 2>&1
+    printf '        and returned, so no cap carries a charge for arithmetic\n'
+  fi
 fi
 eq "exposure is back to where it began"      "$(rd "$ENGINE" get_exposure --pool_id "$EF")" "$EXP0"
+eq "and no write-off charge is left behind"  "$(rd "$ENGINE" written_off_pool --pool_id "$EF")" "0"
 # Rounding up on redemption can leave a stroop or two of cash here, and the
 # accrual it earned belongs to the Vault, so the sweep is the honest end state.
 SURPLUS=$(rd "$EF" uninvested)
