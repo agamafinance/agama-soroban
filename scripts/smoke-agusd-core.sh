@@ -8,7 +8,7 @@
 # working capital left in the Vault.
 #
 # Covers, with assertions:
-#   wiring  : the Vault mints the token that names the Vault as its minter
+#   wiring  : the Vault mints the token whose mint authority is the Vault
 #   mint    : a caller that is not the Vault cannot mint, submitted for real
 #             because authorization is checked when a transaction is applied
 #             and not when it is simulated
@@ -150,7 +150,16 @@ normalise_book "$VAULT" "$ENGINE" "$USDC" "$SRC" "$NET" "$ADMIN"
 echo ""
 echo "== WIRING: the Vault mints the token that names the Vault =="
 assert_eq "the Vault's agUSD is agusd-core" "$(q "$VAULT" agusd)" "$AGUSD_CORE"
-assert_eq "agusd-core's minter is the Vault" "$(q "$AGUSD_CORE" minter)" "$VAULT"
+# The mint authority, asked by the name the deployed contract actually answers
+# to. This line asked for `minter()` for as long as agUSD was the custom
+# agusd-core contract, and agUSD is a Stellar Asset Contract now: the asset is
+# classic, the contract address is its SAC, and a SAC's mint authority is its
+# `admin`. There is no `minter` entry point to read, so the call came back empty
+# and the suite reported that the Vault was not the minter, which was never true.
+# A stale assertion that reads empty is worse than one that is wrong, because
+# empty looks like the protocol failing rather than the test asking a question
+# the contract cannot answer.
+assert_eq "the agUSD SAC's admin is the Vault" "$(q "$AGUSD_CORE" admin)" "$VAULT"
 assert_eq "the Vault holds the real USDC" "$(q "$VAULT" usdc)" "$USDC"
 assert_eq "agUSD carries USDC's 7 decimals" "$(q "$AGUSD_CORE" decimals)" "7"
 assert_eq "the token is agUSD" "$(q "$AGUSD_CORE" symbol)" "agUSD"
