@@ -1,7 +1,8 @@
 #![cfg(test)]
 use super::*;
+use mock_stablebond::{MockStablebond, MockStablebondClient};
 use mock_usdc::{MockUsdc, MockUsdcClient};
-use soroban_sdk::testutils::{Address as _, MockAuth, MockAuthInvoke};
+use soroban_sdk::testutils::{Address as _, Ledger as _, MockAuth, MockAuthInvoke};
 use soroban_sdk::IntoVal;
 use soroban_sdk::{contract, contractimpl, symbol_short, Address, Env, String};
 
@@ -56,6 +57,8 @@ struct Fix {
     adapter_id: Address,
     vault: Address,
     admin: Address,
+    pool: MockStablebondClient<'static>,
+    pool_id: Address,
 }
 
 /// Both counterparties are the smallest contracts that can answer what the
@@ -96,6 +99,16 @@ fn setup() -> Fix {
     );
     let adapter = EtherfuseAdapterClient::new(&e, &adapter_id);
 
+    // The Stablebond pool the adapter subscribes into. Starting at par, one
+    // USDC per unit, so the arithmetic in the tests that do not care about the
+    // price stays readable; the ones that do move it themselves.
+    let pool_id = e.register(
+        MockStablebond,
+        (admin.clone(), usdc_id.clone(), mock_stablebond::ONE),
+    );
+    adapter.set_pool(&admin, &pool_id);
+    let pool = MockStablebondClient::new(&e, &pool_id);
+
     Fix {
         e,
         usdc,
@@ -103,17 +116,94 @@ fn setup() -> Fix {
         adapter_id,
         vault,
         admin,
+        pool,
+        pool_id,
     }
 }
 
 #[test]
-fn allocate_books_exposure() {
+fn allocate_books_exposure_and_subscribes_the_capital() {
     let f = setup();
     assert_eq!(f.adapter.get_exposure(), 0);
+    assert_eq!(f.adapter.units(), 0);
+
+    // The Vault releases the cash to the adapter, which is what the Engine's
+    // `settle_allocation` does before it calls this.
+    f.usdc.faucet(&f.adapter_id, &(750 * USDC));
     f.adapter.allocate(&(500 * USDC));
+
+    // Booked, and actually invested: the USDC is in the pool and the units are
+    // on this adapter. The exposure alone used to be the whole of it.
     assert_eq!(f.adapter.get_exposure(), 500 * USDC);
+    assert_eq!(f.adapter.units(), 500 * USDC, "at par, one unit per USDC");
+    assert_eq!(f.pool.units(&f.adapter_id), 500 * USDC);
+    assert_eq!(f.usdc.balance(&f.pool_id), 500 * USDC);
+    assert_eq!(f.usdc.balance(&f.adapter_id), 250 * USDC, "not yet called for");
+
     f.adapter.allocate(&(250 * USDC));
     assert_eq!(f.adapter.get_exposure(), 750 * USDC);
+    assert_eq!(f.adapter.units(), 750 * USDC);
+    assert_eq!(f.adapter.uninvested(), 0);
+    assert_eq!(f.adapter.market_value(), 750 * USDC);
+}
+
+/// Without a pool the adapter refuses the Vault's money rather than booking an
+/// exposure it has not invested. This is the regression the counter left open.
+#[test]
+fn allocate_refuses_before_a_pool_is_named() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let admin = Address::generate(&e);
+    let usdc_id = e.register(MockUsdc, ());
+    let usdc = MockUsdcClient::new(&e, &usdc_id);
+    usdc.initialize(
+        &admin,
+        &7u32,
+        &String::from_str(&e, "USD Coin"),
+        &String::from_str(&e, "USDC"),
+    );
+    let vault = mock_vault(&e, &usdc_id);
+    let engine = e.register(MockEngine, ());
+    MockEngineClient::new(&e, &engine).initialize(&vault);
+    let adapter_id = e.register(
+        EtherfuseAdapter,
+        (admin.clone(), engine.clone(), vault.clone(), usdc_id.clone()),
+    );
+    let adapter = EtherfuseAdapterClient::new(&e, &adapter_id);
+    usdc.faucet(&adapter_id, &(100 * USDC));
+
+    assert_eq!(
+        adapter.try_allocate(&(100 * USDC)),
+        Err(Ok(AdapterError::PoolNotSet))
+    );
+    assert_eq!(adapter.get_exposure(), 0);
+    assert_eq!(
+        adapter.try_pool(),
+        Err(Ok(AdapterError::PoolNotSet))
+    );
+}
+
+/// The pool cannot be moved out from under a live position.
+#[test]
+fn the_pool_moves_only_while_the_adapter_is_empty() {
+    let f = setup();
+    f.usdc.faucet(&f.adapter_id, &(100 * USDC));
+    f.adapter.allocate(&(100 * USDC));
+
+    let other = f.e.register(
+        MockStablebond,
+        (f.admin.clone(), f.usdc.address.clone(), mock_stablebond::ONE),
+    );
+    assert_eq!(
+        f.adapter.try_set_pool(&f.admin, &other),
+        Err(Ok(AdapterError::NotEmpty))
+    );
+
+    // Unwound, and it opens again.
+    f.adapter.deallocate(&(100 * USDC));
+    assert_eq!(f.adapter.units(), 0);
+    f.adapter.set_pool(&f.admin, &other);
+    assert_eq!(f.adapter.pool(), other);
 }
 
 #[test]
@@ -128,7 +218,11 @@ fn deallocate_returns_capital_and_reduces_exposure_together() {
     f.adapter.deallocate(&(200 * USDC));
     assert_eq!(f.adapter.get_exposure(), 300 * USDC);
     assert_eq!(f.usdc.balance(&f.vault), 200 * USDC);
-    assert_eq!(f.usdc.balance(&f.adapter_id), 300 * USDC);
+    // The cash came out of the bond, not out of a balance parked here: the
+    // units fell by what was redeemed and nothing is idle on the adapter.
+    assert_eq!(f.adapter.units(), 300 * USDC);
+    assert_eq!(f.usdc.balance(&f.adapter_id), 0);
+    assert_eq!(f.usdc.balance(&f.pool_id), 300 * USDC);
 }
 
 #[test]
@@ -277,8 +371,12 @@ fn a_defaulted_position_can_be_written_off_without_returning_capital() {
     f.usdc.faucet(&f.adapter_id, &(500 * USDC));
     f.adapter.allocate(&(500 * USDC));
 
-    // The originator draws down and defaults: the cash is gone from here.
-    f.usdc.burn(&f.adapter_id, &(500 * USDC));
+    // The bond defaults: the issuer stops paying and the price collapses, so
+    // the units this adapter holds are worth nothing and the pool has no cash
+    // to redeem them against. Burning the adapter's balance is no longer how
+    // this is modelled, because the capital is not on the adapter any more.
+    f.pool.set_price(&f.admin, &1);
+    f.usdc.burn(&f.pool_id, &f.usdc.balance(&f.pool_id));
     assert!(f.adapter.try_deallocate(&(500 * USDC)).is_err());
     assert_eq!(f.adapter.get_exposure(), 500 * USDC);
 
@@ -367,7 +465,8 @@ fn recover_surplus_sends_the_surplus_home_and_leaves_the_position_funded() {
     // Interest above principal arrives from the originator: cash the book never
     // expected, with no exposure for `deallocate` to return it against.
     f.usdc.faucet(&f.adapter_id, &(40 * USDC));
-    assert_eq!(f.usdc.balance(&f.adapter_id), 540 * USDC);
+    assert_eq!(f.usdc.balance(&f.adapter_id), 40 * USDC);
+    assert_eq!(f.adapter.units(), 500 * USDC, "the principal is in the bond");
 
     let engine = f.adapter.engine();
     assert_eq!(f.adapter.recover_surplus(&engine), 40 * USDC);
@@ -375,8 +474,9 @@ fn recover_surplus_sends_the_surplus_home_and_leaves_the_position_funded() {
     // Exactly the surplus moved, it went to the Vault this adapter stores, and
     // the book did not shift by a stroop: a recovery is not a repayment.
     assert_eq!(f.usdc.balance(&f.vault), 40 * USDC);
-    assert_eq!(f.usdc.balance(&f.adapter_id), 500 * USDC);
+    assert_eq!(f.usdc.balance(&f.adapter_id), 0);
     assert_eq!(f.adapter.get_exposure(), 500 * USDC);
+    assert_eq!(f.adapter.units(), 500 * USDC, "the position was not touched");
 
     // Which is the whole reason the amount is the surplus rather than the
     // balance. The position is still fully funded, so it can still be repaid in
@@ -398,10 +498,11 @@ fn the_recovery_has_no_destination_for_the_admin_to_choose() {
     // exposure left for `deallocate` to return it against, and a single stroop
     // of it also closes `set_counterparties`. This is the state that retired
     // three generations of this adapter.
+    f.usdc.faucet(&f.adapter_id, &(200 * USDC));
     f.adapter.allocate(&(200 * USDC));
     f.adapter.write_down(&(200 * USDC));
-    f.usdc.faucet(&f.adapter_id, &(200 * USDC));
     assert_eq!(f.adapter.get_exposure(), 0);
+    assert_eq!(f.adapter.units(), 200 * USDC, "units backing nothing");
     assert_eq!(f.usdc.balance(&f.admin), 0);
 
     assert_eq!(f.adapter.recover_surplus(&f.admin), 200 * USDC);
@@ -499,13 +600,14 @@ fn an_adapter_with_no_surplus_refuses_rather_than_sweeping_nothing() {
         f.adapter.try_recover_surplus(&f.admin),
         Err(Ok(AdapterError::NothingToRecover))
     );
-    assert_eq!(f.usdc.balance(&f.adapter_id), 500 * USDC);
+    assert_eq!(f.usdc.balance(&f.adapter_id), 0, "it is all in the bond");
     assert_eq!(f.adapter.get_exposure(), 500 * USDC);
+    assert_eq!(f.adapter.market_value(), 500 * USDC);
 
-    // And a position the originator has drawn down sits below its book rather
-    // than above it, so the subtraction is negative and there is still nothing
-    // to send home.
-    f.usdc.burn(&f.adapter_id, &(200 * USDC));
+    // And a position whose bond has fallen sits below its book rather than
+    // above it, so the subtraction is negative and there is still nothing to
+    // send home.
+    f.pool.set_price(&f.admin, &6_000_000);
     assert_eq!(
         f.adapter.try_recover_surplus(&f.admin),
         Err(Ok(AdapterError::NothingToRecover))
@@ -538,5 +640,100 @@ fn an_adapter_cannot_be_deployed_pointing_at_a_vault_its_engine_does_not_govern(
             f.vault.clone(),
             f.usdc.address.clone(),
         ),
+    );
+}
+
+// ---- the EF_BOND feed, Tranche 2 Deliverable 2's third valuation ----
+
+use oracle_adapter::{OracleAdapter, OracleAdapterClient};
+
+/// Registers EF_BOND on a fresh Oracle Adapter with the award's parameters, 48
+/// hours of staleness and no deviation bound, and points the adapter at it.
+fn with_oracle(f: &Fix, price: i128) -> OracleAdapterClient<'static> {
+    let reporter = Address::generate(&f.e);
+    let oracle_id = f.e.register(OracleAdapter, (f.admin.clone(),));
+    let oracle = OracleAdapterClient::new(&f.e, &oracle_id);
+    oracle.add_reporter(&f.admin, &reporter);
+    oracle.register_feed(
+        &f.admin,
+        &oracle_adapter::FEED_EF_BOND,
+        &oracle_adapter::ETHERFUSE_STALENESS,
+        &oracle_adapter::ETHERFUSE_DEVIATION_BPS,
+        &oracle_adapter::NAV_BAND_MIN,
+        &oracle_adapter::NAV_BAND_MAX,
+        &0u64,
+    );
+    oracle.push_nav(&reporter, &oracle_adapter::FEED_EF_BOND, &price, &0u64);
+    f.adapter.set_oracle(&f.admin, &oracle_id);
+    oracle
+}
+
+#[test]
+fn the_position_is_valued_from_the_validated_feed_not_only_from_the_pool() {
+    let f = setup();
+    with_oracle(&f, mock_stablebond::ONE);
+    f.usdc.faucet(&f.adapter_id, &(500 * USDC));
+    f.adapter.allocate(&(500 * USDC));
+
+    // Agreeing, which is the healthy case.
+    assert_eq!(f.adapter.market_value(), 500 * USDC);
+    assert_eq!(f.adapter.oracle_value(), 500 * USDC);
+    assert_eq!(f.adapter.price_drift_bps(), 0);
+}
+
+#[test]
+fn a_pool_marking_its_own_book_up_shows_as_drift_rather_than_as_value() {
+    let f = setup();
+    with_oracle(&f, mock_stablebond::ONE);
+    f.usdc.faucet(&f.adapter_id, &(500 * USDC));
+    f.adapter.allocate(&(500 * USDC));
+
+    // The issuer quotes 5% above what the feed validates. The protocol's own
+    // valuation does not move, and the gap is readable.
+    f.pool.set_price(&f.admin, &10_500_000);
+    assert_eq!(f.adapter.market_value(), 525 * USDC, "what the pool claims");
+    assert_eq!(f.adapter.oracle_value(), 500 * USDC, "what the feed validates");
+    assert_eq!(f.adapter.price_drift_bps(), 500);
+}
+
+#[test]
+fn a_feed_nobody_has_updated_refuses_to_value_the_position() {
+    let f = setup();
+    with_oracle(&f, mock_stablebond::ONE);
+    f.usdc.faucet(&f.adapter_id, &(500 * USDC));
+    f.adapter.allocate(&(500 * USDC));
+    // Past the 48 hour Etherfuse window. Not an old number, an error.
+    f.e.ledger()
+        .set_timestamp(oracle_adapter::ETHERFUSE_STALENESS + 1);
+    assert!(f.adapter.try_oracle_value().is_err());
+    // The pool's own price is still readable, which is the point of keeping
+    // the two apart: the position has not vanished, its valuation has.
+    assert_eq!(f.adapter.market_value(), 500 * USDC);
+}
+
+#[test]
+fn an_oracle_that_has_never_heard_of_the_feed_is_refused() {
+    let f = setup();
+    let oracle_id = f.e.register(OracleAdapter, (f.admin.clone(),));
+    assert_eq!(
+        f.adapter.try_set_oracle(&f.admin, &oracle_id),
+        Err(Ok(AdapterError::OracleMismatch))
+    );
+    assert_eq!(
+        f.adapter.try_oracle(),
+        Err(Ok(AdapterError::OracleNotSet))
+    );
+}
+
+#[test]
+fn valuing_before_an_oracle_is_named_says_so() {
+    let f = setup();
+    assert_eq!(
+        f.adapter.try_oracle_value(),
+        Err(Ok(AdapterError::OracleNotSet))
+    );
+    assert_eq!(
+        f.adapter.try_price_drift_bps(),
+        Err(Ok(AdapterError::OracleNotSet))
     );
 }

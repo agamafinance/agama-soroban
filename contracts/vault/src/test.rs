@@ -2433,3 +2433,197 @@ fn set_agusd_rejects_a_token_whose_admin_is_us_but_whose_minter_is_not() {
         Err(Ok(VaultError::AgUsdMismatch))
     );
 }
+
+// ---- the peg feed, Tranche 2 Deliverable 2's third feed ----
+//
+// The award says the Reflector USDC/USD feed "validates peg integrity of the
+// vault base asset". Until these tests it was a symbol the Oracle Adapter knew
+// and no contract read, which is not a validation of anything. These are the
+// cases that make the sentence mean something.
+
+/// Registers USDC_USD on the Vault's oracle with the award's own parameters,
+/// one hour of staleness and a 200 basis point bound, and points the Vault at
+/// it with the same tolerance.
+fn with_peg(f: &Fix) -> Address {
+    f.oracle.register_feed(
+        &f.admin,
+        &oracle_adapter::FEED_USDC_USD,
+        &oracle_adapter::REFLECTOR_STALENESS,
+        &oracle_adapter::REFLECTOR_DEVIATION_BPS,
+        &oracle_adapter::NAV_BAND_MIN,
+        &oracle_adapter::NAV_BAND_MAX,
+        &0u64,
+    );
+    f.oracle.push_nav(
+        &f.reporter,
+        &oracle_adapter::FEED_USDC_USD,
+        &oracle_adapter::ONE,
+        &T0,
+    );
+    f.vault
+        .set_peg_feed(&f.admin, &oracle_adapter::FEED_USDC_USD, &200u32);
+    Address::generate(&f.e)
+}
+
+#[test]
+fn a_vault_with_no_peg_feed_behaves_as_it_did_before_the_check_existed() {
+    let f = setup();
+    let user = Address::generate(&f.e);
+    assert_eq!(f.vault.peg_feed(), None);
+    assert_eq!(f.vault.peg(), None);
+    assert_eq!(f.vault.peg_tolerance_bps(), 0);
+    f.usdc.faucet(&user, &(100 * USDC));
+    assert_eq!(f.vault.deposit(&user, &(100 * USDC)), 100 * USDC);
+}
+
+#[test]
+fn at_par_the_peg_check_does_not_interfere() {
+    let f = setup();
+    let user = with_peg(&f);
+    assert_eq!(f.vault.peg(), Some(oracle_adapter::ONE));
+    assert_eq!(f.vault.peg_tolerance_bps(), 200);
+    f.usdc.faucet(&user, &(100 * USDC));
+    assert_eq!(f.vault.deposit(&user, &(100 * USDC)), 100 * USDC);
+}
+
+#[test]
+fn inside_the_tolerance_a_deposit_still_goes_through() {
+    let f = setup();
+    let user = with_peg(&f);
+    // 1.5% below par, inside the 2% bound the award names.
+    f.e.ledger().set_timestamp(T0 + 60);
+    f.oracle.push_nav(
+        &f.reporter,
+        &oracle_adapter::FEED_USDC_USD,
+        &9_850_000,
+        &(T0 + 60),
+    );
+    f.usdc.faucet(&user, &(100 * USDC));
+    assert_eq!(f.vault.deposit(&user, &(100 * USDC)), 100 * USDC);
+}
+
+#[test]
+fn a_base_asset_below_its_peg_stops_minting_at_par() {
+    let f = setup();
+    let user = with_peg(&f);
+    // 3% below par, reached in two moves. It has to be two: the feed's own
+    // deviation guard rejects a single 3% jump with nav_rejected, and that is a
+    // different protection from this one. The oracle bounds how fast a feed may
+    // move; the Vault bounds where the asset may be. A slow depeg passes the
+    // first and has to be caught by the second.
+    f.e.ledger().set_timestamp(T0 + 60);
+    f.oracle.push_nav(
+        &f.reporter,
+        &oracle_adapter::FEED_USDC_USD,
+        &9_850_000,
+        &(T0 + 60),
+    );
+    f.e.ledger().set_timestamp(T0 + 120);
+    f.oracle.push_nav(
+        &f.reporter,
+        &oracle_adapter::FEED_USDC_USD,
+        &9_703_000,
+        &(T0 + 120),
+    );
+    f.usdc.faucet(&user, &(100 * USDC));
+    assert_eq!(
+        f.vault.try_deposit(&user, &(100 * USDC)),
+        Err(Ok(VaultError::PegBroken))
+    );
+    // Nothing moved: not the USDC, not the supply, not the Vault's own book.
+    assert_eq!(f.usdc.balance(&user), 100 * USDC);
+    assert_eq!(f.agusd.balance(&user), 0);
+}
+
+#[test]
+fn a_base_asset_above_its_peg_stops_it_too() {
+    let f = setup();
+    let user = with_peg(&f);
+    // The other tail, and it is not symmetric in who it costs: USDC above a
+    // dollar makes a withdrawal at par a way to take out more than was put in.
+    f.e.ledger().set_timestamp(T0 + 60);
+    f.oracle.push_nav(
+        &f.reporter,
+        &oracle_adapter::FEED_USDC_USD,
+        &10_150_000,
+        &(T0 + 60),
+    );
+    f.e.ledger().set_timestamp(T0 + 120);
+    f.oracle.push_nav(
+        &f.reporter,
+        &oracle_adapter::FEED_USDC_USD,
+        &10_300_000,
+        &(T0 + 120),
+    );
+    f.usdc.faucet(&user, &(100 * USDC));
+    assert_eq!(
+        f.vault.try_deposit(&user, &(100 * USDC)),
+        Err(Ok(VaultError::PegBroken))
+    );
+}
+
+#[test]
+fn a_peg_feed_nobody_has_updated_stops_the_vault_like_an_off_peg_one() {
+    let f = setup();
+    let user = with_peg(&f);
+    f.usdc.faucet(&user, &(100 * USDC));
+    // Past the one hour Reflector window. The read is not swallowed into an
+    // old number, and it is not translated into a Vault error either: the
+    // Oracle Adapter's own OracleStale reaches the depositor.
+    f.e.ledger()
+        .set_timestamp(T0 + oracle_adapter::REFLECTOR_STALENESS + 1);
+    assert!(f.vault.try_deposit(&user, &(100 * USDC)).is_err());
+    assert_eq!(f.agusd.balance(&user), 0);
+}
+
+#[test]
+fn the_peg_tolerance_has_to_be_a_peg_tolerance() {
+    let f = setup();
+    f.oracle.register_feed(
+        &f.admin,
+        &oracle_adapter::FEED_USDC_USD,
+        &oracle_adapter::REFLECTOR_STALENESS,
+        &oracle_adapter::REFLECTOR_DEVIATION_BPS,
+        &oracle_adapter::NAV_BAND_MIN,
+        &oracle_adapter::NAV_BAND_MAX,
+        &0u64,
+    );
+    // Zero would stop the Vault on ordinary market noise, and a tolerance
+    // above 10% is wide enough that the asset has stopped being a dollar.
+    assert_eq!(
+        f.vault
+            .try_set_peg_feed(&f.admin, &oracle_adapter::FEED_USDC_USD, &0u32),
+        Err(Ok(VaultError::InvalidPegTolerance))
+    );
+    assert_eq!(
+        f.vault
+            .try_set_peg_feed(&f.admin, &oracle_adapter::FEED_USDC_USD, &1_001u32),
+        Err(Ok(VaultError::InvalidPegTolerance))
+    );
+    assert_eq!(f.vault.peg_feed(), None, "neither one was stored");
+}
+
+#[test]
+fn the_peg_feed_has_to_be_a_feed_the_oracle_knows() {
+    let f = setup();
+    // Same interrogation `set_oracle` makes. A feed the oracle has never heard
+    // of would turn every deposit into a FeedNotRegistered.
+    assert_eq!(
+        f.vault
+            .try_set_peg_feed(&f.admin, &symbol_short!("NOPE"), &200u32),
+        Err(Ok(VaultError::OracleMismatch))
+    );
+    assert_eq!(f.vault.peg_feed(), None);
+}
+
+#[test]
+fn only_the_admin_sets_the_peg() {
+    let f = setup();
+    let user = with_peg(&f);
+    f.e.mock_auths(&[]);
+    assert!(f
+        .vault
+        .try_set_peg_feed(&f.admin, &oracle_adapter::FEED_USDC_USD, &500u32)
+        .is_err());
+    assert_eq!(f.vault.peg_tolerance_bps(), 200, "unchanged");
+}

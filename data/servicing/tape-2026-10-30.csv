@@ -1,0 +1,12 @@
+loan_id,originator,jurisdiction,asset_class,disbursed_on,maturity_on,principal_usd,coupon_bps,status,days_past_due,principal_repaid_usd,interest_received_usd
+QIRO-2026-0417,QIRO,LU,trade_finance,2026-04-17,2027-04-17,350000.00,1250,performing,0,0.00,24212.33
+QIRO-2026-0503,QIRO,LU,trade_finance,2026-05-03,2026-11-03,210000.00,1180,performing,0,105000.00,12568.22
+QIRO-2026-0528,QIRO,LU,working_capital,2026-05-28,2026-11-28,185000.00,1340,performing,0,0.00,10401.78
+QIRO-2026-0611,QIRO,LU,receivables,2026-06-11,2026-12-11,240000.00,1410,performing,0,0.00,12984.66
+QIRO-2026-0702,QIRO,LU,trade_finance,2026-07-02,2027-01-02,160000.00,1275,performing,0,0.00,6708.49
+FATRA-2026-0619,FATRA,AE,receivables,2026-06-19,2026-12-19,295000.00,1520,performing,0,0.00,16125.21
+FATRA-2026-0724,FATRA,AE,working_capital,2026-07-24,2027-01-24,175000.00,1455,delinquent,23,0.00,5992.81
+FATRA-2026-0805,FATRA,AE,receivables,2026-08-05,2026-11-05,130000.00,1380,performing,0,0.00,4217.26
+FATRA-2026-0821,FATRA,AE,trade_finance,2026-08-21,2027-02-21,205000.00,1490,delinquent,47,0.00,5862.66
+TENKA-2026-0714,TENKA,LU,securitised_receivables,2026-07-14,2027-07-14,420000.00,1190,performing,0,0.00,14797.81
+TENKA-2026-0808,TENKA,LU,securitised_receivables,2026-08-08,2027-02-08,260000.00,1230,performing,0,0.00,7270.68

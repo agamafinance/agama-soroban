@@ -98,6 +98,7 @@ use std::vec;
 use super::*;
 use allocation_engine::{AllocationEngine, AllocationEngineClient};
 use etherfuse::{EtherfuseAdapter, EtherfuseAdapterClient};
+use mock_stablebond::MockStablebond;
 use mock_usdc::{MockUsdc, MockUsdcClient};
 use private_credit::{PrivateCreditAdapter, PrivateCreditAdapterClient};
 use proptest::prelude::*;
@@ -284,6 +285,15 @@ fn setup() -> FuzzState {
         ),
     );
     let ef_pool = EtherfuseAdapterClient::new(&e, &ef_pool_id);
+    // The Etherfuse adapter invests what it is given, so it needs a Stablebond
+    // pool to invest into before it will accept an allocation at all.
+    ef_pool.set_pool(
+        &admin,
+        &e.register(
+            MockStablebond,
+            (admin.clone(), usdc_id.clone(), mock_stablebond::ONE),
+        ),
+    );
     engine.register_pool(
         &admin,
         &ef_pool_id,
@@ -534,14 +544,20 @@ fn check_invariants(state: &FuzzState) -> PResult {
         "adapter exposure exceeded the Vault's own deployed_capital"
     );
 
-    // 10. no adapter ever holds less USDC than it has booked as exposure.
+    // 10. no adapter is ever worth less than it has booked as exposure.
+    //
+    // Measured differently on the two adapters because they hold the capital
+    // differently. Private credit custodies USDC until the originator draws
+    // it, so cash is the comparison. Etherfuse subscribes into a Stablebond,
+    // so its cash is zero in the steady state and the comparison is against
+    // the position: units at the pool price plus any cash not yet invested.
     prop_assert!(
         state.usdc.balance(&state.pc_pool_id) >= state.pc_pool.get_exposure(),
         "private credit adapter holds less USDC than its booked exposure"
     );
     prop_assert!(
-        state.usdc.balance(&state.ef_pool_id) >= state.ef_pool.get_exposure(),
-        "etherfuse adapter holds less USDC than its booked exposure"
+        state.ef_pool.market_value() >= state.ef_pool.get_exposure(),
+        "etherfuse adapter is worth less than its booked exposure"
     );
 
     Ok(())

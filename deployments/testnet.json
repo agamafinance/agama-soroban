@@ -28,7 +28,7 @@
   "usdcReal": true,
   "poolAdapters": {
     "private-credit": "CDNWXGSSP3BOAIKIYTGDHST2BBSZNWIW6RMDQERM3HOQ24EO43WLP3VE",
-    "etherfuse": "CCXO2ZIMK7KZMMUBE24KOLWDJHVXQKXDNEP4QH7N5ZK5U6ESCWKM7BXN"
+    "etherfuse": "CDNR4WLEOIP5J2ZD6RQ6UQ2JU6I6E4YPE33DOC7N6ORXZAASRVH6EEMI"
   },
   "engineConfig": {
     "poolCapBps": 4000,
@@ -926,5 +926,25 @@
     "amount": 4000000,
     "vault": "CCVNCXPJXCA5GKJKNUNZRMJEEWYL74ASYYTL2DULPO5TZDGSHUPZTTJF",
     "note": "USDC the Vault holds that no agUSD claims, 0.4 as of 26 October 2026. Engine.recover sweeps cash an adapter held above its booked exposure into the Vault, which books it as reserves and mints nothing, because the agUSD that cash backed was burned when the loss was recognised. Four passes of the hardening suite's credit-loss finding in one day left four tenths of a USDC of it. It is the safe direction, the Vault holding more than the token claims, and e2e-generation3.sh asserts that direction rather than equality: equality would fail the first time a real default was recovered."
+  },
+  "mockPools": {
+    "etherfuseStablebond": {
+      "address": "CDBZQOQJ4G3EHM7JB7LVXFAZWFP5RMCKBT6NVIPYOPDRO62FYGYH5IAL",
+      "wasmHash": "9d5367b706950d800feb05be78840f655cc93a0fe0200f2399c69382a2d4b336",
+      "why": "Etherfuse Stablebonds are live on Stellar mainnet and not on testnet, and Tranche 2 Deliverable 1 asks for the adapter to pass its unit tests against mock pool contracts. This is that mock, deployed so the adapter's subscription and redemption run on testnet as well as in the suite. It is not Etherfuse and is not presented as Etherfuse: on mainnet the adapter is pointed at the real pool through set_pool, which is the only thing that changes."
+    }
+  },
+  "retired": {
+    "CCXO2ZIMK7KZMMUBE24KOLWDJHVXQKXDNEP4QH7N5ZK5U6ESCWKM7BXN": {
+      "what": "Etherfuse pool adapter, generation before the Tranche 2 review",
+      "reason": "Its allocate() incremented an exposure counter and returned, so the USDC the Vault released sat on the adapter earning nothing while the Engine's book, the NAV and the yield keeper all read it as deployed into Stablebonds. The Stellar reviewer put it as 'allocate() only books an exposure counter ... so there is no Stablebond subscription or redemption path, mock or real'. The replacement subscribes into a pool, holds bond units, redeems to raise cash, and values the position from the EF_BOND feed through the Oracle Adapter. Exposure was zero when it was replaced, so it stranded nothing.",
+      "replacedBy": "CDNR4WLEOIP5J2ZD6RQ6UQ2JU6I6E4YPE33DOC7N6ORXZAASRVH6EEMI",
+      "date": "2026-10-30"
+    }
+  },
+  "pegGate": {
+    "feed": "USDC_USD",
+    "toleranceBps": 200,
+    "gates": "Vault.deposit. agUSD is minted one for one against USDC, so a deposit is an exchange at par and the base asset has to be at par for it to be a fair one. Outside 200 bps either way the Vault returns PegBroken (331). Below par a deposit would buy agUSD at a discount and dilute holders who came in at a dollar; above par a withdrawal at par takes out more than was put in. Staleness is not a separate check: the read goes through the Oracle Adapter's get_nav, so a feed older than its one hour window stops deposits with OracleStale."
   }
 }

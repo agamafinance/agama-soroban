@@ -4,6 +4,7 @@
 extern crate std;
 use super::*;
 use etherfuse::{EtherfuseAdapter, EtherfuseAdapterClient};
+use mock_stablebond::MockStablebond;
 use mock_usdc::{MockUsdc, MockUsdcClient};
 use private_credit::{PrivateCreditAdapter, PrivateCreditAdapterClient};
 use soroban_sdk::testutils::{Address as _, MockAuth, MockAuthInvoke};
@@ -336,6 +337,17 @@ fn setup() -> Fix {
         ),
     );
     let adapter_c = EtherfuseAdapterClient::new(&e, &pool_c);
+    // The Etherfuse adapter subscribes the capital it is given into a
+    // Stablebond pool, so it refuses to book anything before one is named.
+    // Its own suite covers the pool; here it only has to exist so the Engine's
+    // allocations reach the far side.
+    adapter_c.set_pool(
+        &admin,
+        &e.register(
+            MockStablebond,
+            (admin.clone(), usdc_id.clone(), mock_stablebond::ONE),
+        ),
+    );
 
     engine.register_pool(
         &admin,
@@ -863,6 +875,13 @@ fn the_deployed_limits_leave_the_reserve_floor_able_to_bind() {
             usdc_id.clone(),
         ),
     );
+    EtherfuseAdapterClient::new(&e, &ef).set_pool(
+        &admin,
+        &e.register(
+            MockStablebond,
+            (admin.clone(), usdc_id.clone(), mock_stablebond::ONE),
+        ),
+    );
 
     engine.register_pool(
         &admin,
@@ -1313,11 +1332,14 @@ fn a_booked_recovery_releases_the_cap_of_whichever_pool_the_admin_names() {
     f.engine
         .write_down(&f.admin, &f.pool_c, &(150 * USDC), &symbol_short!("DEFAULT"));
 
-    // Pool C is the one that recovers: its adapter is holding the cash, and a
-    // sweep through `recover` would release C's charge and only C's.
-    assert_eq!(f.usdc.balance(&f.pool_c), 150 * USDC);
+    // Pool C is the one that recovers. Its capital is in the Stablebond rather
+    // than in cash on the adapter, and the write-down left those units backing
+    // nothing, so the sweep redeems them and sends the proceeds to the Vault.
+    assert_eq!(f.usdc.balance(&f.pool_c), 0, "subscribed, not held");
+    assert_eq!(f.adapter_c.market_value(), 150 * USDC);
     assert_eq!(f.usdc.balance(&f.pool_a), 250 * USDC);
-    f.adapter_c.recover_surplus(&f.admin);
+    assert_eq!(f.adapter_c.recover_surplus(&f.admin), 150 * USDC);
+    assert_eq!(f.adapter_c.units(), 0, "the position was liquidated");
 
     // Booked against pool A instead. Nothing refuses it.
     f.engine
@@ -1869,11 +1891,17 @@ fn set_vault_refuses_exactly_what_the_constructor_refuses() {
 /// invariant rather than as a note. There is no `book_repayment` because there
 /// is no state that needs one.
 #[test]
-fn an_adapter_can_never_hold_less_usdc_than_it_has_booked() {
+fn an_adapter_is_never_worth_less_than_it_has_booked() {
     let f = setup();
+    // Two different measurements, because the two adapters hold the capital
+    // differently. The private credit adapter custodies USDC until the
+    // originator draws it, so its cash is the thing to compare. The Etherfuse
+    // adapter subscribes into a Stablebond, so its cash is zero in the steady
+    // state and the comparison is against what the position is worth: units at
+    // the pool price, plus whatever cash has not been invested yet.
     let check = |f: &Fix| {
         assert!(f.usdc.balance(&f.pool_a) >= f.adapter_a.get_exposure());
-        assert!(f.usdc.balance(&f.pool_c) >= f.adapter_c.get_exposure());
+        assert!(f.adapter_c.market_value() >= f.adapter_c.get_exposure());
     };
 
     check(&f);

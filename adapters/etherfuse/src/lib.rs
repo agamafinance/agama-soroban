@@ -77,9 +77,10 @@
 //! path that still works when the Engine an adapter is stuck to has itself been
 //! superseded, which is the state that caused the retirements.
 
+use soroban_sdk::auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation};
 use soroban_sdk::{
     contract, contractclient, contracterror, contractevent, contractimpl, contracttype,
-    symbol_short, token::TokenClient, Address, Env, Symbol,
+    symbol_short, token::TokenClient, vec, Address, Env, IntoVal, Symbol,
 };
 
 /// The Allocation Engine, as seen from the adapter. Only `set_counterparties`
@@ -97,6 +98,28 @@ pub trait AllocationEngineInterface {
 pub trait VaultTokenInterface {
     fn usdc(e: Env) -> Address;
 }
+
+/// The Stablebond pool this adapter subscribes into.
+///
+/// Declared here rather than imported so the adapter depends on the shape of
+/// the pool and not on any particular pool contract: the mock used by the unit
+/// tests and the real Etherfuse pool on mainnet answer the same four calls.
+#[contractclient(name = "StablebondClient")]
+pub trait StablebondInterface {
+    fn subscribe(e: Env, from: Address, usdc_amount: i128) -> i128;
+    fn redeem(e: Env, from: Address, units: i128) -> i128;
+    fn price(e: Env) -> i128;
+}
+
+/// The Oracle Adapter, for the one question this adapter asks it.
+#[contractclient(name = "OracleClient")]
+pub trait OracleInterface {
+    fn get_nav(e: Env, feed_id: Symbol) -> i128;
+    fn get_feed(e: Env, feed_id: Symbol) -> soroban_sdk::Val;
+}
+
+/// Scale of the Stablebond price: USDC per bond unit at 7 decimals.
+pub const PRICE_ONE: i128 = 1_0000000;
 
 const DAY_LEDGERS: u32 = 17_280;
 const INSTANCE_BUMP: u32 = 30 * DAY_LEDGERS;
@@ -140,6 +163,18 @@ pub enum AdapterError {
     /// The adapter holds nothing above its booked exposure, so there is nothing
     /// to send home.
     NothingToRecover = 711,
+    /// `allocate` was called before a Stablebond pool was named. The adapter
+    /// refuses rather than booking exposure it has not invested: an adapter
+    /// that accepts the Vault's money with nowhere to put it is the counter
+    /// this entry point used to be.
+    PoolNotSet = 712,
+    /// The pool paid out less than the redemption needed to cover, so the
+    /// Vault would have been repaid out of the adapter's other cash.
+    RedemptionShort = 713,
+    /// `oracle_value` was called before an Oracle Adapter was named.
+    OracleNotSet = 714,
+    /// The address offered as an oracle does not answer for `EF_BOND`.
+    OracleMismatch = 715,
 }
 
 #[derive(Clone)]
@@ -150,6 +185,15 @@ enum Cfg {
     Vault,
     Usdc,
     Exposure,
+    /// The Stablebond pool `allocate` subscribes into.
+    Pool,
+    /// Oracle Adapter this adapter prices its position from, for `oracle_value`.
+    Oracle,
+    /// Bond units currently held. Distinct from `Exposure`, which is the cost
+    /// basis the Engine's caps are measured on: units times the pool price is
+    /// a mark to market, and letting a concentration cap drift with a bond
+    /// price would make the cap mean something different every day.
+    Units,
     /// Half finished admin handover: proposed, not yet accepted.
     PendingAdmin,
 }
@@ -206,6 +250,46 @@ pub struct AdminProposed {
 pub struct AdminChanged {
     #[topic]
     pub admin: Address,
+}
+
+/// Emitted when the Vault's capital is actually subscribed into the pool.
+///
+/// `amount` is the USDC the Vault released, `units` the bond units it bought,
+/// and `units_held` the position afterwards. The three together are what makes
+/// an allocation auditable without trusting this contract's own exposure
+/// number: the units are in the pool's ledger too.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Subscribed {
+    pub amount: i128,
+    pub units: i128,
+    pub units_held: i128,
+}
+
+/// Emitted when capital is raised and sent home. `units_sold` is zero when the
+/// adapter had enough idle cash and no bond had to be touched.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Redeemed {
+    pub amount: i128,
+    pub units_sold: i128,
+    pub units_held: i128,
+}
+
+/// Emitted when the Oracle Adapter this position is priced from is named.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OracleSet {
+    #[topic]
+    pub oracle: Address,
+}
+
+/// Emitted when the pool this adapter subscribes into is named or changed.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PoolSet {
+    #[topic]
+    pub pool: Address,
 }
 
 #[contract]
@@ -286,9 +370,73 @@ impl EtherfuseAdapter {
         if amount <= 0 {
             return Err(AdapterError::InvalidAmount);
         }
+        // The pool is named before any of the Vault's money is accepted. This
+        // entry point used to increment a counter and return, which booked
+        // exposure against a Stablebond position that did not exist: the USDC
+        // the Vault had just released sat on this adapter earning nothing while
+        // the Engine's book, the NAV and the yield keeper all read it as
+        // deployed into bonds.
+        let pool: Address = e
+            .storage()
+            .instance()
+            .get(&Cfg::Pool)
+            .ok_or(AdapterError::PoolNotSet)?;
+
+        let me = e.current_contract_address();
+        let bond = StablebondClient::new(&e, &pool);
+
+        // The pool pulls the USDC out of this adapter, which means a token
+        // transfer two frames down with this contract as `from`. A contract is
+        // only the implicit authorizer of the calls it makes itself, so that
+        // nested transfer has to be authorized explicitly, for exactly the
+        // amount the pool will charge and no more. A blanket authorization
+        // would let a pool take the whole balance.
+        //
+        // The charge is recomputed here rather than taken on trust: units are
+        // integral, so a subscription that is not a whole number of units is
+        // charged for the units it bought, and the remainder stays here.
+        let price = bond.price();
+        if price <= 0 {
+            return Err(AdapterError::RedemptionShort);
+        }
+        let charged = (amount * PRICE_ONE / price) * price / PRICE_ONE;
+        let usdc: Address = e
+            .storage()
+            .instance()
+            .get(&Cfg::Usdc)
+            .ok_or(AdapterError::NotInitialized)?;
+        e.authorize_as_current_contract(vec![
+            &e,
+            InvokerContractAuthEntry::Contract(SubContractInvocation {
+                context: ContractContext {
+                    contract: usdc,
+                    fn_name: Symbol::new(&e, "transfer"),
+                    args: (me.clone(), pool.clone(), charged).into_val(&e),
+                },
+                sub_invocations: vec![&e],
+            }),
+        ]);
+
+        // Subscribe first, book second. A pool that refuses leaves this
+        // adapter holding the cash and no exposure, which `recover_surplus`
+        // sends home; the reverse order would leave a book entry for a
+        // subscription that never happened.
+        let minted = bond.subscribe(&me, &amount);
+
+        let units = Self::units(e.clone()) + minted;
+        e.storage().instance().set(&Cfg::Units, &units);
+        // Cost basis, not market value: this is the number the Engine's
+        // concentration caps and the Vault's deployed capital are measured on,
+        // and it is the amount the Vault actually released.
         let exposure = Self::get_exposure(e.clone()) + amount;
         e.storage().instance().set(&Cfg::Exposure, &exposure);
         Self::bump(&e);
+        Subscribed {
+            amount,
+            units: minted,
+            units_held: units,
+        }
+        .publish(&e);
         Ok(())
     }
 
@@ -313,11 +461,59 @@ impl EtherfuseAdapter {
             .instance()
             .get(&Cfg::Vault)
             .ok_or(AdapterError::NotInitialized)?;
-        TokenClient::new(&e, &usdc).transfer(&e.current_contract_address(), &vault, &amount);
+        let token = TokenClient::new(&e, &usdc);
+        let me = e.current_contract_address();
+
+        // Idle cash first, bonds only for the shortfall. A redemption that is
+        // not needed is a round trip through the pool's rounding, and on a real
+        // Stablebond it is also a spread paid for nothing.
+        let idle = token.balance(&me);
+        let mut redeemed = 0i128;
+        let mut sold = 0i128;
+        if idle < amount {
+            let pool: Address = e
+                .storage()
+                .instance()
+                .get(&Cfg::Pool)
+                .ok_or(AdapterError::PoolNotSet)?;
+            let bond = StablebondClient::new(&e, &pool);
+            let price = bond.price();
+            if price <= 0 {
+                return Err(AdapterError::RedemptionShort);
+            }
+            let short = amount - idle;
+            // Rounded up, so the redemption covers the shortfall rather than
+            // landing a stroop below it. Any surplus stays here as idle cash
+            // and is spent by the next deallocation.
+            let mut want = (short * PRICE_ONE + price - 1) / price;
+            let held = Self::units(e.clone());
+            if want > held {
+                want = held;
+            }
+            if want > 0 {
+                redeemed = bond.redeem(&me, &want);
+                sold = want;
+                e.storage().instance().set(&Cfg::Units, &(held - want));
+            }
+            if idle + redeemed < amount {
+                // The position could not raise the cash. Said here, rather than
+                // letting the transfer below pay the Vault out of whatever else
+                // this adapter happens to hold.
+                return Err(AdapterError::RedemptionShort);
+            }
+        }
+
+        token.transfer(&me, &vault, &amount);
         e.storage()
             .instance()
             .set(&Cfg::Exposure, &(exposure - amount));
         Self::bump(&e);
+        Redeemed {
+            amount,
+            units_sold: sold,
+            units_held: Self::units(e.clone()),
+        }
+        .publish(&e);
         Ok(())
     }
 
@@ -411,8 +607,55 @@ impl EtherfuseAdapter {
             .get(&Cfg::Vault)
             .ok_or(AdapterError::NotInitialized)?;
         let token = TokenClient::new(&e, &usdc);
-        let surplus =
-            token.balance(&e.current_contract_address()) - Self::get_exposure(e.clone());
+        let cash = token.balance(&e.current_contract_address());
+        // The booked exposure is backed by bond units now, not by cash sitting
+        // here, so the surplus is what this adapter holds in excess of that
+        // backing once the units are counted towards it. Measuring cash against
+        // exposure alone would have called the whole position a shortfall the
+        // moment `allocate` started subscribing, and refused every sweep.
+        //
+        // Capped at the cash, because only cash can be sent: a bond price that
+        // has risen above cost makes the position worth more than it was
+        // bought for, and that gain is not a surplus until it is redeemed.
+        let backing = cash + Self::bonds_value(&e);
+        let surplus = backing - Self::get_exposure(e.clone());
+        if surplus <= 0 {
+            return Err(AdapterError::NothingToRecover);
+        }
+        // The surplus can be sitting in bonds rather than in cash, and that is
+        // the ordinary case now: a position written down to zero leaves units
+        // backing nothing, and a bond price above cost leaves a gain that no
+        // `deallocate` will ever ask for. Redeem exactly what the sweep is
+        // short of, so the cash that goes home is the cash the position no
+        // longer needs and not a stroop more.
+        let mut raised = cash;
+        if surplus > cash {
+            let pool: Address = e
+                .storage()
+                .instance()
+                .get(&Cfg::Pool)
+                .ok_or(AdapterError::PoolNotSet)?;
+            let bond = StablebondClient::new(&e, &pool);
+            let price = bond.price();
+            if price <= 0 {
+                return Err(AdapterError::NothingToRecover);
+            }
+            let short = surplus - cash;
+            let mut want = (short * PRICE_ONE + price - 1) / price;
+            let held = Self::units(e.clone());
+            if want > held {
+                want = held;
+            }
+            if want > 0 {
+                let got = bond.redeem(&e.current_contract_address(), &want);
+                e.storage().instance().set(&Cfg::Units, &(held - want));
+                raised = cash + got;
+            }
+        }
+        // Whichever is smaller: what the position does not need, and what this
+        // adapter could actually raise. A pool that cannot pay caps the sweep
+        // instead of failing it.
+        let surplus = if surplus < raised { surplus } else { raised };
         if surplus <= 0 {
             return Err(AdapterError::NothingToRecover);
         }
@@ -427,6 +670,151 @@ impl EtherfuseAdapter {
     }
 
     /// Capital currently deployed into this pool, in USDC.
+    /// Name the Stablebond pool this adapter subscribes into.
+    ///
+    /// Only while the adapter is empty, for the same reason `set_counterparties`
+    /// is: moving the pool under a live position would orphan bond units in a
+    /// contract this adapter no longer calls, and go on reporting them as
+    /// exposure.
+    pub fn set_pool(e: Env, admin: Address, pool: Address) -> Result<(), AdapterError> {
+        Self::require_admin(&e, &admin)?;
+        Self::require_empty(&e)?;
+        if Self::units(e.clone()) != 0 {
+            return Err(AdapterError::NotEmpty);
+        }
+        e.storage().instance().set(&Cfg::Pool, &pool);
+        Self::bump(&e);
+        PoolSet { pool }.publish(&e);
+        Ok(())
+    }
+
+    /// The Stablebond pool, or `PoolNotSet` if none has been named.
+    pub fn pool(e: Env) -> Result<Address, AdapterError> {
+        e.storage()
+            .instance()
+            .get(&Cfg::Pool)
+            .ok_or(AdapterError::PoolNotSet)
+    }
+
+    /// Bond units held. Zero before the first allocation.
+    pub fn units(e: Env) -> i128 {
+        e.storage().instance().get(&Cfg::Units).unwrap_or(0)
+    }
+
+    /// What the position is worth now: units at the pool's current price, plus
+    /// any idle USDC sitting here.
+    ///
+    /// This is the number that moves with the bond and the one the yield keeper
+    /// should value this pool from. `get_exposure` deliberately does not move
+    /// with it, so the Engine's caps keep measuring the capital that was
+    /// committed rather than its latest mark.
+    pub fn market_value(e: Env) -> Result<i128, AdapterError> {
+        let pool: Address = e
+            .storage()
+            .instance()
+            .get(&Cfg::Pool)
+            .ok_or(AdapterError::PoolNotSet)?;
+        let usdc: Address = e
+            .storage()
+            .instance()
+            .get(&Cfg::Usdc)
+            .ok_or(AdapterError::NotInitialized)?;
+        let price = StablebondClient::new(&e, &pool).price();
+        let bonds = Self::units(e.clone()) * price / PRICE_ONE;
+        let idle = TokenClient::new(&e, &usdc).balance(&e.current_contract_address());
+        Ok(bonds + idle)
+    }
+
+    /// USDC held here rather than in the pool. Non-zero only between a failed
+    /// subscription and a `recover_surplus`, or after a redemption rounded up.
+    pub fn uninvested(e: Env) -> Result<i128, AdapterError> {
+        let usdc: Address = e
+            .storage()
+            .instance()
+            .get(&Cfg::Usdc)
+            .ok_or(AdapterError::NotInitialized)?;
+        Ok(TokenClient::new(&e, &usdc).balance(&e.current_contract_address()))
+    }
+
+    /// Name the Oracle Adapter this position is priced from.
+    ///
+    /// Tranche 2, Deliverable 2 of the award registers three feeds, and
+    /// `EF_BOND` is the one that prices this pool: 48 hours of staleness and no
+    /// deviation bound, because a government bond NAV is deterministic. It was
+    /// a symbol the Oracle Adapter knew and that no contract read, so the feed
+    /// existed and validated nothing. This is the read.
+    ///
+    /// The oracle is a separate question from the pool, and the two can
+    /// disagree. `market_value` is what a redemption would actually pay, taken
+    /// from the pool itself. `oracle_value` is what the protocol books, taken
+    /// from the validated feed. On a healthy position they agree; when they do
+    /// not, one of the two is wrong and the gap is the signal, which is why
+    /// both are readable rather than reconciled into one number here.
+    pub fn set_oracle(e: Env, admin: Address, oracle: Address) -> Result<(), AdapterError> {
+        Self::require_admin(&e, &admin)?;
+        // Interrogated, like every other counterparty: an address that is not
+        // an oracle cannot answer, and an oracle that has never heard of
+        // EF_BOND would turn every valuation into a FeedNotRegistered.
+        match OracleClient::new(&e, &oracle).try_get_feed(&ORACLE_FEED) {
+            Ok(_) => {}
+            Err(_) => return Err(AdapterError::OracleMismatch),
+        }
+        e.storage().instance().set(&Cfg::Oracle, &oracle);
+        Self::bump(&e);
+        OracleSet { oracle }.publish(&e);
+        Ok(())
+    }
+
+    /// The Oracle Adapter, or `OracleNotSet`.
+    pub fn oracle(e: Env) -> Result<Address, AdapterError> {
+        e.storage()
+            .instance()
+            .get(&Cfg::Oracle)
+            .ok_or(AdapterError::OracleNotSet)
+    }
+
+    /// What this position is worth at the validated `EF_BOND` price, plus any
+    /// cash not yet invested.
+    ///
+    /// A stale feed surfaces as the Oracle Adapter's own `OracleStale` rather
+    /// than as an old number, so a valuation nobody has updated for 48 hours
+    /// fails loudly instead of quietly reporting Tuesday's price.
+    pub fn oracle_value(e: Env) -> Result<i128, AdapterError> {
+        let oracle = Self::oracle(e.clone())?;
+        let usdc: Address = e
+            .storage()
+            .instance()
+            .get(&Cfg::Usdc)
+            .ok_or(AdapterError::NotInitialized)?;
+        let price = OracleClient::new(&e, &oracle).get_nav(&ORACLE_FEED);
+        let bonds = Self::units(e.clone()) * price / PRICE_ONE;
+        let idle = TokenClient::new(&e, &usdc).balance(&e.current_contract_address());
+        Ok(bonds + idle)
+    }
+
+    /// How far the pool's own price has drifted from the validated feed, in
+    /// basis points of the feed. Zero when they agree, and the sign says which
+    /// way: positive means the pool claims more than the oracle validates.
+    ///
+    /// This is the number an operator watches. A pool quoting above the feed is
+    /// the shape of an issuer marking its own book up, and a pool quoting below
+    /// it is the shape of a redemption that will not pay what the protocol has
+    /// booked.
+    pub fn price_drift_bps(e: Env) -> Result<i128, AdapterError> {
+        let oracle = Self::oracle(e.clone())?;
+        let pool: Address = e
+            .storage()
+            .instance()
+            .get(&Cfg::Pool)
+            .ok_or(AdapterError::PoolNotSet)?;
+        let feed = OracleClient::new(&e, &oracle).get_nav(&ORACLE_FEED);
+        if feed <= 0 {
+            return Err(AdapterError::OracleMismatch);
+        }
+        let quoted = StablebondClient::new(&e, &pool).price();
+        Ok((quoted - feed) * 10_000 / feed)
+    }
+
     pub fn get_exposure(e: Env) -> i128 {
         e.storage().instance().get(&Cfg::Exposure).unwrap_or(0)
     }
@@ -554,6 +942,18 @@ impl EtherfuseAdapter {
 
     // ---- internals ----
 
+    /// Bond units at the pool's current price, or zero when no pool is named.
+    /// Used where a missing pool must read as no bonds rather than as an error.
+    fn bonds_value(e: &Env) -> i128 {
+        match e.storage().instance().get::<Cfg, Address>(&Cfg::Pool) {
+            Some(pool) => {
+                let price = StablebondClient::new(e, &pool).price();
+                Self::units(e.clone()) * price / PRICE_ONE
+            }
+            None => 0,
+        }
+    }
+
     fn require_admin(e: &Env, admin: &Address) -> Result<(), AdapterError> {
         let stored: Address = e
             .storage()
@@ -582,6 +982,12 @@ impl EtherfuseAdapter {
             .get(&Cfg::Usdc)
             .ok_or(AdapterError::NotInitialized)?;
         if TokenClient::new(e, &usdc).balance(&e.current_contract_address()) != 0 {
+            return Err(AdapterError::NotEmpty);
+        }
+        // Bond units too. Cash and booked exposure can both be zero while this
+        // adapter still holds a Stablebond position, and repointing it there
+        // would strand units in a pool the new Engine never learns about.
+        if Self::units(e.clone()) != 0 {
             return Err(AdapterError::NotEmpty);
         }
         Ok(())

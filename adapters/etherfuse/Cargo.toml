@@ -14,3 +14,5 @@ soroban-sdk = { workspace = true }
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
 mock_usdc = { path = "../../contracts/mock_usdc" }
+mock_stablebond = { path = "../../contracts/mock-stablebond" }
+oracle-adapter = { path = "../../contracts/oracle-adapter" }

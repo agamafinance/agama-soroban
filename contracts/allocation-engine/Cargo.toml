@@ -15,4 +15,5 @@ soroban-sdk = { workspace = true }
 soroban-sdk = { workspace = true, features = ["testutils"] }
 mock_usdc = { path = "../mock_usdc" }
 etherfuse = { path = "../../adapters/etherfuse" }
+mock_stablebond = { path = "../mock-stablebond" }
 private-credit = { path = "../../adapters/private-credit" }

@@ -18,4 +18,5 @@ allocation-engine = { path = "../allocation-engine" }
 oracle-adapter = { path = "../oracle-adapter" }
 private-credit = { path = "../../adapters/private-credit" }
 etherfuse = { path = "../../adapters/etherfuse" }
+mock_stablebond = { path = "../mock-stablebond" }
 proptest = { workspace = true }

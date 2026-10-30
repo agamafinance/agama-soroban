@@ -2,16 +2,69 @@
 
 Every claim below is a command anyone can run or a transaction anyone can open.
 
-Generated 2026-10-26. Network: Stellar testnet.
+Network: Stellar testnet. First generated 2026-10-26, rewritten 2026-10-30
+against the award record.
 
-Tranche 2 is three deliverables: the Allocation Engine with on-chain risk caps,
-the oracle pipeline for NAV and yield, and hardening for the audit. Each one
-is taken criterion by criterion, in the words the award was approved on.
+## The criteria, transcribed
 
-A note on what changed since Tranche 1, because it affects how to read this
-file. Nothing here was re-proven on a fixture. Where a criterion could only be
-met in a unit test, it says so and the gap was closed rather than argued; two
-of the criteria below have an on-chain proof that did not exist a week ago.
+The first version of this file was measured against the scope as our roadmap
+stated it, because the Tranche 2 criteria had never been transcribed into this
+repository, and it said so. That was the root of the review that came back: a
+reviewer compares against the award record, and we had published a different
+yardstick. The record's own words are below, once, so that there is one
+yardstick and it is not ours.
+
+### Deliverable 1, Allocation Engine with on-chain reserve floor, Etherfuse and private credit adapters
+
+> **How to measure completion:** engine live on testnet with both adapters
+> registered; allocations breaching a cap or the reserve floor rejected
+> on-chain; Etherfuse and private credit adapters passing their unit test suites
+> against mock pool contracts; exposure map and current reserve ratio readable
+> via contract calls.
+
+### Deliverable 2, Oracle pipeline for NAV & yield
+
+> **How to measure completion:** NAV updates flowing on testnet from all three
+> feed types; stale reports reverting with OracleStale and out-of-bounds
+> reports emitting nav_rejected, each demonstrated by a test case; yield
+> distribution to sagUSD driven by oracle data; the reconciliation procedure
+> between on-chain NAV and off-chain originator servicing data documented and
+> executed end-to-end on testnet.
+
+The three feeds, as the record describes them: the **Reflector USDC/USD** feed
+validating peg integrity of the vault base asset at one hour of staleness and a
+2% deviation bound; **private credit NAV** on a dedicated reporter feed at seven
+days and 5%; **Etherfuse Stablebond pricing** on the Etherfuse feed at 48 hours
+with no deviation bound, that NAV being deterministic.
+
+### Deliverable 3, MoneyGram fiat ramp, hardening and audit readiness
+
+> **How to measure completion:** SEP-10 authentication and SEP-24 interactive
+> deposit and withdrawal flows completing end-to-end on Stellar Testnet against
+> the MoneyGram Access sandbox, cash to USDC to agUSD and the reverse, with the
+> SDF Stellar Test Anchor covering the same flows during MoneyGram onboarding;
+> sustained multi-day testnet campaign without critical failures; codebase
+> frozen and handed over for audit.
+
+## Status against those criteria
+
+| Criterion | Status | Where |
+|---|---|---|
+| D1 engine live, both adapters registered | **met** | `pools()` on the Engine |
+| D1 cap and reserve floor breaches rejected on chain | **met** | four failed transactions, `e2e-allocation-guards.sh`, `e2e-concentration-caps.sh` |
+| D1 both adapters passing unit suites against mock pool contracts | **met 2026-10-30** | `contracts/mock-stablebond`, 12 cases; `adapters/etherfuse`, 22 cases; the adapter now subscribes and redeems rather than incrementing a counter |
+| D1 exposure map and reserve ratio readable | **met** | `get_exposures()`, `get_reserve_ratio()` |
+| D2 NAV flowing from all three feed types | **met** | all three registered with the record's parameters, all three fresh, `keeper-oracle.sh` |
+| D2 OracleStale and nav_rejected, each with a test case | **met** | `oracle-adapter` suite, 53 cases, including `out_of_bounds_deviation_emits_nav_rejected_on_submit_nav` |
+| D2 yield distribution driven by oracle data | **met 2026-10-30** | `keeper-yield.sh` now prices each pool from the feed that pool names; the 26 October run applied the private credit move to all deployed capital |
+| D2 reconciliation documented and executed end to end | **met 2026-10-30** | `docs/NAV_RECONCILIATION.md`, `scripts/e2e-reconciliation.sh`, run in `docs/evidence/reconciliation-2026-10-30.log` |
+| D2 the peg feed validating the base asset | **built, not deployed** | the gate and nine cases are in `contracts/vault/src`; no contract here has an `upgrade` entry point, so carrying it to testnet is a generation migration |
+| D3 SEP-10 and SEP-24 end to end | **in progress** | the record names the SDF Stellar Test Anchor as covering these flows during MoneyGram onboarding, so that is what is being built against |
+| D3 sustained multi-day campaign | **met** | `campaign-report.sh`, 21 consecutive days |
+| D3 codebase frozen and handed to audit | **not yet** | follows D3's first clause |
+
+Nothing in that table is softened. Three rows say the work is not finished and
+one says a built thing is not deployed.
 
 ## Deliverable 1, Allocation Engine with on-chain risk caps
 
@@ -211,3 +264,56 @@ expire only because that feed, the peg check, is read by nothing on chain.
 
 Send us an address and we will fund it with testnet USDC within the day, if you
 would rather run the write path yourself than watch it in the video.
+
+## Declared: the cross-chain adapter is outside the awarded scope
+
+The Stellar reviewer asked for this in those terms, and the answer is yes, it
+is, and it does change the risk model.
+
+**What it is.** `adapters/cctp` is a third pool adapter registered on the
+Engine (`CDSO4GJRY7BFVMQ4PYP3ISVOFPQLPA3C7ZFT5HQOUDM3VXTGOUWUWFML`). An
+allocation to it burns the Vault's USDC through Circle's CCTP Token Messenger
+on Stellar, against a destination domain and a destination address the adapter's
+admin sets, so the capital lands in a credit book on an EVM chain.
+
+**What the award funds.** Tranche 2 Deliverable 1 names two adapters, an
+Etherfuse adapter and a private credit adapter, sharing one interface. The
+cross-chain adapter is a third one, and nothing in the award asks for it. It
+was built because CCTP is a Tranche 1 Deliverable 2 integration and the adapter
+interface made it cheap, which is a reason and not an authorisation.
+
+**How it changes the risk model, in three specifics rather than in general.**
+
+1. `set_destination` is admin-set. A compromised or mistaken admin key aims the
+   next allocation at an address of its choosing, and a CCTP burn is not
+   reversible from this side. Every other adapter in this protocol can only
+   move capital to the Vault it was registered against.
+2. Capital that crosses stops being measurable by any contract on Stellar. The
+   Engine goes on carrying the exposure at cost basis and the far book is read
+   by nothing. `oracle_feed()` on this adapter answers `PC_NAV`, with the
+   rationale that the crossing is transport rather than an asset of its own,
+   and that rationale is only as good as the reporting on the far side.
+3. It puts a bridge in the withdrawal path. The liquidity hierarchy the award
+   describes ends in private credit repayment; here it ends in a CCTP message
+   coming back, with that protocol's liveness in the way.
+
+**Whether it goes to mainnet.** Not in Tranche 3. The Tranche 3 deliverable is
+the mainnet launch of the Vault, the Engine, the Etherfuse adapter and the
+first credit pool, and this adapter is not part of it. If it is ever proposed
+for mainnet it should arrive as its own scope with its own review, and with two
+changes to what exists today: `set_destination` behind a timelock, and an
+allowlist of destinations rather than a free field.
+
+**And one thing worth saying before anyone finds it.** As of 2026-10-30 this
+adapter holds the only live exposure in the protocol: `get_exposures()` reads
+etherfuse 0, private credit 0, cross-chain 100000000. So the 1897996 stroops of
+yield distributed in `docs/evidence/reconciliation-2026-10-30.log`, computed from
+a private credit servicing tape against the `PC_NAV` feed, were earned on
+capital sitting in a book on another chain, through an adapter the award does
+not fund, priced from a feed whose rationale is that the crossing is transport.
+That is the reviewer's concern not as a hypothetical but as the current state of
+the book, and the honest order of operations is to move that exposure into the
+private credit adapter, where the award put it, before the next distribution.
+
+It stays registered on testnet because unregistering it would hide it, and
+because the Engine's cap arithmetic is exercised by having a third pool.

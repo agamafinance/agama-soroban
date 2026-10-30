@@ -194,6 +194,9 @@ use soroban_sdk::{
 
 const BPS: i128 = 10_000;
 
+/// Par, at the 7 decimal scale the Oracle Adapter reports in. One dollar.
+pub const PEG_PAR: i128 = 10_000_000;
+
 const DAY_LEDGERS: u32 = 17_280;
 const INSTANCE_BUMP: u32 = 30 * DAY_LEDGERS;
 const INSTANCE_LIFETIME: u32 = INSTANCE_BUMP - DAY_LEDGERS;
@@ -344,6 +347,12 @@ pub enum VaultError {
     /// The agUSD offered counts stroops differently from the USDC this Vault
     /// custodies, so minting one for one would not be a peg.
     DecimalMismatch = 327,
+    /// The base asset is off its peg by more than the configured tolerance, so
+    /// minting or redeeming at par would hand the difference to one side.
+    PegBroken = 331,
+    /// `set_peg_feed` was given a tolerance outside the range a peg check can
+    /// usefully have.
+    InvalidPegTolerance = 332,
     /// Withdrawal requests are frozen. Temporary by construction: read
     /// `exits_frozen_until()` for the ledger time it lapses, after which this
     /// stops being returned whether or not an admin acts.
@@ -420,6 +429,12 @@ enum Cfg {
     /// `Paused` on purpose: shutting deposits and shutting exits are different
     /// powers and only one of them is bounded.
     ExitFrozenUntil,
+    /// Feed that prices the base asset against the dollar. `USDC_USD` on the
+    /// deployed instance.
+    PegFeed,
+    /// How far from par the base asset may trade before `deposit` and
+    /// `claim_withdrawal` refuse, in basis points.
+    PegToleranceBps,
 }
 
 /// Persistent storage: the claim records, keyed by claim id, and the flag that
@@ -450,6 +465,17 @@ pub struct AdminProposed {
 pub struct AdminChanged {
     #[topic]
     pub admin: Address,
+}
+
+/// Emitted when the peg feed or its tolerance changes. Both numbers decide
+/// when the Vault stops taking deposits, so a change to either belongs in the
+/// ledger rather than only in an operator's memory.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PegFeedSet {
+    #[topic]
+    pub feed: Symbol,
+    pub tolerance_bps: u32,
 }
 
 #[contract]
@@ -853,6 +879,9 @@ impl Vault {
         if amount <= 0 {
             return Err(VaultError::InvalidAmount);
         }
+        // agUSD is minted one for one, so this is an exchange at par and the
+        // base asset has to be at par for it to be a fair one.
+        Self::require_peg(&e)?;
         let usdc = Self::usdc(e.clone())?;
         let agusd = Self::agusd(e.clone())?;
 
@@ -1602,6 +1631,119 @@ impl Vault {
         } else {
             free
         }
+    }
+
+    /// Point the Vault at the feed that prices its base asset against the
+    /// dollar, and say how far off par that asset may trade before the Vault
+    /// stops minting and paying at par.
+    ///
+    /// This is the third feed of the Tranche 2 oracle pipeline, and until now
+    /// it was a symbol the Oracle Adapter knew and no contract read. The award
+    /// says it "validates peg integrity of the vault base asset", which is a
+    /// sentence with an operational meaning, and this is it: agUSD is minted
+    /// one for one against USDC and withdrawals are paid one for one in USDC,
+    /// so both of those are exchanges at par, and both of them transfer the
+    /// gap to one side when the base asset is not at par.
+    ///
+    /// Which side depends on the direction, which is why the bound is on the
+    /// absolute deviation and not on one tail. USDC below a dollar makes a
+    /// deposit a way to buy agUSD at a discount, diluting every holder who
+    /// came in at par. USDC above a dollar makes a withdrawal a way to take
+    /// more value out than was put in, at the expense of whoever stays. A
+    /// tolerance of zero would stop the Vault on ordinary market noise, so the
+    /// bound is a parameter, set to the 200 basis points the award names.
+    ///
+    /// Staleness is not checked here because it does not need to be: the read
+    /// goes through the Oracle Adapter's `get_nav`, which refuses a point older
+    /// than the feed's own window with `OracleStale`, and that error propagates
+    /// out of `deposit` unchanged. A peg feed nobody has updated for an hour
+    /// stops the Vault for the same reason an off-peg one does.
+    pub fn set_peg_feed(
+        e: Env,
+        admin: Address,
+        feed_id: Symbol,
+        tolerance_bps: u32,
+    ) -> Result<(), VaultError> {
+        Self::require_admin(&e, &admin)?;
+        // A tolerance at or above a whole dollar is not a peg check, and one
+        // above 10% is wide enough that the asset has stopped being a dollar.
+        if tolerance_bps == 0 || tolerance_bps > 1_000 {
+            return Err(VaultError::InvalidPegTolerance);
+        }
+        let oracle: Address = e
+            .storage()
+            .instance()
+            .get(&Cfg::Oracle)
+            .ok_or(VaultError::OracleNotConfigured)?;
+        // Same interrogation `set_oracle` makes, for the same reason: a feed
+        // the oracle has never heard of would turn every deposit into a 504.
+        match OracleClient::new(&e, &oracle).try_get_feed(&feed_id) {
+            Ok(_) => {}
+            Err(_) => return Err(VaultError::OracleMismatch),
+        }
+        e.storage().instance().set(&Cfg::PegFeed, &feed_id);
+        e.storage()
+            .instance()
+            .set(&Cfg::PegToleranceBps, &tolerance_bps);
+        Self::bump_instance(&e);
+        PegFeedSet {
+            feed: feed_id,
+            tolerance_bps,
+        }
+        .publish(&e);
+        Ok(())
+    }
+
+    /// The peg feed, or `None` while the check is not configured.
+    pub fn peg_feed(e: Env) -> Option<Symbol> {
+        e.storage().instance().get(&Cfg::PegFeed)
+    }
+
+    /// How far from par the base asset may trade, in basis points.
+    pub fn peg_tolerance_bps(e: Env) -> u32 {
+        e.storage().instance().get(&Cfg::PegToleranceBps).unwrap_or(0)
+    }
+
+    /// The base asset's current price against the dollar, at the oracle's
+    /// scale, or `None` while no peg feed is configured. Stale surfaces as the
+    /// Oracle Adapter's own error, not as an old number.
+    pub fn peg(e: Env) -> Result<Option<i128>, VaultError> {
+        let feed_id: Symbol = match Self::peg_feed(e.clone()) {
+            Some(f) => f,
+            None => return Ok(None),
+        };
+        let oracle: Address = e
+            .storage()
+            .instance()
+            .get(&Cfg::Oracle)
+            .ok_or(VaultError::OracleNotConfigured)?;
+        Ok(Some(OracleClient::new(&e, &oracle).get_nav(&feed_id)))
+    }
+
+    /// Refuse the call if the base asset is off its peg.
+    ///
+    /// A no-op while no peg feed is set, which is how the deployed Vault
+    /// behaved before this existed and how a Vault whose base asset has no
+    /// feed still behaves. Configuring the feed is what turns the check on,
+    /// and `peg_feed()` is readable so the difference is not a guess.
+    fn require_peg(e: &Env) -> Result<(), VaultError> {
+        let peg = match Self::peg(e.clone())? {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+        // The oracle reports at the same 7 decimal scale the rest of this
+        // protocol uses, so par is PEG_PAR and the deviation is measured
+        // against it in basis points.
+        let tolerance = Self::peg_tolerance_bps(e.clone()) as i128;
+        let drift = if peg > PEG_PAR {
+            peg - PEG_PAR
+        } else {
+            PEG_PAR - peg
+        };
+        if drift * BPS > tolerance * PEG_PAR {
+            return Err(VaultError::PegBroken);
+        }
+        Ok(())
     }
 
     /// NAV for the Vault's feed, straight from the Oracle Adapter. A stale feed

@@ -1,0 +1,47 @@
+Tranche 2 Deliverable 2, the reconciliation run that distributed.
+
+This is the run referenced by docs/NAV_RECONCILIATION.md. Later runs of
+scripts/e2e-reconciliation.sh take the no-op branch, because this NAV has
+already been consumed and distributing it twice would be a double payment. The
+chain of custody is reproducible from the first line of this file: run
+reconcile-nav.py on that tape at that date and you get that integer.
+
+  tape           data/servicing/tape-2026-10-30.csv
+  sha256         f570e9d0e34b1a293e1ec802710adf42c71b514af88fb37b70b3e94aed4953a4
+  as of          2026-10-30
+  NAV computed   10374235   (1.0374235 per unit committed)
+
+  PC_NAV on chain before   10181000
+  move                     189 bps, inside the feed's 500 bps bound
+
+  submit_nav, reporter 1   GBSX2ZFLIJVE75VFWJURAXPSS4TBOV4FZ34VCRLWM2D7GKI37AD3FFNV  -> Pending
+  submit_nav, reporter 2   GASAXCP2Z4BSK5RGPFU257FA57K47JSPD6BJYYKH3RDQ2CKYXIYQOM4H  -> Accepted
+  event                    NavQuorumReached feed_id PC_NAV nav 10374235 timestamp 1793372104 votes 2
+  tx                       5be12932480047d82e5075f7ee30bf01c9ece826c1f3f53a16fa502f962e1cad
+                           ce2f539de6c54118a67341f84f7aed4976ad9dd1c6910c51f3e3d1fa6c3999bc
+
+  keeper-yield, per feed
+    EF_BOND   exposure              0   contributed nothing
+    PC_NAV    exposure      100000000   10181000 -> 10374235   yield 1897996
+    total                                                            1897996
+
+  Which pool that 100000000 is in, because the grouping is by feed and two
+  adapters name PC_NAV: all of it is in the cross-chain CCTP adapter
+  (CDSO4GJR...), and the private credit adapter holds nothing. That adapter is
+  outside the awarded scope and is declared as such in docs/TRANCHE2_EVIDENCE.md.
+  The exposure belongs in the private credit adapter and moving it there comes
+  before the next distribution.
+
+  distribute_yield         amount 1897996
+  event                    YieldDistributed amount 1897996 nav 5969097190 supply 3481817847
+  exchange_rate            17138171 -> 17143622
+  total_shares             3481817847 -> 3481817847   (no share was minted)
+  strategist agUSD         17749142186 -> 17747244190 (paid 1897996)
+
+One thing this run does not demonstrate, said plainly rather than left to be
+inferred: the Etherfuse pool held nothing at the time, so deployed_capital and
+the PC_NAV exposure were the same 100000000 and the old formula would have paid
+the same 1897996. The divergence between the two formulas is demonstrated in
+scripts/e2e-etherfuse.sh step 5, where the Etherfuse pool holds 1000000000 and
+appears as a line of its own priced from EF_BOND, and it is what produced the
+26 October error: 36357814 paid where 21033446 was owed.
