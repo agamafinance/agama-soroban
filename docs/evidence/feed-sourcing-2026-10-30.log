@@ -1,0 +1,70 @@
+Tranche 2 Deliverable 2: the three feeds, and where each number comes from.
+
+The reviewer: "USDC_USD and EF_BOND are not sourced from Reflector or Etherfuse
+and nothing on chain reads them: please wire the sources and say what the peg
+feed is meant to gate."
+
+== USDC_USD, from Reflector
+
+  oracle        CCYOZJCOPG34LLQQ7N24YXBM7LL62R7ONMZ3G6WZAAYPB5OYKOMJRN63 (testnet, SEP-40)
+  call          lastprice(Other("USDC"))
+  base          USD, 14 decimals, 300s resolution
+  read          100130125419644 at 1793374500
+  rescaled      10013012 at 7 decimals, which is 1.0013012
+  freshness     153s old against a limit of two resolution periods
+  submitted     quorum of 2, NavQuorumReached, NavUpdated
+  our feed      10000001 -> 10013012
+
+  Read on chain by Vault::require_peg on every deposit. Gates deposit, refusing
+  outside 200 bps of par with PegBroken (331). Demonstrated by
+  scripts/e2e-peg-gate.sh, 11 assertions.
+
+== EF_BOND, from Etherfuse
+
+  endpoint      https://api.etherfuse.com/lookup/bonds/cost/USTRY  (public, no auth)
+  bond          USTRY, the US Treasury stablebond, in USD
+                CETES is the same instrument in pesos and would put an FX leg
+                inside a USD NAV, so it is not the one.
+  read          1.078704 USD per unit, yield 369 bps
+  sources       5 of 5 inside 900s, ages 13 to 63s, 0.0 bps from their median
+  rescaled      10787040 at 7 decimals
+  submitted     quorum of 2, NavQuorumReached, NavUpdated
+  our feed      10362600 -> 10787040, a 409 bps move
+
+  Read on chain by EtherfuseAdapter::oracle_value and price_drift_bps.
+
+  Why the cross-source check is in the keeper and not in the Adapter: EF_BOND is
+  registered with a zero deviation bound, because the award calls that NAV
+  deterministic. The Adapter will therefore accept any move inside its band, so
+  the quality of the number is entirely the quality of its sourcing. A single
+  drifted source is exactly what a zero deviation bound cannot catch.
+
+== PC_NAV, from a servicing tape
+
+  source        data/servicing/tape-2026-10-30.csv, sha256 in the run log
+  computed      scripts/reconcile-nav.py, a pure function of the tape and the date
+  read          10374235, which is 1.0374235
+  submitted     quorum of 2 at timestamp 1793372104
+  distributed   1897996 stroops, exchange_rate 17138171 -> 17143622
+
+  Not refreshed by a cron. A tape arrives on the originator's cadence and the
+  staleness window is seven days to match, so keeper-oracle.sh reports how much
+  of the window is left and says so loudly when it is running out. Reposting the
+  stored value was the dishonest way to keep it fresh and is gone.
+
+== What each keeper refuses to do
+
+  keeper-reflector.sh    will not submit when Reflector itself is more than two
+                         of its own resolution periods behind. Pushing a stale
+                         number under a current timestamp forges a freshness it
+                         did not get, and the Adapter cannot detect that: it
+                         judges the timestamp it is handed.
+
+  keeper-etherfuse.sh    will not submit when fewer than three sources are
+                         recent, when they disagree by more than 50 bps around
+                         their median, or when the bond is not denominated in USD.
+
+  both                   check our own feed's minimum interval first. Without
+                         that the first reporter's vote lands and stays pending,
+                         so a keeper that ran too soon left a half-finished
+                         round behind every time.
