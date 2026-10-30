@@ -67,7 +67,25 @@ for cand in ${FUNDERS:-sag-user e2e-gen3 proof-user gen3-user sag-buyer dex-user
   have=$(bal $USDC "$addr"); have=${have:-0}
   if [ "$have" -ge "$NEED" ] 2>/dev/null; then FUNDER=$cand; break; fi
 done
-[ -n "$FUNDER" ] || { echo "  no test account holds $NEED stroops of USDC; top one up and rerun"; exit 1; }
+if [ -z "$FUNDER" ]; then
+  # Before giving up: these accounts hold agUSD from earlier runs and the Vault
+  # holds the USDC behind it, so the shortfall is a redemption away rather than
+  # a faucet away. Tried on each candidate, and the first one that gets there
+  # funds the run.
+  . "$(dirname "$0")/lib-ensure-usdc.sh"
+  for cand in ${FUNDERS:-sag-user e2e-gen3 proof-user gen3-user sag-buyer dex-user}; do
+    addr=$(stellar keys address "$cand" 2>/dev/null) || continue
+    [ -n "$addr" ] || continue
+    ensure_usdc "$VAULT" "$USDC" "$AGUSD" "$NEED" "$cand" "$NET" "$addr" >/dev/null 2>&1 || true
+    have=$(bal $USDC "$addr"); have=${have:-0}
+    if [ "$have" -ge "$NEED" ] 2>/dev/null; then
+      FUNDER=$cand
+      echo "  $cand was short and redeemed its own agUSD to get there"
+      break
+    fi
+  done
+fi
+[ -n "$FUNDER" ] || { echo "  no test account holds or can redeem $NEED stroops of USDC; top one up and rerun"; exit 1; }
 echo "  funded by $FUNDER"
 stellar contract invoke --id "$USDC" --source "$FUNDER" --network "$NET" -- \
   transfer --from "$(stellar keys address $FUNDER)" --to "$E" --amount "$NEED" >/dev/null 2>&1
@@ -187,13 +205,33 @@ echo "== 8. circulation against backing, the two reconciliations"
 # time a real default was recovered in production.
 #
 # Under-collateralised is the failure. Over-collateralised is reported.
+# And one more term, which this assertion was missing and which a book with any
+# recognised loss in it cannot do without. get_net_assets deliberately excludes
+# written-off capital, correctly: it is not an asset. But the agUSD that capital
+# once backed is still in circulation, because recognising a loss does not burn
+# anybody's token. So cash alone stops covering circulation by exactly the
+# recognised losses, and that is not a solvency failure to be caught, it is what
+# a credit loss is.
+#
+# The invariant that survives a loss is therefore net assets plus recognised
+# losses against circulation, and that is what is asserted. The two numbers are
+# printed either way, because "agUSD in circulation exceeds cash backing by the
+# recognised losses" is a true and material sentence about this book and it
+# should be readable rather than inferable.
+#
+# Under-collateralised beyond the recognised losses is the failure.
+# Over-collateralised is reported.
 CIRC=$(circulating agUSD $AG_ISS)
 BACKING=$(rd $VAULT get_net_assets)
-if [ "$BACKING" -ge "$CIRC" ] 2>/dev/null; then
-  ok "backing covers agUSD in circulation" "ok" "ok"
-  [ "$BACKING" != "$CIRC" ] && printf '        %s stroops of backing no agUSD claims, from recovered losses\n' "$(( BACKING - CIRC ))"
+LOSSES=$(rd $VAULT recognised_losses)
+COVER=$(( ${BACKING:-0} + ${LOSSES:-0} ))
+if [ "$COVER" -ge "$CIRC" ] 2>/dev/null; then
+  ok "backing plus recognised losses covers agUSD in circulation" "ok" "ok"
+  printf '        cash %s, recognised losses %s, circulation %s\n' "$BACKING" "$LOSSES" "$CIRC"
+  [ "$COVER" != "$CIRC" ] && printf '        %s stroops of backing no agUSD claims, from recovered losses\n' "$(( COVER - CIRC ))"
+  [ "${LOSSES:-0}" -gt 0 ] && printf '        of the circulation, %s is against capital written off and gone: that is the loss, permanently\n' "$LOSSES"
 else
-  ok "backing covers agUSD in circulation" "short by $(( CIRC - BACKING ))" "ok"
+  ok "backing plus recognised losses covers agUSD in circulation" "short by $(( CIRC - COVER ))" "ok"
 fi
 ok "sagUSD in circulation equals the tracked count" "$(circulating sagUSD $SAG_ISS)" "$(rd $STAKING total_supply)"
 

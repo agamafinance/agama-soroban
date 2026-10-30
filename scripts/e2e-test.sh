@@ -46,14 +46,58 @@ yield_fn() {
      | grep -q 'fn distribute_yield'; then echo distribute_yield; else echo accrue_yield; fi
 }
 
-echo "== preflight: admin USDC balance (real Circle USDC) =="
-BAL=$(num "$(inv $USDC balance --id $ADMIN)")
-echo "  admin=$ADMIN balance=$BAL (7dp)"
-if [ -z "$BAL" ] || [ "$BAL" -lt 80000000 ]; then
+echo "== preflight: admin spendable USDC =="
+# Spendable, not held. For a classic asset the SAC's `balance` returns the
+# trustline's balance, and that includes whatever this account's own open SDEX
+# offers have locked as selling liabilities. This account is also the sagUSD
+# market maker, so `balance` read 1013 USDC while 0.26 was spendable, every
+# transfer below failed with BalanceError, 10, and the suite reported it as
+# "minted 0" which looks exactly like the Vault being broken.
+ADMIN_SPENDABLE=$(curl -s --max-time 20 "https://horizon-testnet.stellar.org/accounts/$ADMIN" | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print(0); raise SystemExit
+for b in d.get('balances', []):
+    if b.get('asset_code') == 'USDC':
+        print(int(round((float(b['balance']) - float(b.get('selling_liabilities', 0) or 0)) * 10_000_000)))
+        break
+else:
+    print(0)
+" 2>/dev/null || echo 0)
+HELD=$(num "$(inv $USDC balance --id $ADMIN)")
+echo "  admin=$ADMIN  held=$HELD  spendable=$ADMIN_SPENDABLE (7dp)"
+# Short is not the same as broke: the money is in the Vault and this account
+# holds the claim on it, so redeeming is a call away. ensure_usdc settles the
+# queue first and then redeems agUSD for the shortfall, both ordinary user
+# actions on this account's own position.
+if [ "${ADMIN_SPENDABLE:-0}" -lt 80000000 ]; then
+  echo "  short of the 8 USDC this run needs; settling and redeeming for the difference"
+  # shellcheck source=lib-ensure-usdc.sh
+  . "$(dirname "$0")/lib-ensure-usdc.sh"
+  ensure_usdc "$VAULT" "$USDC" "$AGUSD" 80000000 "$SRC" "$NET" "$ADMIN" || true
+  ADMIN_SPENDABLE=$(curl -s --max-time 20 "https://horizon-testnet.stellar.org/accounts/$ADMIN" | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print(0); raise SystemExit
+for b in d.get('balances', []):
+    if b.get('asset_code') == 'USDC':
+        print(int(round((float(b['balance']) - float(b.get('selling_liabilities', 0) or 0)) * 10_000_000)))
+        break
+else:
+    print(0)
+" 2>/dev/null || echo 0)
+  echo "  spendable now $ADMIN_SPENDABLE"
+fi
+if [ "${ADMIN_SPENDABLE:-0}" -lt 80000000 ]; then
   echo ""
-  echo "  ⛔ Need >= 8 USDC on the admin to run the E2E."
-  echo "     Go to https://faucet.circle.com -> USDC / Stellar Testnet -> send to:"
-  echo "     $ADMIN"
+  echo "  Need >= 8 USDC spendable on the admin to run this. It holds $HELD and can"
+  echo "  spend $ADMIN_SPENDABLE: the difference is locked by its own open offers."
+  echo "    curl -s https://horizon-testnet.stellar.org/accounts/$ADMIN/offers"
+  echo "  Or top it up: https://faucet.circle.com -> USDC / Stellar Testnet -> $ADMIN"
   exit 2
 fi
 
