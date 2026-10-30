@@ -5,27 +5,51 @@ run, 74 scripts inventoried, the deployment and migration ones excluded with
 their reasons, and the rest run. This is what came back, including the parts
 that came back red.
 
-## Green, and meaningful
+## Where every suite ended up
 
-These are deterministic or self-contained. Their results do not depend on what
-ran before them.
+| Command | Result | If not clean, why |
+|---|---|---|
+| `cargo test --workspace` | **255 / 0** | |
+| `check-advisories.sh` | **2 / 0** | |
+| `check-authorization.sh` | **0 failures** | 80 state-changing entry points, 5 deliberately permissionless |
+| `check-deployment-record.sh` | **45 / 0** | |
+| `check-deployment-record.sh --wasm` | **77 / 0** | every deployed contract rebuilds byte for byte; the Vault is declared under `treeAheadOfLedger` |
+| `check-doc-entry-points.sh` | **9 / 0** | 68 signatures agreeing with the ledger |
+| `check-refusals.sh` | **4 / 0** | |
+| `check-ttl.sh` | **10 / 0** | |
+| `verify-tranche2.sh` | **24 / 0** | |
+| `smoke-agusd-core.sh` | **32 / 0** | |
+| `smoke-core.sh` | **11 / 0** | |
+| `smoke-mediums.sh` | **60 / 0** | |
+| `e2e-allocation-guards.sh` | **10 / 0** | |
+| `e2e-concentration-caps.sh` | **10 / 0** | |
+| `e2e-oracle-quorum.sh` | **12 / 0** | |
+| `e2e-cctp-wiring.sh` | **10 / 0** | |
+| `e2e-etherfuse.sh` | **24 / 0** | |
+| `e2e-reconciliation.sh` | **13 / 0** | |
+| `e2e-peg-gate.sh` | **11 / 0** | |
+| `e2e-anchor.sh` | round trip, both anchor transactions `completed` | |
+| `campaign-report.sh` | **PASS** | 589 submissions, 22 consecutive calendar days, the dedicated reporter signed nothing else |
+| `smoke-review2.sh` | 43 / 2 | both failures are the 100000000 stroops stuck in the cross-chain adapter, off by exactly that |
+| `smoke-hardening.sh` | 59 / 3 | deposits all spendable USDC, and an offer re-locks part of it mid-run |
+| `e2e-test.sh` | 22 / 2 | the mint and redeem need spendable USDC |
+| `e2e-generation3.sh` | precondition | stops at its 20 USDC precondition and says so |
+| `smoke-journey.sh`, `smoke-sagusd.sh` | precondition | both refuse to unwind sagUSD that belongs to other holders, which is correct and they say so. `rc=2` is their way of saying it, not a failure |
+| `smoke-review3.sh` | 28 / 14 | stands up a fresh Vault and Engine and needs capital for them |
 
-| Command | Result |
-|---|---|
-| `cargo test --workspace` | **255 passed**, 0 failed, across 12 crates |
-| `bash scripts/check-advisories.sh` | **2 passed**, 0 failed |
-| `bash scripts/check-authorization.sh` | **0 failures**, 80 state-changing entry points checked, 5 deliberately permissionless |
-| `bash scripts/check-deployment-record.sh` | **45 passed**, 0 failed |
-| `bash scripts/check-doc-entry-points.sh` | **9 passed**, 0 failed, 68 signatures agreeing with the ledger |
-| `bash scripts/check-refusals.sh` | **4 passed**, 0 failed |
-| `bash scripts/check-ttl.sh` | **10 passed**, 0 failed |
-| `bash scripts/verify-tranche2.sh` | **24 passed**, 0 failed |
-| `bash scripts/e2e-peg-gate.sh` | **11 passed**, 0 failed |
-| `bash scripts/e2e-reconciliation.sh` | **13 passed**, 0 failed |
-| `bash scripts/e2e-etherfuse.sh` | **24 passed**, 0 failed |
-| `bash scripts/e2e-oracle-quorum.sh` | **12 passed**, 0 failed |
-| `bash scripts/e2e-cctp-wiring.sh` | **10 passed**, 0 failed |
-| `bash scripts/e2e-anchor.sh` | the round trip, both anchor transactions `completed` |
+Everything red traces to one of two things, and neither is the protocol:
+
+**Spendable USDC.** `GBSX2ZFL` is both the sagUSD market maker and the account
+every suite spends from, and a trustline's balance counts what its own offers
+have locked. Covered below.
+
+**The 10 USDC stuck in the cross-chain adapter.** `deallocate` refuses it with
+`ReturnNotArrived` because the USDC was burned through CCTP and has not come
+back, so the Engine's book carries an exposure no call can clear. Two of
+`smoke-review2`'s assertions are off by exactly 100000000 because of it, and the
+Engine refusing `set_vault` with `CapitalDeployed` while it is outstanding is
+what makes the 419 path in `smoke-mediums` unreachable. The ways out are a CCTP
+message home or a `write_down`, and both are decisions.
 
 ## What the sweep broke, and why that is the finding
 
