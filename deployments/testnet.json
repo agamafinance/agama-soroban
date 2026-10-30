@@ -947,5 +947,27 @@
     "feed": "USDC_USD",
     "toleranceBps": 200,
     "gates": "Vault.deposit. agUSD is minted one for one against USDC, so a deposit is an exchange at par and the base asset has to be at par for it to be a fair one. Outside 200 bps either way the Vault returns PegBroken (331). Below par a deposit would buy agUSD at a discount and dilute holders who came in at a dollar; above par a withdrawal at par takes out more than was put in. Staleness is not a separate check: the read goes through the Oracle Adapter's get_nav, so a feed older than its one hour window stops deposits with OracleStale."
+  },
+  "externalOracles": {
+    "reflector": {
+      "address": "CCYOZJCOPG34LLQQ7N24YXBM7LL62R7ONMZ3G6WZAAYPB5OYKOMJRN63",
+      "network": "testnet",
+      "interface": "SEP-40",
+      "feeds": "USDC_USD",
+      "readsAs": "lastprice(Other(\"USDC\"))",
+      "decimals": 14,
+      "base": "USD",
+      "resolution": 300,
+      "keeper": "scripts/keeper-reflector.sh",
+      "note": "The award names this feed 'The Reflector USDC/USD feed'. Until 2026-10-30 keeper-oracle.sh reposted the value already stored, which keeps a feed fresh and sources nothing. The keeper now reads lastprice off this oracle, checks Reflector's own timestamp against two of its resolution periods, rescales from 14 decimals to 7 by reading the decimals off the oracle, and submits through the two reporter quorum. It refuses to submit when Reflector itself has stalled, rather than pushing a stale number with a current timestamp: the Adapter judges the timestamp it is handed and cannot detect that forgery."
+    },
+    "etherfuse": {
+      "endpoint": "https://api.etherfuse.com/lookup/bonds/cost/USTRY",
+      "auth": "none",
+      "feeds": "EF_BOND",
+      "bond": "USTRY",
+      "keeper": "scripts/keeper-etherfuse.sh",
+      "note": "USTRY, the US Treasury stablebond, because this protocol's base asset is a dollar. CETES is the same instrument in pesos and carries an FX leg that would put MXN/USD risk inside a USD NAV. EF_BOND is registered with a zero deviation bound because the award calls that NAV deterministic, which means the Adapter will accept any move inside the band and there is no second line of defence on our side. So the checks live in the keeper: Etherfuse's own clock, each independent source's updated_at with only the recent ones counted, and agreement between those sources around their median within 50 bps. A single drifted source is exactly what a zero deviation bound cannot catch."
+    }
   }
 }

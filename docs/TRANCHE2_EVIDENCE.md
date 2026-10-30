@@ -54,7 +54,8 @@ with no deviation bound, that NAV being deterministic.
 | D1 cap and reserve floor breaches rejected on chain | **met** | four failed transactions, `e2e-allocation-guards.sh`, `e2e-concentration-caps.sh` |
 | D1 both adapters passing unit suites against mock pool contracts | **met 2026-10-30** | `contracts/mock-stablebond`, 12 cases; `adapters/etherfuse`, 22 cases; the adapter now subscribes and redeems rather than incrementing a counter |
 | D1 exposure map and reserve ratio readable | **met** | `get_exposures()`, `get_reserve_ratio()` |
-| D2 NAV flowing from all three feed types | **met** | all three registered with the record's parameters, all three fresh, `keeper-oracle.sh` |
+| D2 NAV flowing from all three feed types | **met** | all three registered with the record's parameters, all three fresh |
+| D2 the feeds sourced from Reflector and Etherfuse | **met 2026-10-30** | `keeper-reflector.sh` reads `lastprice(Other("USDC"))` off Reflector's SEP-40 oracle `CCYOZJCO...`; `keeper-etherfuse.sh` reads USTRY off `api.etherfuse.com` with a cross-source agreement check. Both refuse to submit when their own source has stalled, rather than pushing a stale number under a current timestamp |
 | D2 OracleStale and nav_rejected, each with a test case | **met** | `oracle-adapter` suite, 53 cases, including `out_of_bounds_deviation_emits_nav_rejected_on_submit_nav` |
 | D2 yield distribution driven by oracle data | **met 2026-10-30** | `keeper-yield.sh` now prices each pool from the feed that pool names; the 26 October run applied the private credit move to all deployed capital |
 | D2 reconciliation documented and executed end to end | **met 2026-10-30** | `docs/NAV_RECONCILIATION.md`, `scripts/e2e-reconciliation.sh`, run in `docs/evidence/reconciliation-2026-10-30.log` |
