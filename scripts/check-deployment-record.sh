@@ -295,7 +295,25 @@ for e in d.get('sourceAheadOfLedger', []):
     # reader is about to compare by hand, and an empty hash in the message
     # tells them nothing.
     local_hash=$(shasum -a 256 "$RAW/$wasm" 2>/dev/null | cut -d' ' -f1)
-    if [ -n "$chain" ] && [ -n "$MATCHED" ]; then
+    # A contract the record declares the tree to be ahead of is a different
+    # statement from a divergence, and it is checkable as an interface delta.
+    # Verified in smoke-mediums, which compares both interfaces against the
+    # declared list; here it is enough to say the declaration exists, so that a
+    # deliberate feature waiting on a deployment does not read as the source
+    # and the ledger having drifted apart.
+    AHEAD=$(python3 - "$name" <<'ZPY' 2>/dev/null
+import json, sys
+d = json.load(open('deployments/testnet.json'))
+want = sys.argv[1].strip().lower()
+for e in d.get('treeAheadOfLedger') or []:
+    if e['contract'].lower() in want or want.startswith(e['contract'].lower()):
+        print(' '.join(e.get('entryPointsNotDeployed', [])))
+        break
+ZPY
+)
+    if [ -z "$MATCHED" ] && [ -n "$AHEAD" ]; then
+      ok "$name does not match, and the record declares the tree ahead of it by $AHEAD"
+    elif [ -n "$chain" ] && [ -n "$MATCHED" ]; then
       # A contract that matches must not be sitting in the declared list, or the
       # declaration has outlived the divergence and is now a false statement of
       # its own.

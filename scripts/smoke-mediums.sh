@@ -629,6 +629,21 @@ for pair in "vault:$VAULT:vault.wasm" "agusd:$AGUSD:agusd_core.wasm" \
   rm -f /tmp/agama-onchain.wasm
   FETCH_ERR=$(stellar contract fetch --id "$id" --network $NET --out-file /tmp/agama-onchain.wasm 2>&1 >/dev/null)
   on=$(shasum -a 256 /tmp/agama-onchain.wasm 2>/dev/null | cut -d' ' -f1)
+  # Two artefacts per contract, and the deployed one can be either. The
+  # compiler writes target/wasm32v1-none/release/deps/<name>.wasm and the CLI
+  # post-processes it into target/wasm32v1-none/release/<name>.wasm, stamped
+  # with cliver. The CLI did not always do that second step, so everything
+  # deployed before it is the raw artefact and everything deployed since is the
+  # optimised one. Comparing against only one of the two is how five live
+  # contracts looked as though they no longer rebuilt, with no source change
+  # behind it: check-deployment-record.sh learned this first and says so in its
+  # own comment, and this check had not.
+  loc=""
+  for cand in "target/wasm32v1-none/release/deps/$wasm" "target/wasm32v1-none/release/$wasm"; do
+    h=$(shasum -a 256 "$cand" 2>/dev/null | cut -d' ' -f1)
+    if [ "$h" = "$on" ]; then loc=$h; WHICH=$cand; break; fi
+  done
+  [ -n "$loc" ] || { loc=$(shasum -a 256 "target/wasm32v1-none/release/$wasm" 2>/dev/null | cut -d' ' -f1); WHICH=target/wasm32v1-none/release/$wasm; }
   if [ -z "$on" ]; then
     # A Stellar Asset Contract has no uploaded code: it is the host's built-in
     # token implementation, so there is nothing to compare and no divergence to
@@ -644,7 +659,7 @@ for pair in "vault:$VAULT:vault.wasm" "agusd:$AGUSD:agusd_core.wasm" \
   fi
   loc=$(shasum -a 256 "target/wasm32v1-none/release/$wasm" 2>/dev/null | cut -d' ' -f1)
   if [ -n "$on" ] && [ "$on" = "$loc" ]; then
-    ok "$name on the ledger is byte for byte what this tree builds"
+    ok "$name on the ledger is byte for byte what this tree builds ($(basename "$(dirname "$WHICH")")/)"
   elif python3 - "$name" <<'ZPY' 2>/dev/null
 import json, sys
 d = json.load(open('deployments/testnet.json'))
