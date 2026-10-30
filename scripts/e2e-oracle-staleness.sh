@@ -55,7 +55,7 @@ LEFT=$(( DUE - $(date +%s) + 30 ))
 if [ "$LEFT" -gt 0 ]; then
   echo "== while it is inside its window it answers"
   ok "get_nav returns the reported NAV" "$(call get_nav --feed_id "$FEED" | tr -d '"')" "$NAV"
-  printf '\n  waiting %s minutes for the window to close. Nothing on chain reads this feed.\n' "$(( LEFT / 60 + 1 ))"
+  printf '\n  waiting %s minutes for the window to close. USDC_USD is read on chain now.\n' "$(( LEFT / 60 + 1 ))"
   sleep "$LEFT"
 else
   # Already past it, which is the state this leaves behind and the state you

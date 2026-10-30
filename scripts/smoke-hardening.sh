@@ -304,6 +304,7 @@ restore_engine() {
                  -- caps 2>/dev/null | tail -1)
     if [ "$now_floor" = "$FLOOR" ] && printf '%s' "$now_caps" | grep -q "\"pool_bps\":$POOL_CAP"; then
       [ "$attempt" -gt 1 ] && echo "  engine limits restored on attempt $attempt"
+      release_suite_lock
       return 0
     fi
     python3 -c "import time;time.sleep(5)"
@@ -312,8 +313,15 @@ restore_engine() {
   echo "    stellar contract invoke --id $ENGINE --source $SRC --network $NET -- set_caps \\"
   echo "      --admin $ADMIN --pool_cap_bps $POOL_CAP --originator_cap_bps $ORIG_CAP --jurisdiction_cap_bps $JUR_CAP"
   echo "    stellar contract invoke --id $ENGINE --source $SRC --network $NET -- set_reserve_floor --admin $ADMIN --floor_bps $FLOOR"
+  release_suite_lock
   return 1
 }
+# lib-baseline's own EXIT trap releases the suite lock, and bash keeps one trap
+# per signal, so this line silently replaced it. Every run of this suite left a
+# lock nobody held, and every suite after it refused to start with "another
+# suite is already running" naming a dead pid. lib-baseline warns about exactly
+# this in a comment and this file was the thing it was warning about. Both exits
+# from restore_engine release the lock now.
 trap restore_engine EXIT
 echo "  engine caps to 100%   tx $(tx "$ENGINE" set_caps --admin "$ADMIN" --pool_cap_bps 10000 --originator_cap_bps 10000 --jurisdiction_cap_bps 10000)"
 echo "  engine floor to 0     tx $(tx "$ENGINE" set_reserve_floor --admin "$ADMIN" --floor_bps 0)"

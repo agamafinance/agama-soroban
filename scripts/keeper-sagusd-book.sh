@@ -23,6 +23,14 @@ NET=${NET:-testnet}
 SRC=${SRC:-agama-poc}
 SPREAD_BPS=${SPREAD_BPS:-10}
 SIZE=${SIZE:-1000000000}          # 100 sagUSD a side
+# USDC this keeper will not commit, whatever the size says. An offer locks its
+# amount as a selling liability on the trustline, and the SAC's `balance` goes
+# on reporting the locked amount as held, so an account whose USDC is entirely
+# in offers reads as funded and cannot transfer a stroop. Every suite that
+# needed working capital was told it had plenty and then failed with
+# BalanceError, 10, which looks exactly like a protocol failure. The market
+# maker is not worth that, so it quotes smaller instead.
+RESERVE=${RESERVE:-500000000}     # 50 USDC left spendable
 STATE=${STATE:-/tmp/agama-sagusd-book.json}
 DEP=deployments/testnet.json
 j() { python3 -c "import json;print(json.load(open('$DEP'))$1)"; }
@@ -38,6 +46,26 @@ rate=$(stellar contract invoke --id "$STAKING" --source "$SRC" --network "$NET" 
 
 # A rate of zero would quote a share at nothing and hand the inventory away.
 [ "$rate" -gt 0 ] || { echo "rate is $rate, refusing to quote"; exit 1; }
+
+# Size the bid against what is actually spendable, not against what the
+# trustline reports. Horizon is the only place that reports liabilities.
+case "$NET" in (testnet) HORIZON=https://horizon-testnet.stellar.org;; (*) HORIZON=https://horizon.stellar.org;; esac
+FREE=$(curl -s --max-time 20 "$HORIZON/accounts/$ME" | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print(0); raise SystemExit
+for b in d.get('balances', []):
+    if b.get('asset_code') == 'USDC':
+        bal = float(b['balance']); sell = float(b.get('selling_liabilities', 0) or 0)
+        # What this keeper's own bid already locks is free to re-commit, because
+        # manage-buy-offer replaces that offer rather than adding to it.
+        print(int(round(max(0.0, bal - sell) * 10_000_000)))
+        break
+else:
+    print(0)
+" 2>/dev/null || echo 0)
 
 ask=$(( rate * (10000 + SPREAD_BPS) / 10000 ))
 bid=$(( rate * (10000 - SPREAD_BPS) / 10000 ))
@@ -66,10 +94,26 @@ stellar tx new manage-sell-offer --source-account "$SRC" \
   --selling "sagUSD:$SISSUER" --buying "USDC:$UISSUER" \
   --amount "$SIZE" --price "$ask:10000000" --offer-id "$ask_id" --network "$NET" >/dev/null 2>&1 \
   && echo "  ask requoted" || echo "  ask unchanged (not enough free sagUSD?)"
+# The bid buys sagUSD with USDC, so its own amount is what it locks. Keep the
+# reserve spendable: a book that is quoted and an operator that cannot move a
+# dollar is a worse state than a thinner book.
+BID_SIZE=$SIZE
+BID_COST=$(( SIZE * bid / 10000000 ))
+ROOM=$(( FREE - RESERVE ))
+if [ "$ROOM" -lt 0 ]; then ROOM=0; fi
+if [ "$BID_COST" -gt "$ROOM" ]; then
+  BID_SIZE=$(( ROOM * 10000000 / bid ))
+  printf '  bid trimmed to %s sagUSD: %s spendable USDC less a %s reserve leaves %s\n' \
+    "$BID_SIZE" "$FREE" "$RESERVE" "$ROOM"
+fi
+if [ "$BID_SIZE" -le 0 ]; then
+  echo "  no room to bid without eating the reserve, leaving the bid side alone"
+else
 stellar tx new manage-buy-offer --source-account "$SRC" \
   --selling "USDC:$UISSUER" --buying "sagUSD:$SISSUER" \
-  --amount "$SIZE" --price "$bid:10000000" --offer-id "$bid_id" --network "$NET" >/dev/null 2>&1 \
-  && echo "  bid requoted" || echo "  bid unchanged (not enough free USDC?)"
+  --amount "$BID_SIZE" --price "$bid:10000000" --offer-id "$bid_id" --network "$NET" >/dev/null 2>&1 \
+  && echo "  bid requoted at $BID_SIZE" || echo "  bid unchanged (not enough free USDC?)"
+fi
 
 python3 - "$STATE" "$rate" "$ask" "$bid" <<'PY'
 import json, sys, time
