@@ -141,6 +141,13 @@ d.setdefault('mockPools', {})['etherfuseStablebond'] = {
             "changes."),
 }
 d['poolAdapters']['etherfuse'] = os.environ['EF']
+# And engineConfig.pools, which this script used to leave behind. The Engine was
+# registering one address while the record's own pool list named another, and
+# verify-tranche2 and check-deployment-record both caught it, twice, because the
+# record is compared against the ledger in one place and against the README in
+# the other. One writer, two readers, and the writer was only writing one of the
+# two keys.
+d.setdefault('engineConfig', {}).setdefault('pools', {}).setdefault('etherfuse', {})['address'] = os.environ['EF']
 d.setdefault('retired', {})[os.environ['OLD_EF']] = {
     'what': 'Etherfuse pool adapter, generation before the Tranche 2 review',
     'reason': ("Its allocate() incremented an exposure counter and returned, so the USDC "
