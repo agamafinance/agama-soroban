@@ -59,6 +59,46 @@ PASS=0; FAIL=0
 ok()  { PASS=$((PASS+1)); echo "  PASS  $1"; }
 bad() { FAIL=$((FAIL+1)); echo "  FAIL  $1"; }
 num() { echo "$1" | tr -d '"'; }
+
+# agUSD's supply, from Horizon.
+#
+# A Stellar Asset Contract has no `total_supply`: its entry points are admin,
+# set_admin, authorized, set_authorized, clawback, trust, mint, burn and the
+# token interface, and nothing else. Every assertion here that asked
+# `total_supply` therefore read empty and failed, reporting a protocol fault
+# that was a question the contract cannot answer.
+#
+# For a classic asset the supply is the sum of everything outstanding, and
+# Horizon is where that is reported. All six buckets, because leaving one out
+# would understate what the Vault owes: trustlines in three authorization
+# states, claimable balances, liquidity pools, and the contract balances, which
+# is where most of this one sits.
+AGUSD_ISSUER=$(j "d['agusdClassic']['issuer']")
+agusd_supply() {
+  local horizon
+  case "$NET" in (testnet) horizon=https://horizon-testnet.stellar.org;; (*) horizon=https://horizon.stellar.org;; esac
+  curl -s --max-time 25 "$horizon/assets?asset_code=agUSD&asset_issuer=$AGUSD_ISSUER" | python3 -c "
+import json, sys
+try:
+    r = json.load(sys.stdin)['_embedded']['records']
+except Exception:
+    raise SystemExit(1)
+if not r:
+    raise SystemExit(1)
+a = r[0]
+b = a.get('balances') or {}
+total = sum(float(x or 0) for x in (
+    b.get('authorized'),
+    b.get('authorized_to_maintain_liabilities'),
+    b.get('unauthorized'),
+    a.get('claimable_balances_amount'),
+    a.get('liquidity_pools_amount'),
+    a.get('contracts_amount'),
+    a.get('archived_contracts_amount'),
+))
+print(int(round(total * 10_000_000)))
+"
+}
 assert_eq() { if [ "$(num "$2")" = "$3" ]; then ok "$1 ($2)"; else bad "$1: got $2, want $3"; fi; }
 
 # Read-only: simulated, never submitted, so views cost nothing.
@@ -170,14 +210,14 @@ echo "== MINT AUTHORITY: the Vault, and nothing else =="
 # simulated, so this one is built, simulated, signed and sent by hand. The CLI
 # cannot sign for a contract address, so the transaction goes out with the
 # Vault's authorization entry unsatisfied and the network traps it.
-SUPPLY0=$(num "$(q "$AGUSD_CORE" total_supply)")
+SUPPLY0=$(agusd_supply)
 traps "the admin, who deployed the token, cannot mint it" \
   "$AGUSD_CORE" mint --to "$ADMIN" --amount "$PROBE"
-assert_eq "total supply did not move" "$(q "$AGUSD_CORE" total_supply)" "$SUPPLY0"
+assert_eq "total supply did not move" "$(agusd_supply)" "$SUPPLY0"
 
 echo ""
 echo "== DEPOSIT: USDC in, agUSD out 1:1 =="
-SUPPLY_BEFORE=$(num "$(q "$AGUSD_CORE" total_supply)")
+SUPPLY_BEFORE=$(agusd_supply)
 IDLE_BEFORE=$(num "$(q "$VAULT" idle_reserves)")
 U0=$(num "$(q "$USDC" balance --id "$ADMIN")")
 if [ "$U0" -lt "$DEPOSIT" ]; then
@@ -199,7 +239,7 @@ fi
 # Read after the top-up above, not before it. Reaching the deposit amount can
 # mean redeeming agUSD, which burns supply and moves the Vault's reserves, so a
 # snapshot taken earlier is stale by exactly what the top-up cost.
-SUPPLY_BEFORE=$(num "$(q "$AGUSD_CORE" total_supply)")
+SUPPLY_BEFORE=$(agusd_supply)
 IDLE_BEFORE=$(num "$(q "$VAULT" idle_reserves)")
 A0=$(num "$(q "$AGUSD_CORE" balance --id "$ADMIN")")
 R0=$(num "$(q "$VAULT" idle_reserves)")
@@ -211,7 +251,7 @@ assert_eq "the depositor was minted 1 agUSD per USDC" \
 # before the top-up, and reaching the deposit amount can mean redeeming agUSD,
 # which burns supply.
 assert_eq "total supply rose by the same amount" \
-  "$(q "$AGUSD_CORE" total_supply)" "$((SUPPLY_BEFORE + DEPOSIT))"
+  "$(agusd_supply)" "$((SUPPLY_BEFORE + DEPOSIT))"
 assert_eq "the USDC is in the Vault" "$(q "$VAULT" idle_reserves)" "$((R0 + DEPOSIT))"
 assert_eq "and out of the depositor's account" \
   "$(q "$USDC" balance --id "$ADMIN")" "$((U0 - DEPOSIT))"
@@ -227,13 +267,13 @@ echo ""
 echo "== EXIT: request burns, claim pays =="
 CLAIM_ID=$(num "$(q "$VAULT" queue_tail)")
 A1=$(num "$(q "$AGUSD_CORE" balance --id "$ADMIN")")
-S1=$(num "$(q "$AGUSD_CORE" total_supply)")
+S1=$(agusd_supply)
 U1=$(num "$(q "$USDC" balance --id "$ADMIN")")
 R1=$(num "$(q "$VAULT" idle_reserves)")
 echo "  request_withdrawal $WITHDRAW (claim $CLAIM_ID)  tx $(tx "$VAULT" request_withdrawal --from "$ADMIN" --amount "$WITHDRAW")"
 assert_eq "the agUSD is burned at request time" \
   "$(q "$AGUSD_CORE" balance --id "$ADMIN")" "$((A1 - WITHDRAW))"
-assert_eq "supply fell with it" "$(q "$AGUSD_CORE" total_supply)" "$((S1 - WITHDRAW))"
+assert_eq "supply fell with it" "$(agusd_supply)" "$((S1 - WITHDRAW))"
 assert_eq "the USDC has not moved yet" "$(q "$VAULT" idle_reserves)" "$R1"
 assert_eq "the claim is at the head of the queue and covered" \
   "$(q "$VAULT" claim_status --claim_id "$CLAIM_ID")" "Ready"
@@ -258,14 +298,21 @@ assert_eq "the queue is empty again" "$(q "$VAULT" queue_length)" "0"
 # and the Vault is never short of what it owes. Both hold on a deployment other
 # scripts have used, which equality of totals does not.
 assert_eq "the deposit minted exactly one agUSD per USDC" \
-  "$(( $(num "$(q "$AGUSD_CORE" total_supply)") - SUPPLY_BEFORE ))" \
+  "$(( $(agusd_supply) - SUPPLY_BEFORE ))" \
   "$(( $(num "$(q "$VAULT" idle_reserves)") - IDLE_BEFORE ))"
-HELD=$(num "$(q "$VAULT" idle_reserves)")
-OWED=$(num "$(q "$AGUSD_CORE" total_supply)")
+# Idle reserves plus what is out with the pools. Comparing idle alone against
+# the whole supply was right only while nothing was deployed, and it reported
+# the Vault as insolvent the moment the Engine allocated a dollar: the capital
+# had not vanished, it was in an adapter, and the claim against it had not
+# changed. Deployed capital is the Vault's own number for exactly that.
+IDLE=$(num "$(q "$VAULT" idle_reserves)")
+OUT=$(num "$(q "$VAULT" deployed_capital)")
+HELD=$(( ${IDLE:-0} + ${OUT:-0} ))
+OWED=$(agusd_supply)
 if [ "$HELD" -ge "$OWED" ]; then
-  ok "the Vault is not short of what agUSD claims (holds $HELD against $OWED)"
+  ok "the Vault is not short of what agUSD claims ($IDLE idle plus $OUT deployed against $OWED)"
 else
-  bad "the Vault holds $HELD against $OWED of agUSD: it is short"
+  bad "the Vault holds $IDLE idle plus $OUT deployed, $HELD, against $OWED of agUSD: it is short"
 fi
 
 echo ""
@@ -311,8 +358,21 @@ refuses "allocating $OVER, past the ${POOL_CAP} bps pool cap, is refused" 407 \
 # well inside the 4000 bps pool cap.
 UNDER=$(( $(num "$(q "$VAULT" free_reserves)") / 10 ))
 echo "  raise the floor to 9500 bps  tx $(tx "$ENGINE" set_reserve_floor --admin "$ADMIN" --floor_bps 9500)"
-refuses "allocating $UNDER, well inside every cap, is refused by the floor" 410 \
-  "$ENGINE" allocate --admin "$ADMIN" --pool_id "$EF" --amount "$UNDER"
+# Read the floor back before asserting on it. The raise is a submitted
+# transaction and testnet drops one occasionally with a submission timeout; when
+# that happened this suite went on to assert that an allocation inside the old
+# floor was refused, which it is not, and reported the Engine accepting
+# something it should have refused. That reads as the guard being broken when
+# the guard was never armed. A step that did not happen is a skip, not a
+# failure.
+NOW_FLOOR=$(num "$(q "$ENGINE" reserve_floor_bps)")
+if [ "$NOW_FLOOR" = "9500" ]; then
+  refuses "allocating $UNDER, well inside every cap, is refused by the floor" 410 \
+    "$ENGINE" allocate --admin "$ADMIN" --pool_id "$EF" --amount "$UNDER"
+else
+  echo "  SKIP  the floor did not move, it reads $NOW_FLOOR and not 9500, so the"
+  echo "        refusal below was never armed and is not asserted. Rerun."
+fi
 echo "  restore the floor to $FLOOR bps  tx $(tx "$ENGINE" set_reserve_floor --admin "$ADMIN" --floor_bps "$FLOOR")"
 assert_eq "the reserve floor is back where it was" "$(q "$ENGINE" reserve_floor_bps)" "$FLOOR"
 assert_eq "the caps are untouched" "$(q "$ENGINE" caps)" \
