@@ -199,9 +199,71 @@ def poll(base, token, tx_id, wait=0, every=5):
         time.sleep(every)
 
 
+def send_withdrawal(home_domain, secret, tx_id, horizon="https://horizon-testnet.stellar.org"):
+    """Pay the anchor the asset it is waiting for, to complete a withdrawal.
+
+    A SEP-24 withdrawal reaches `pending_user_transfer_start` and then waits:
+    the anchor has told us an account and a memo, and until the asset arrives
+    there with that memo it has nothing to pay out. The destination and the
+    memo are read off the anchor's own transaction record rather than typed in
+    here, because a withdrawal paid to a hardcoded address is a withdrawal paid
+    to whatever that address was last time.
+    """
+    from stellar_sdk import Asset, Server, TransactionBuilder
+
+    token, _, t = authenticate(home_domain, secret, verbose=False)
+    base = t["TRANSFER_SERVER_SEP0024"].rstrip("/")
+    r = requests.get(f"{base}/transaction", params={"id": tx_id},
+                     headers={"Authorization": f"Bearer {token}"}, timeout=TIMEOUT)
+    r.raise_for_status()
+    tx = r.json()["transaction"]
+    if tx["status"] != "pending_user_transfer_start":
+        raise SystemExit(f"status is {tx['status']}, not waiting on a transfer")
+
+    dest = tx["withdraw_anchor_account"]
+    memo = tx.get("withdraw_memo")
+    memo_type = tx.get("withdraw_memo_type", "id")
+    amount = tx["amount_in"]
+    asset_code = tx.get("amount_in_asset", "").split(":")
+    code = asset_code[1] if len(asset_code) > 2 else "USDC"
+    issuer = asset_code[2] if len(asset_code) > 2 else None
+    if issuer is None:
+        for c in t["CURRENCIES"]:
+            if c.get("code") == code:
+                issuer = c["issuer"]
+
+    kp = Keypair.from_secret(secret)
+    server = Server(horizon_url=horizon)
+    account = server.load_account(kp.public_key)
+    builder = (
+        TransactionBuilder(
+            source_account=account,
+            network_passphrase=t["NETWORK_PASSPHRASE"],
+            base_fee=200,
+        )
+        .append_payment_op(
+            destination=dest, asset=Asset(code, issuer), amount=str(amount)
+        )
+        .set_timeout(120)
+    )
+    if memo_type == "id":
+        builder.add_id_memo(int(memo))
+    elif memo_type == "text":
+        builder.add_text_memo(memo)
+    elif memo_type == "hash":
+        builder.add_hash_memo(base64.b64decode(memo))
+    envelope = builder.build()
+    envelope.sign(kp)
+    print(f"  paying           {amount} {code} to {dest}")
+    print(f"  memo             {memo_type}:{memo}")
+    resp = server.submit_transaction(envelope)
+    print(f"  stellar tx       {resp['hash']}")
+    return resp["hash"]
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("action", choices=["toml", "auth", "deposit", "withdraw", "poll"])
+    ap.add_argument("action", choices=["toml", "auth", "deposit", "withdraw", "poll", "pay"])
     ap.add_argument("--home-domain", default=DEFAULT_HOME)
     ap.add_argument("--secret-name", default="agama-user")
     ap.add_argument("--asset-code", default="USDC")
@@ -235,6 +297,14 @@ def main():
                 print(f"  {k:<16}{claims[k]}")
         if a.json:
             print(json.dumps({"token": token, "claims": claims}, indent=1))
+        return
+
+    if a.action == "pay":
+        send_withdrawal(a.home_domain, secret, a.id)
+        token, _, t = authenticate(a.home_domain, secret, verbose=False)
+        base = t["TRANSFER_SERVER_SEP0024"].rstrip("/")
+        tx = poll(base, token, a.id, wait=a.wait or 120)
+        print(f"  final status {tx['status']}")
         return
 
     if a.action == "poll":

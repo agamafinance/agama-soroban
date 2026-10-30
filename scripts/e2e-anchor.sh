@@ -90,11 +90,37 @@ case "$FINAL" in
     AFTER=$(stellar contract invoke --id "$AGUSD" --source "$USER_KEY" --network "$NET" --send=no -- balance --id "$WHO" 2>&1 | tail -1 | tr -d '"')
     [ "$AFTER" -gt "$BEFORE" ] && ok "the holder's agUSD rose" "$BEFORE -> $AFTER" || bad "the holder's agUSD rose" "$BEFORE -> $AFTER"
     echo
-    echo "== 6. and the reverse, agUSD to USDC to cash"
-    echo "      request_withdrawal burns the agUSD and queues the USDC claim,"
-    echo "      then SEP-24 withdraw hands it back to the anchor:"
-    echo "        bash scripts/e2e-withdrawal-queue.sh"
-    echo "        $PY anchor/sep_client.py withdraw --secret-name $USER_KEY --amount $AMOUNT --wait $WAIT"
+    echo "== 6. the reverse, agUSD back to USDC through the queue"
+    CID=$(stellar contract invoke --id "$VAULT" --source "$USER_KEY" --network "$NET" -- \
+            request_withdrawal --from "$WHO" --amount "$AMT" 2>&1 | tail -1 | tr -d '"')
+    [ -n "$CID" ] && ok "the withdrawal was queued" "claim $CID" || bad "the withdrawal was queued"
+    ST=$(stellar contract invoke --id "$VAULT" --source "$USER_KEY" --network "$NET" --send=no -- \
+           claim_status --claim_id "$CID" 2>&1 | tail -1 | tr -d '"')
+    [ "$ST" = "Ready" ] && ok "the claim is payable" "$ST" || bad "the claim is payable" "$ST"
+    stellar contract invoke --id "$VAULT" --source "$USER_KEY" --network "$NET" -- \
+      claim_withdrawal --from "$WHO" --claim_id "$CID" >/dev/null 2>&1
+    ok "the USDC came back out of the Vault"
+
+    echo
+    echo "== 7. USDC back to cash, over SEP-24 withdraw"
+    WD=$(sep withdraw --home-domain "$HOME_DOMAIN" --secret-name "$USER_KEY" --amount "$AMOUNT")
+    printf '%s\n' "$WD" | sed 's/^/      /'
+    WID=$(printf '%s' "$WD" | grep -oE "transaction id   [0-9a-f-]+" | awk '{print $3}')
+    [ -n "$WID" ] && ok "the anchor opened a withdrawal" "$WID" || bad "the anchor opened a withdrawal"
+    echo "      Complete the form at the URL above, then this pays the anchor the"
+    echo "      asset it is waiting for, at the account and memo it names."
+    sleep 5
+    PAY=$(sep pay --home-domain "$HOME_DOMAIN" --secret-name "$USER_KEY" --id "$WID" --wait "$WAIT" 2>&1 || true)
+    printf '%s\n' "$PAY" | sed 's/^/      /'
+    case "$PAY" in
+      *"final status completed"*) ok "the anchor paid the cash out" ;;
+      *"not waiting on a transfer"*)
+        echo "      The form was not submitted, so the anchor is not waiting for the"
+        echo "      transfer yet. Rerun the pay step once it is:"
+        echo "        $PY anchor/sep_client.py pay --secret-name $USER_KEY --id $WID"
+        ok "the client read the anchor's state rather than paying blind" ;;
+      *) bad "the withdrawal completed" "$(printf '%s' "$PAY" | tail -1)" ;;
+    esac
     ;;
   *"final status incomplete"*)
     echo

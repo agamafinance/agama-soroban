@@ -1,0 +1,76 @@
+Tranche 2 Deliverable 3: cash to USDC to agUSD and the reverse, on Stellar
+testnet, against the SDF Stellar Test Anchor.
+
+The award's criterion names this anchor as covering these flows during MoneyGram
+onboarding. Every line below is a transaction anyone can open.
+
+  anchor            testanchor.stellar.org
+  account           GC35EAQJPYWZDPOUMOOLGETVTDMG3KQDKOX4ISGOLXS2RR4JLLLGBFF2
+  asset             USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5
+                    which is the asset the Vault custodies: the SAC of that
+                    issuer is CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA,
+                    the contracts.usdc of this deployment. Checked with
+                    `stellar contract id asset`, not assumed.
+
+== 1. SEP-10
+
+  challenge from    GCHLHDBOKG2JWMJQBTLSL5XG6NO7ESXI2TAQKZXCXWXB5WI2X6W233PR
+  verified          source is the toml's SIGNING_KEY, sequence 0, first op a
+                    ManageData naming this account, home domain matched, server
+                    signature valid, time bounds current
+  JWT               sub = the account, exp +24h
+
+== 2. SEP-24 deposit, cash to USDC
+
+  transaction       ae2734cc-2458-419f-8910-d3f53d04be71
+  the form          completed in a browser. That is what interactive means in
+                    SEP-24: the anchor serves its own webview and collects what
+                    its jurisdiction requires.
+  amount_in         5 USD
+  fee               0.5 USD
+  amount_out        4.5 USDC
+  status            completed
+  stellar tx        4a2167a714fee32dfa0463b70c73131ee866a336a084f19c7d92cedba9f5a439
+
+== 3. USDC to agUSD, one for one, through the Vault
+
+  trustline         agUSD:GAXM76GV3KKUK4XC3DKKHBEXCGUPYOALOB35HITI4WBKAAC7MUT5ZZEB
+                    83aef2a504aa7e8d1339e3190e97f6aeb8c2f696eab6d2186c0097ff1a44e959
+                    agUSD is a classic asset, so the account needs a trustline
+                    before the Vault can mint to it. Without one the mint fails
+                    with "trustline entry is missing for account", which is the
+                    SAC refusing rather than the Vault.
+  Vault::deposit    transfer 45000000 USDC to the Vault
+                    mint     45000000 agUSD to the holder
+                    Deposit  amount 45000000 minted 45000000
+  agUSD balance     45000000
+
+== 4. agUSD back to USDC, through the withdrawal queue
+
+  request_withdrawal  burn 45000000 agUSD
+                      WithdrawalRequested claim_id 54 queue_position 0
+  claim_status        Ready
+  claim_withdrawal    transfer 45000000 USDC from the Vault to the holder
+                      WithdrawalClaimed claim_id 54 amount 45000000
+
+== 5. SEP-24 withdrawal, USDC to cash
+
+  transaction       57eaf7e1-2ce1-410d-9396-84969f227568
+  the form          completed in a browser, bank and account as placeholders
+  amount_in         4.5 USDC
+  fee               0.4 USDC
+  amount_out        4.1 USD
+  anchor account    GBN4NNCDGJO4XW4KQU3CBIESUJWFVBUZPOKUZHT7W7WRB7CWOA7BXVQF
+  memo              id:6100031375387207126
+                    both read off the anchor's own transaction record, not
+                    hardcoded: a withdrawal paid to a hardcoded address is a
+                    withdrawal paid to whatever that address was last time
+  payment           994d83972c03439c02dc27eba3f4ab3b84e365f748fb27130102ae95c8bb59c2
+  status            pending_anchor "Received an incoming payment"
+                    then completed
+
+The round trip is closed. 5 USD of cash became 4.5 USDC became 4.5 agUSD, came
+back through the FIFO queue as 4.5 USDC, and left as 4.1 USD of cash. The 0.9
+USD of difference is the anchor's two fees, 0.5 on the way in and 0.4 on the way
+out, and they are the test anchor's numbers rather than anything this protocol
+charges: the Vault minted and redeemed one for one in both directions.

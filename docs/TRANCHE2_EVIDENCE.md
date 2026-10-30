@@ -60,8 +60,8 @@ with no deviation bound, that NAV being deterministic.
 | D2 reconciliation documented and executed end to end | **met 2026-10-30** | `docs/NAV_RECONCILIATION.md`, `scripts/e2e-reconciliation.sh`, run in `docs/evidence/reconciliation-2026-10-30.log` |
 | D2 the peg feed validating the base asset | **built, not deployed** | the gate and nine cases are in `contracts/vault/src`; no contract here has an `upgrade` entry point, so carrying it to testnet is a generation migration |
 | D3 SEP-10 end to end | **met 2026-10-30** | `anchor/sep_client.py`, challenge verified before signing, JWT from `testanchor.stellar.org`; `docs/ANCHOR_RAMP.md` |
-| D3 SEP-24 interactive deposit and withdrawal end to end | **protocol met, one manual link** | the client opens the transaction and polls it to a terminal state; the anchor's own KYC webview is completed by a person, which is what "interactive" means in SEP-24. `scripts/e2e-anchor.sh`, 7 assertions |
-| D3 cash to USDC to agUSD and the reverse | **blocked on the link above** | the Vault mint and the withdrawal queue are both live and proven elsewhere; the chain is complete the moment a settled deposit arrives |
+| D3 SEP-24 interactive deposit and withdrawal end to end | **met 2026-10-30** | both flows reached `completed` on testnet: deposit `ae2734cc`, withdrawal `57eaf7e1`. `scripts/e2e-anchor.sh` |
+| D3 cash to USDC to agUSD and the reverse | **met 2026-10-30** | 5 USD of cash to 4.5 USDC to 4.5 agUSD, back through the FIFO queue, out as 4.1 USD. Every leg is a transaction in `docs/evidence/anchor-roundtrip-2026-10-30.log` |
 | D3 sustained multi-day campaign | **met** | `campaign-report.sh`, 21 consecutive days |
 | D3 codebase frozen and handed to audit | **not yet** | follows D3's first clause |
 

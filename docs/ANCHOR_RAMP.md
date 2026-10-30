@@ -30,10 +30,11 @@ bash scripts/e2e-anchor.sh
 | SEP-1, read the anchor's `stellar.toml` | the client | **runs** |
 | SEP-10, challenge, verify, sign, JWT | the client | **runs** |
 | SEP-24, open an interactive deposit | the client | **runs** |
-| the anchor's own KYC form | a person, in a webview | **manual** |
+| the anchor's own KYC form | a person, in a webview | **done, in a browser** |
 | SEP-24, poll to a terminal state | the client | **runs** |
-| USDC to agUSD through `Vault::deposit` | the client | runs once the deposit settles |
-| agUSD to USDC and back out through SEP-24 withdraw | the client | same |
+| USDC to agUSD through `Vault::deposit` | the client | **runs** |
+| agUSD to USDC through the withdrawal queue | the client | **runs** |
+| USDC back out through SEP-24 withdraw, with the anchor's own account and memo | the client | **runs** |
 
 The form is not a gap. "Interactive" in SEP-24 means the anchor serves its own
 webview and collects whatever its jurisdiction requires, and a client that
@@ -43,29 +44,35 @@ transaction state back honestly, including when the answer is `incomplete`.
 
 ## The run
 
-Against `testanchor.stellar.org`, 2026-10-30:
+Closed end to end on 2026-10-30, against `testanchor.stellar.org`. In full in
+`docs/evidence/anchor-roundtrip-2026-10-30.log`; the shape of it:
 
 ```
-SEP-1    WEB_AUTH_ENDPOINT        https://testanchor.stellar.org/auth
-         TRANSFER_SERVER_SEP0024  https://testanchor.stellar.org/sep24
-         SIGNING_KEY              GCHLHDBOKG2JWMJQBTLSL5XG6NO7ESXI2TAQKZXCXWXB5WI2X6W233PR
-         USDC                     GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5
-
-SEP-10   challenge from   GCHLHDBOKG2JWMJQBTLSL5XG6NO7ESXI2TAQKZXCXWXB5WI2X6W233PR
-         for account      GC35EAQJPYWZDPOUMOOLGETVTDMG3KQDKOX4ISGOLXS2RR4JLLLGBFF2
-         sequence         0
-         server signature verified against SIGNING_KEY
-         JWT              sub matches the account, exp +24h
-
-SEP-24   transaction      61ef6158-1681-43d0-bd11-9fb32e2ed1b8
-         type             interactive_customer_info_needed
-         status           incomplete   (the form was not submitted)
+  5.0 USD  cash          SEP-24 deposit    ae2734cc  completed
+  4.5 USDC on Stellar    tx 4a2167a7...    (0.5 USD anchor fee)
+  4.5 agUSD              Vault::deposit    minted one for one
+  4.5 USDC               claim 54          FIFO queue, Ready, claimed
+  4.1 USD  cash          SEP-24 withdraw   57eaf7e1  completed
+                         payment 994d8397...  memo id:6100031375387207126
 ```
 
-`incomplete` is the correct status for a transaction whose form has not been
-completed, and reporting it is the point. The run is 7 assertions, 0 failures,
-and the last of them asserts that the client read `incomplete` back rather than
-that a deposit settled.
+The 0.9 USD of difference is the test anchor's two fees. The Vault minted and
+redeemed one for one in both directions.
+
+Two things that are worth knowing before anyone repeats it:
+
+**agUSD needs a trustline before the Vault can mint.** agUSD is a classic
+Stellar asset and the contract address is its SAC, so an account that has never
+held it has no trustline and the mint fails with *"trustline entry is missing
+for account"*. That is the SAC refusing, not the Vault, and it is the one extra
+operation a wallet has to do that a Soroban-only token would not need. It is
+also the same property that puts agUSD on the SDEX.
+
+**The anchor's USDC is the Vault's USDC.** On this testnet the SDF anchor issues
+`USDC:GBBD47IF...`, and the SAC of that asset is `CBIELTK6...`, which is this
+deployment's `contracts.usdc`. Checked with `stellar contract id asset` rather
+than assumed, because if the two had differed the chain would have needed a swap
+in the middle and the deliverable would have read very differently.
 
 ## Verifying the challenge before signing it
 
