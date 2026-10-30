@@ -127,16 +127,26 @@ Until 26 October the yield was delivered by `distribute-yield-loop.sh`, which
 hands over a constant and says so in its own header. It proved the plumbing and
 not this criterion, and it is kept for demos.
 
-## Deliverable 3, Hardening and audit readiness
+## Deliverable 3, MoneyGram fiat ramp, hardening and audit readiness
+
+The title is the award's. The first version of this section was called
+"Hardening and audit readiness", dropped the fiat ramp, and listed a Soroswap
+swap and SDEX path payments in its place. The reviewer was right to refuse that:
+the Soroswap swap is Tranche 1 Deliverable 2 scope and path payments are not in
+the award at all. Those two rows are gone from here. They are real and they are
+evidence, of Deliverable 2 of the previous tranche, and they are cited there.
 
 | Criterion | How to check it | Result |
 |---|---|---|
-| sustained multi-day testnet campaign without critical failures | `bash scripts/campaign-report.sh`, which needs no key and answers in seconds, or the reporter account on [stellar.expert](https://stellar.expert/explorer/testnet/account/GASAXCP2Z4BSK5RGPFU257FA57K47JSPD6BJYYKH3RDQ2CKYXIYQOM4H) | **more than 500 `submit_nav` transactions, none failed, on every calendar day since 9 October without exception**, longest gap between two submissions 11.5 hours. That account has never signed anything else, which is why it is the one to count, and the report checks that too rather than filtering the rest away in silence: any operation on it that is not a `submit_nav` fails the run: the other key in the quorum is the deployment admin, and `ALL=1` counts its submissions too (**1009 together**) by scanning the twelve thousand operations it has signed since the first deploy, which takes minutes rather than seconds. Our own logs add the passes that submitted nothing because every feed was still fresh: the keeper is scheduled every ten minutes and has recorded **more than 920 passes, 11 with a failed push**, every one of them the public RPC not answering with a ledger, so nothing was submitted and the next pass carried it; the sagUSD market maker, **more than 1770 quoting cycles, no error**. The counts differ because most passes have nothing to push, and because a timer on a laptop does not fire while the laptop sleeps, which is what the 11.5 hour gap is. A third job extends the contracts' TTL every 72 hours, which is why every address in this file still answers |
-| agUSD/USDC swaps through the Stellar DEX | `bash scripts/e2e-generation3.sh`, section 6 | a Soroswap swap, executed in the run |
-| and path payments | same run, section 7 | the order book quoted through Horizon's strict-send paths, then a `path-payment-strict-send`, with the run asserting the fill landed within 50 bps of the quote it was taken at. Until 27 October it compared the fill to the `dest-min` the script itself hands the network, which the network enforces, so it asked Stellar whether Stellar had kept its own rule and could not fail. It is measured against the quote now |
-| codebase frozen for the audit | `git diff --name-only aee6c61..HEAD -- contracts/ adapters/ crates/ Cargo.toml Cargo.lock` | **nothing**, which is the freeze. What landed after aee6c61 is this file, six new scripts under `scripts/` and fixes to five more, the deployment record and the README. The check is the command, so it stays honest as we go on working on everything around the contracts |
-| the freeze is a frozen tree, not a frozen claim | `bash scripts/smoke-hardening.sh` | **62 passed, 0 failed, 2 skipped** on 27 October, against the live addresses. It read 64 the day before, and four of those were passes awarded to branches the suite had not run, each one saying so in its own message: the interval guard with no second round to test, and the floor with the caps binding before it. They print `SKIP` now, which the suite already did correctly elsewhere, so the number went down because the counting got honest and not because anything broke. The adversarial review ahead of the audit found three critical, two high and four medium, every one fixed, every fix with a test that fails without it. The hashes the README carries for each finding are from 9 September and point at the retired generation, which is why the suite was re-run rather than cited |
-| handed over to OtterSec | the engagement | **in scheduling**. This is the one line in this file that is not a command, and it is not going to be written as though it were |
+| SEP-10 authentication end to end on testnet | `bash scripts/e2e-anchor.sh`, or `.venv-sep/bin/python anchor/sep_client.py auth` | **runs.** Challenge fetched from `testanchor.stellar.org`, verified before it is signed, JWT returned with `sub` matching the account. The verification is the part a naive client skips: source against the toml's `SIGNING_KEY`, sequence 0 so the transaction can never be submitted, first operation a `ManageData` naming our account, home domain matched, server signature valid, time bounds current |
+| SEP-24 interactive deposit end to end | the same run | **`completed`.** Transaction `ae2734cc-2458-419f-8910-d3f53d04be71`, 5 USD in, 0.5 USD anchor fee, 4.5 USDC delivered by stellar transaction `4a2167a714fee32dfa0463b70c73131ee866a336a084f19c7d92cedba9f5a439` |
+| SEP-24 interactive withdrawal end to end | the same run | **`completed`.** Transaction `57eaf7e1-2ce1-410d-9396-84969f227568`, 4.5 USDC in, 0.4 USDC fee, 4.1 USD out. The anchor's account and memo are read off its own transaction record, not hardcoded: payment `994d83972c03439c02dc27eba3f4ab3b84e365f748fb27130102ae95c8bb59c2`, memo `id:6100031375387207126` |
+| cash to USDC to agUSD and the reverse | `docs/evidence/anchor-roundtrip-2026-10-30.log` | **closed.** 5.0 USD of cash to 4.5 USDC to 4.5 agUSD minted one for one by the Vault, back out through the FIFO queue as claim 54, and out to 4.1 USD of cash. Every leg is a transaction in that log |
+| against the MoneyGram Access sandbox | | **not run, and not a substitution.** The award's own words are "with the SDF Stellar Test Anchor covering the same flows during MoneyGram onboarding", so the Test Anchor is what the record names for this period rather than something put in MoneyGram's place. `anchor/sep_client.py` is anchor-agnostic: MoneyGram is a `--home-domain` and their asset code once that account is live, which is commercial and not technical. `docs/ANCHOR_RAMP.md` carries the quote next to the code |
+| sustained multi-day testnet campaign without critical failures | `bash scripts/campaign-report.sh`, which needs no key, or the reporter account on [stellar.expert](https://stellar.expert/explorer/testnet/account/GASAXCP2Z4BSK5RGPFU257FA57K47JSPD6BJYYKH3RDQ2CKYXIYQOM4H) | **589 `submit_nav` transactions, none failed, every one of the 22 calendar days in the span covered.** That account has never signed anything else, which is why it is the one to count, and the report checks that too rather than filtering the rest away in silence: any operation on it that is not a `submit_nav` fails the run. Our own logs add the passes that submitted nothing because every feed was still fresh: **1098 keeper passes, 14 with a failed push**, each one the public RPC not answering with a ledger, so nothing was submitted and the next pass carried it; the market maker, **2140 quoting cycles, no error**. A third job extends the contracts' TTL every 72 hours, which is why every address in this file still answers |
+| codebase frozen for the audit | `git diff --name-only aee6c61..HEAD -- contracts/ adapters/ crates/ Cargo.toml Cargo.lock` | **the freeze was lifted on 2026-10-30 and this row says so rather than carrying a number that was true a week ago.** It read "nothing" until the review came back, and answering the review meant changing contracts: fourteen files, which are the Etherfuse adapter learning to subscribe, `contracts/mock-stablebond` as the pool the award asks it to be tested against, the Vault's peg gate, and the tests for all three. You cannot both freeze for an audit and fix what a reviewer found, and of the two the fix is worth more. The freeze re-establishes at `bbeae11`, and the command above is the one that keeps this honest: it will report those fourteen files until the baseline is moved deliberately |
+| the freeze is a frozen tree, not a frozen claim | `bash scripts/smoke-hardening.sh` | **59 passed, 0 failed**, then it stops at its credit-loss finding and says why: the private credit pool carries 29138631047 stroops of accumulated test write-offs against a cap of 18400749875, four tenths of net assets, so it has no room to allocate into and the finding cannot be walked on this book. That charge is permanent by design, because a write-down reopening a cap was a finding this Engine closed, and inventing a recovery to make the suite green is the one thing not to do. The adversarial review ahead of the audit found three critical, two high and four medium, every one fixed, every fix with a test that fails without it |
+| handed over to OtterSec | the engagement | **in scheduling**, and it follows the freeze re-establishing. This is the one line in this file that is not a command, and it is not going to be written as though it were |
 
 ## A second review, on 27 October, and what it found
 
@@ -307,24 +317,31 @@ for mainnet it should arrive as its own scope with its own review, and with two
 changes to what exists today: `set_destination` behind a timelock, and an
 allowlist of destinations rather than a free field.
 
-**And one thing worth saying before anyone finds it.** As of 2026-10-30 this
-adapter holds the only live exposure in the protocol: `get_exposures()` reads
-etherfuse 0, private credit 0, cross-chain 100000000. So the 1897996 stroops of
-yield distributed in `docs/evidence/reconciliation-2026-10-30.log`, computed from
-a private credit servicing tape against the `PC_NAV` feed, were earned on
+**And what became of the position it held.** Until 2026-10-30 this adapter held
+the only live exposure in the protocol, 100000000 stroops, and the yield
+distributed in `docs/evidence/reconciliation-2026-10-30.log` was earned on it:
+computed from a private credit servicing tape against the `PC_NAV` feed, on
 capital sitting in a book on another chain, through an adapter the award does
-not fund, priced from a feed whose rationale is that the crossing is transport.
-That is the reviewer's concern not as a hypothetical but as the current state of
-the book.
+not fund. That was the reviewer's concern as the actual state of the book rather
+than as a hypothesis, and it is left written here rather than edited out.
 
-And it cannot simply be moved, which is the part worth writing down. Asking the
-Engine to `deallocate` those 10 USDC from the cross-chain adapter fails with
-`ReturnNotArrived` (714): the adapter holds no USDC, because the USDC was burned
-through CCTP, and it refuses to repay the Vault out of money that has not come
-back. So the two honest ways out are a CCTP message bringing it home, or a
-`write_down` recognising that it will not. There is no third one, and that is
-the risk model changing rather than a bug: every other adapter here can be
-unwound by a call, and this one cannot.
+It is resolved, and not by the resolution anyone would have preferred.
+`deallocate` refused it with `ReturnNotArrived`, because the USDC was burned
+through CCTP and has not come back, so no call could clear it and the exposure
+would have reported face value for the life of the contract. It is written down,
+reason `CCTPBURN`, which is exactly what that entry point exists for: the loss
+is recognised rather than carried as an asset that is not there.
+
+```
+  get_exposure(cross-chain)   0
+  total_allocated             0
+  written_off                 29238631047
+```
+
+The charge against the pool's cap is permanent, by design, and that is the cost
+of having burned test capital across a bridge. The honest reading is that ten
+USDC left Stellar through an adapter outside the awarded scope and did not come
+back, and the book now says so.
 
 It stays registered on testnet because unregistering it would hide it, and
 because the Engine's cap arithmetic is exercised by having a third pool.

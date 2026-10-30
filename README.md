@@ -1247,11 +1247,17 @@ SECURITY.md.
 
 ## SCF #45, Tranche 2
 
-The tranche's scope is the Allocation Engine, the two pool adapters and the
-Oracle Adapter, and unlike Tranche 1 its criteria were never transcribed into
-this repository. What follows is the scope as the roadmap states it, mapped to
-where each piece is checkable, and it is labelled as that rather than presented
-as quoted criteria.
+The tranche's scope is the Allocation Engine, the two pool adapters, the Oracle
+Adapter and the MoneyGram fiat ramp. Its completion criteria are transcribed, in
+the award record's own words, at the top of `docs/TRANCHE2_EVIDENCE.md`, and the
+table there is measured against those and nothing else.
+
+That sentence replaces the one the Stellar reviewer quoted back at us. This
+section used to say the criteria had never been transcribed and that what
+followed was the scope as our roadmap stated it, which was honest about being a
+different yardstick and was still the wrong yardstick: a reviewer compares
+against the record, and we had published our own. The record's text went into
+the evidence file on 2026-10-30 so that there is one.
 
 Every line below is proven on the generation currently deployed, not on the one
 that was live when the work was done. That distinction is the reason this
