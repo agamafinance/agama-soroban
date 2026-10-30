@@ -1,0 +1,74 @@
+Tranche 2 Deliverable 3: the MoneyGram Access sandbox, how far the client gets
+and where exactly it stops.
+
+The criterion names "the MoneyGram Access sandbox" and then names the SDF
+Stellar Test Anchor as covering the same flows "during MoneyGram onboarding".
+This is what happens when the same client is pointed at MoneyGram directly,
+with no onboarding done, so that the onboarding gate is a demonstrated fact
+rather than an assertion.
+
+  anchor      extmgxanchor.moneygram.com        (testnet)
+  account     GC35EAQJPYWZDPOUMOOLGETVTDMG3KQDKOX4ISGOLXS2RR4JLLLGBFF2
+  client      anchor/sep_client.py, unchanged, --home-domain is the only difference
+
+== SEP-1, their toml
+
+  SIGNING_KEY               GCUZ6YLL5RQBTYLTTQLPCM73C5XAIUGK2TIMWQH7HPSGWVS2KJ2F3CHS
+  WEB_AUTH_ENDPOINT         https://extmgxanchor.moneygram.com/stellarsepservice/auth
+  TRANSFER_SERVER_SEP0024   https://extmgxanchor.moneygram.com/stellarsepservice/sep24
+  currency USDC             GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5
+
+  That issuer is this deployment's USDC. The SAC of USDC:GBBD47IF is
+  CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA, which is
+  contracts.usdc here. So a MoneyGram sandbox deposit would land as exactly the
+  asset the Vault custodies, with no swap in the middle.
+
+== SEP-10, their auth
+
+  WORKS. Challenge fetched, verified against their SIGNING_KEY, signed, and a
+  JWT returned:
+
+    sub          GC35EAQJPYWZDPOUMOOLGETVTDMG3KQDKOX4ISGOLXS2RR4JLLLGBFF2
+    home_domain  extmgxanchor.moneygram.com
+    exp          +24h
+
+  No onboarding was needed for this. Their older host,
+  extstellar.moneygram.com, refuses the same call with HTTP 400, which is the
+  registration gate on the legacy path; the newer one does not gate SEP-10.
+
+== SEP-24, their limits and their transaction
+
+  /info      deposit  USDC enabled, min 15, max 950
+             withdraw USDC enabled, min 15, max 2500
+
+  A 5 USDC deposit is refused for being under their minimum, which is their
+  business rule answering correctly. At 20 USDC:
+
+    transaction   c18316d7-9626-4365-a34c-35af9b95ecaa
+    type          interactive_customer_info_needed
+    url           https://extramps.moneygram.com?transaction_id=...&token=...
+
+== Where it stops
+
+  The interactive URL loads the MoneyGram Ramps widget and fails:
+
+    Something went wrong
+    We couldn't load the information needed to continue.
+    Error code: RMP-01
+    Transaction ID: c18316d7-9626-4365-a34c-35af9b95ecaa
+
+  The widget's own URL carries `wallet_provider=` empty. That is the gate: the
+  partner is identified to the widget by a registered wallet provider, and this
+  one is not registered, so the widget cannot resolve the configuration it needs
+  and stops before collecting anything.
+
+== What this means for the deliverable
+
+  Everything the integration owns works against MoneyGram itself: their toml,
+  their SEP-10, their SEP-24, their limits, their transaction. What does not
+  work is the part that is not code, which is being a registered MoneyGram
+  partner, and it fails with their own error code at their own widget.
+
+  That is the onboarding the award refers to when it names the SDF Stellar Test
+  Anchor as covering these flows during it. The Test Anchor round trip is in
+  docs/evidence/anchor-roundtrip-2026-10-30.log and is closed end to end.
