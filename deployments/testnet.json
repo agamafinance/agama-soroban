@@ -50,7 +50,8 @@
         "originator": "ETHERFUS",
         "jurisdiction": "MX",
         "capBps": 4000,
-        "address": "CCXO2ZIMK7KZMMUBE24KOLWDJHVXQKXDNEP4QH7N5ZK5U6ESCWKM7BXN"
+        "address": "CDNR4WLEOIP5J2ZD6RQ6UQ2JU6I6E4YPE33DOC7N6ORXZAASRVH6EEMI",
+        "note": "Replaced 2026-10-30. The adapter at CCXO2ZIM incremented an exposure counter on allocate and invested nothing, so the Vault's capital sat on it while the Engine's book read it as deployed into Stablebonds. This one subscribes into the pool at CDBZQOQJ4G3EHM7JB7LVXFAZWFP5RMCKBT6NVIPYOPDRO62FYGYH5IAL, holds bond units, redeems to raise cash, and values the position from the EF_BOND feed through the Oracle Adapter. Cost basis and market value are separate reads on purpose: get_exposure is what the caps are measured on, oracle_value is what the feed validates, price_drift_bps is the gap."
       },
       "cross-chain": {
         "address": "CDSO4GJRY7BFVMQ4PYP3ISVOFPQLPA3C7ZFT5HQOUDM3VXTGOUWUWFML",

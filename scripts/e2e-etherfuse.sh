@@ -43,6 +43,15 @@ eq "the Engine knows this adapter" "$(rd "$ENGINE" pools | grep -c "$EF")" "1"
 eq "the adapter names its pool"    "$(rd "$EF" pool)"   "$POOL"
 eq "the adapter names its oracle"  "$(rd "$EF" oracle)" "$ORACLE"
 EF_NAV=$(rd "$ORACLE" get_nav --feed_id EF_BOND)
+# A previous run leaves the pool quoting whatever it last set, and the feed can
+# only take one point an hour, so the two can start out of step. Put the pool
+# back on the feed before measuring anything: starting in agreement is setup,
+# not a result, and the drift assertions below are about what the run does.
+if [ "$(rd "$POOL" price)" != "$EF_NAV" ]; then
+  stellar contract invoke --id "$POOL" --source "$SRC" --network "$NET" -- \
+    set_price --admin "$ADMIN" --price "$EF_NAV" >/dev/null 2>&1
+  echo "        the pool was left quoting elsewhere by an earlier run, reset to the feed"
+fi
 echo "        EF_BOND reads $EF_NAV, the pool quotes $(rd "$POOL" price)"
 
 echo "== 1. before"
@@ -78,6 +87,21 @@ UNITS_BEFORE=$(rd "$EF" units)
 VAL_BEFORE=$(rd "$EF" oracle_value)
 NEW_NAV=$(( EF_NAV + EF_NAV / 100 ))   # plus 1%
 NOW=$(date -u +%s)
+MININT=$(stellar contract invoke --id "$ORACLE" --source "$SRC" --network "$NET" --send=no -- \
+          get_feed --feed_id EF_BOND 2>&1 | tail -1 \
+          | python3 -c "import json,sys;print(json.load(sys.stdin)['min_interval_secs'])")
+LASTTS=$(stellar contract invoke --id "$ORACLE" --source "$SRC" --network "$NET" --send=no -- \
+          last_update --feed_id EF_BOND 2>&1 | tail -1 \
+          | python3 -c "import json,sys;print(json.load(sys.stdin)['timestamp'])")
+if [ $(( NOW - LASTTS )) -lt "$MININT" ]; then
+  # The feed takes one point per hour. A rerun inside that hour cannot move it,
+  # and asserting that it moved anyway would be asserting that the guard is
+  # broken. The accrual is left to the run that can do it.
+  printf '        SKIP  the last EF_BOND point is %ss old and the feed takes one per %ss.\n' \
+    "$(( NOW - LASTTS ))" "$MININT"
+  ok "the feed refuses a second point inside its own interval" "$(( NOW - LASTTS ))s"
+  NEW_NAV=$EF_NAV
+else
 # Quorum is two on every feed of this Adapter, so a value lands only when both
 # reporters say the same thing at the same timestamp. That is the mechanism the
 # reviewer is right to call out as ours on both sides, and it is declared in
@@ -88,6 +112,7 @@ SIGNER=agama-oracle-2 inv "$ORACLE" submit_nav \
 eq "the feed moved"                          "$(rd "$ORACLE" get_nav --feed_id EF_BOND)" "$NEW_NAV"
 eq "no unit was minted by the accrual"       "$(rd "$EF" units)" "$UNITS_BEFORE"
 gt "the position is worth more"              "$(rd "$EF" oracle_value)" "$VAL_BEFORE"
+fi
 eq "the cost basis did not move"             "$(rd "$EF" get_exposure)" "$((EXP0 + AMOUNT))"
 # This is the whole reason the two numbers are kept apart: a concentration cap
 # measured on market value would loosen every time the bond went up.

@@ -120,7 +120,7 @@ Network: **Stellar Testnet** · RPC: `https://soroban-testnet.stellar.org`
 | Adapter | Originator | Jurisdiction | Address |
 |---|---|---|---|
 | Private Credit | QIRO | LU | [`CDNWXGSS...WLP3VE`](https://stellar.expert/explorer/testnet/contract/CDNWXGSSP3BOAIKIYTGDHST2BBSZNWIW6RMDQERM3HOQ24EO43WLP3VE) |
-| Etherfuse | ETHERFUS | MX | [`CCXO2ZIM...KM7BXN`](https://stellar.expert/explorer/testnet/contract/CCXO2ZIMK7KZMMUBE24KOLWDJHVXQKXDNEP4QH7N5ZK5U6ESCWKM7BXN) |
+| Etherfuse | ETHERFUS | MX | [`CDNR4WLE...H6EEMI`](https://stellar.expert/explorer/testnet/contract/CDNR4WLEOIP5J2ZD6RQ6UQ2JU6I6E4YPE33DOC7N6ORXZAASRVH6EEMI) |
 | Cross chain | ABF | JE | [`CDSO4GJR...WUWFML`](https://stellar.expert/explorer/testnet/contract/CDSO4GJRY7BFVMQ4PYP3ISVOFPQLPA3C7ZFT5HQOUDM3VXTGOUWUWFML) |
 
 The cross chain adapter is the one whose capital does not stay on Stellar: `allocate`
@@ -1265,7 +1265,7 @@ Engine that carries this had `total_allocated` of zero until these runs.
 | On-chain concentration caps | Same script. A pool is filled to 40% of net assets and the next allocation is refused with `#407 PoolCapExceeded`, read off the ledger rather than asserted here |
 | On-chain reserve floor | Same script. Both pools have to be driven near their caps before the floor is the thing refusing, which the script does and documents: the refusal is `#410 ReserveFloorBreached`, distinct from `#411 InsufficientReserves`, which is the Vault saying it does not hold that much |
 | The floor cannot be lowered by recognising a loss | The floor is a share of `floor_base`, net assets plus everything ever written off. `cargo test -p vault` and `cargo test -p allocation-engine` cover it; the finding that forced it is M1 under The Medium Findings |
-| Etherfuse adapter | `CCXO2ZIM...`. Registered on the Engine, cap 4000 bps, originator ETHERFUS, jurisdiction MX. Answers `settlement_window() → (0, 0)`, redemption being on-chain |
+| Etherfuse adapter | `CDNR4WLE...`. Registered on the Engine, cap 4000 bps, originator ETHERFUS, jurisdiction MX. Subscribes the capital it is given into a Stablebond pool and holds bond units, rather than incrementing an exposure counter as `CCXO2ZIM...` did. `get_exposure()` is the cost basis the caps are measured on, `oracle_value()` is the position at the EF_BOND feed, `price_drift_bps()` is the gap between the feed and the pool's own quote. Answers `settlement_window() → (0, 0)`, redemption being on-chain |
 | Private credit adapter | `CDNWXGSS...`. Registered on the Engine, cap 4000 bps, originator QIRO, jurisdiction LU. Answers `settlement_window() → (15, 90)` |
 | An adapter cannot be registered against the wrong Engine or Vault | `register_pool` refuses an adapter that does not name this Engine and this Engine's Vault, and `allocate`, `deallocate` and `recover` re-run that check rather than resting on registration. Covered in `cargo test -p allocation-engine` |
 | Oracle Adapter with live feeds | `CAUOHPPN...`, three feeds answering: `USDC_USD`, `PC_NAV` which the Vault reads, and `EF_BOND`. `bash scripts/check-ttl.sh` catches the deployment archiving; the keeper at `scripts/keeper-oracle.sh` runs every ten minutes under launchd and resubmits each feed's existing value once half its staleness window is gone |
