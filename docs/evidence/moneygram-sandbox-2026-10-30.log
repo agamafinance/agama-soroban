@@ -72,3 +72,49 @@ rather than an assertion.
   That is the onboarding the award refers to when it names the SDF Stellar Test
   Anchor as covering these flows during it. The Test Anchor round trip is in
   docs/evidence/anchor-roundtrip-2026-10-30.log and is closed end to end.
+
+== Addendum, same evening: client domain attestation
+
+The RMP-01 above had a cause, and it was ours rather than theirs.
+
+MoneyGram identifies the wallet provider driving a SEP-10 session through
+`client_domain`. Asked for one, their auth endpoint answered precisely:
+
+  GET .../auth?account=GC35EAQJ...&client_domain=agama.finance
+  400 {"error":"Unable to read client_domain's SIGNING_KEY"}
+
+Because https://agama.finance/.well-known/stellar.toml was a 404. The mechanism
+is attestation and not a claim: the client names its domain, the anchor fetches
+that file, reads SIGNING_KEY, adds a second ManageData operation naming the
+domain, and requires the challenge to carry that key's signature as well as the
+account's. A client asserting a domain it does not control cannot produce it.
+
+So the file now exists, served from prod/public/.well-known and copied
+explicitly by prod/deploy.sh because a dot-directory is what an exporter drops
+quietly:
+
+  https://agama.finance/.well-known/stellar.toml      HTTP 200
+  SIGNING_KEY   GCGRQ2LCB4RJ65XNKKIWGHLK3TDHPM7LNKX5DN4SRJH6K5NGQTS6YOSG
+  ORG_NAME      Agama Labs Inc.
+  ORG_DBA       Agama Finance
+
+That key signs SEP-10 challenges and nothing else. It holds no balance, issues
+no asset, and is admin of no contract.
+
+anchor/sep_client.py takes --client-domain and --client-domain-key, and it
+verifies before it co-signs: the challenge has to carry a client_domain
+operation and that operation has to name the domain we asked for. An anchor
+that quietly dropped it would otherwise have us spending the domain signature
+on a session that does not carry the domain.
+
+With that in place, against the same anchor:
+
+  SEP-10    JWT received, and it now carries   client_domain: agama.finance
+  SEP-24    transaction 58622f3f-b0d5-41de-839c-3bb4fe656c2f
+  widget    renders the calculator, "Finding nearby locations...", then
+            Error code: RMP-01, RMP-02
+
+So the attestation moved it forward: the widget got far enough to try, where
+before it failed immediately. What remains is the partner whitelist, and the
+ask is now exact rather than general: whitelist agama.finance as a wallet
+provider on the Stellar SEP path, not the widget path.

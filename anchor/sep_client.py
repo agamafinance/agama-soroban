@@ -107,13 +107,30 @@ def secret_of(name):
     return r.stdout.strip()
 
 
-def authenticate(home_domain, secret, verbose=True):
-    """SEP-10, with the challenge verified before it is signed."""
+def authenticate(home_domain, secret, verbose=True, client_domain=None, client_domain_secret=None):
+    """SEP-10, with the challenge verified before it is signed.
+
+    `client_domain` is how an anchor learns which wallet provider is driving the
+    session, and some of them need it. MoneyGram is one: without it their widget
+    opens with `wallet_provider=` empty and fails with their error RMP-01,
+    because there is no partner for it to resolve. The mechanism is attestation
+    rather than a claim: the client names its domain, the anchor fetches
+    `https://<domain>/.well-known/stellar.toml`, reads the `SIGNING_KEY` there,
+    adds a second `ManageData` operation naming the domain, and requires the
+    challenge to carry that key's signature as well as the account's. A client
+    that merely asserts a domain it does not control cannot produce it.
+
+    So two signatures go back: the account's, which says who is transacting, and
+    the domain's, which says who is operating the client.
+    """
     t = toml_of(home_domain)
     endpoint = t["WEB_AUTH_ENDPOINT"]
     kp = Keypair.from_secret(secret)
 
-    r = requests.get(endpoint, params={"account": kp.public_key, "home_domain": home_domain}, timeout=TIMEOUT)
+    params = {"account": kp.public_key, "home_domain": home_domain}
+    if client_domain:
+        params["client_domain"] = client_domain
+    r = requests.get(endpoint, params=params, timeout=TIMEOUT)
     r.raise_for_status()
     body = r.json()
     challenge_xdr = body["transaction"]
@@ -135,6 +152,25 @@ def authenticate(home_domain, secret, verbose=True):
     if parsed.client_account_id != kp.public_key:
         raise SystemExit("challenge names a different account, refusing to sign")
 
+    # The client_domain operation, when one was asked for. Checked rather than
+    # assumed: an anchor that quietly dropped it would leave us co-signing with
+    # the domain key for a session that does not carry the domain, and the
+    # signature would be spent proving nothing.
+    domain_op = None
+    for op in env.transaction.operations:
+        name = getattr(op, "data_name", None)
+        if name == "client_domain":
+            domain_op = op
+    if client_domain and domain_op is None:
+        raise SystemExit(
+            f"asked for client_domain={client_domain} and the challenge carries none, "
+            "so the domain signature would prove nothing")
+    if domain_op is not None:
+        declared = bytes(domain_op.data_value).decode()
+        if declared != client_domain:
+            raise SystemExit(
+                f"the challenge names client_domain={declared}, not {client_domain}")
+
     if verbose:
         print(f"  challenge from   {t['SIGNING_KEY']}")
         print(f"  for account      {parsed.client_account_id}")
@@ -143,8 +179,15 @@ def authenticate(home_domain, secret, verbose=True):
         print(f"  time bounds      {env.transaction.preconditions.time_bounds.min_time}"
               f" to {env.transaction.preconditions.time_bounds.max_time}")
         print(f"  server signature verified against SIGNING_KEY")
+        if domain_op is not None:
+            print(f"  client domain    {client_domain}, co-signed by its own SIGNING_KEY")
 
     env.sign(kp)
+    if domain_op is not None:
+        if not client_domain_secret:
+            raise SystemExit(
+                f"the challenge requires {client_domain}'s SIGNING_KEY and none was given")
+        env.sign(Keypair.from_secret(client_domain_secret))
     r = requests.post(endpoint, json={"transaction": env.to_xdr()}, timeout=TIMEOUT)
     if r.status_code != 200:
         raise SystemExit(f"auth refused {r.status_code}: {r.text[:300]}")
@@ -155,9 +198,12 @@ def authenticate(home_domain, secret, verbose=True):
     return token, claims, t
 
 
-def interactive(home_domain, secret, kind, asset_code, amount, extra=None):
+def interactive(home_domain, secret, kind, asset_code, amount, extra=None,
+                client_domain=None, client_domain_secret=None):
     """SEP-24 /transactions/{deposit,withdraw}/interactive."""
-    token, claims, t = authenticate(home_domain, secret, verbose=False)
+    token, claims, t = authenticate(home_domain, secret, verbose=False,
+                                    client_domain=client_domain,
+                                    client_domain_secret=client_domain_secret)
     base = t["TRANSFER_SERVER_SEP0024"].rstrip("/")
     kp = Keypair.from_secret(secret)
     payload = {"asset_code": asset_code, "account": kp.public_key}
@@ -270,8 +316,14 @@ def main():
     ap.add_argument("--amount", default=None)
     ap.add_argument("--id", default=None)
     ap.add_argument("--wait", type=int, default=0, help="seconds to poll before giving up")
+    ap.add_argument("--client-domain", default=None,
+                    help="the wallet provider's domain, for anchors that need to know who is driving")
+    ap.add_argument("--client-domain-key", default=None,
+                    help="stellar CLI identity holding that domain's SIGNING_KEY")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args()
+
+    cd_secret = secret_of(a.client_domain_key) if a.client_domain_key else None
 
     if a.action == "toml":
         t = toml_of(a.home_domain)
@@ -289,7 +341,9 @@ def main():
     secret = secret_of(a.secret_name)
 
     if a.action == "auth":
-        token, claims, _ = authenticate(a.home_domain, secret)
+        token, claims, _ = authenticate(a.home_domain, secret,
+                                        client_domain=a.client_domain,
+                                        client_domain_secret=cd_secret)
         print()
         print(f"  JWT received, {len(token)} characters")
         for k in ("iss", "sub", "iat", "exp", "client_domain", "home_domain"):
@@ -314,7 +368,9 @@ def main():
         print(json.dumps(tx, indent=1) if a.json else f"  final status {tx['status']}")
         return
 
-    res, token, base = interactive(a.home_domain, secret, a.action, a.asset_code, a.amount)
+    res, token, base = interactive(a.home_domain, secret, a.action, a.asset_code, a.amount,
+                                   client_domain=a.client_domain,
+                                   client_domain_secret=cd_secret)
     print(f"  type             {res.get('type')}")
     print(f"  transaction id   {res.get('id')}")
     print(f"  interactive url  {res.get('url')}")
