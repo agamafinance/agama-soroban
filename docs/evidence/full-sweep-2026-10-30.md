@@ -113,22 +113,73 @@ rather than discovered again.
 | `e2e-cctp-transfer`, `e2e-stellar-to-evm`, `e2e-evm-to-stellar` | each burns the Vault's USDC through CCTP and cannot be undone from Stellar. That adapter is declared out of scope and already holds a position that `deallocate` refuses with `ReturnNotArrived`. Running them adds to it. |
 | `e2e-oracle-staleness` | correct by design and it says so: it waits 61 minutes for the USDC_USD window to close, because the honest version of that test is to wait |
 
-## One thing still open, and it is not a suite bug
+## The one that looked open, and was me reading the wrong file
 
-The deployed Vault, Allocation Engine and private credit adapter do not
-reproduce byte for byte from this tree. The Etherfuse adapter does, exactly, and
-it was deployed from this tree today, which is what proves the build is
-reproducible and the other three genuinely differ.
+This section replaces what stood here first, which said that six of the seven
+deployed contracts did not reproduce from this tree. They all do. The
+correction is kept visible rather than quietly swapped, because the way I got
+it wrong is the useful part.
 
-- **Vault**: the tree is ahead by the peg gate, four entry points the ledger
-  does not have. Deliberate, tested, demonstrated in `e2e-peg-gate.sh`.
-- **Engine and private credit**: same interface on both sides, different code
-  section. Not from this session's work and nothing in the record declares it.
+There are two artefacts per contract. The compiler writes
+`target/wasm32v1-none/release/deps/<name>.wasm`, and the CLI post-processes
+that into `target/wasm32v1-none/release/<name>.wasm`, stamped with `cliver`.
+The CLI did not always do the second step, so everything deployed before it is
+the raw artefact and everything deployed since is the optimised one:
 
-`smoke-mediums.sh` is the suite that checks this and it is right to fail. The
-record's `pendingRedeployment` convention does not cover it, because that
-convention only permits differences outside the code section. Closing it means
-either redeploying those two from this tree, which is cheap because the Engine
-holds no funds and that adapter holds nothing, or extending the record with a
-category that says the tree is ahead of the ledger and where that is proven.
-It is a decision, so it is written here rather than taken.
+```
+engine, private-credit, staking, oracleAdapter, cctpAdapter   deps/     raw
+etherfuse, deployed 2026-10-30 with CLI 28.1.0                release/  optimised
+vault                                                         neither
+```
+
+I compared against the optimised path only, found five contracts that did not
+match, and went through four wrong explanations before stopping: a dirty
+incremental build (no, `cargo clean` reproduces byte-identically), a toolchain
+drift (no, 1.98.1 and SDK 23.5.3#d3e1ab24 on both sides), a host interface
+change (no, `contractenvmetav0` is byte-identical), and the old
+`wasm32-unknown-unknown` target (no, that does not reproduce either). Then I
+wrote five `pendingRedeployment` declarations asserting something untrue.
+
+`check-deployment-record.sh` had already found this and says so in a comment
+that ends: *"Checking only one of the two is how seven live contracts came to
+look as though they no longer rebuilt, for weeks, with no source change behind
+it."* Running `--wasm`, the mode the claim is actually attached to, reads **77
+passed, 0 failed**, which is the number the Tranche 1 evidence has always
+claimed. The claim was right; the check I invented was not.
+
+What is true is one line. **Every deployed contract rebuilds from this tree
+byte for byte except the Vault, where the tree is ahead by four entry points**,
+`set_peg_feed`, `peg_feed`, `peg_tolerance_bps` and `peg`. That is declared
+under `treeAheadOfLedger` and verified as an interface delta both ways: the
+tree's extra entry points must be exactly the declared list, and the ledger
+must hold nothing the tree has dropped.
+
+Two things came out of the detour that are worth keeping. `smoke-mediums` was
+comparing against one artefact and now tries both and names which matched, so
+it no longer disagrees with `check-deployment-record` about whether the ledger
+matches the source. And a failed `contract fetch` used to leave the previous
+contract's wasm in `/tmp`, so agUSD was compared against the Vault's bytecode
+and reported as diverging; it is cleared first now, and a Stellar Asset
+Contract is skipped with its reason, because the host supplies that code and
+there is nothing of ours to compare.
+
+## What the capital constraint still costs
+
+The suites that remain red on a chained run are red for one reason, and it is
+the operator's balance sheet rather than the protocol.
+
+`GBSX2ZFL` is both the sagUSD market maker and the account every suite spends
+from. Its USDC-side offers commit most of the balance as selling liabilities,
+and a trustline's balance counts what its own offers have locked, so the
+account reads funded and can transfer almost nothing. With about 167 USDC
+spendable, `smoke-hardening` deposits all of it and the three assertions that
+follow the deposit fail when an offer re-locks part of it mid-run, and
+`e2e-generation3` stops at its 20 USDC precondition.
+
+Freeing it by hand works and is what made the rest of this sweep possible, but
+the real fix is structural and is not a code change: **the market maker and the
+suite runner should not be the same key.** `lib-ensure-usdc` now measures
+spendable rather than held and says how much is locked and where, which turns
+this from a cascade of false protocol failures into one legible message, and
+`keeper-sagusd-book` keeps a reserve. Neither makes one key enough for both
+jobs.
