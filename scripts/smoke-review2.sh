@@ -570,6 +570,17 @@ if [ "$SHORT" -gt 0 ]; then
   # is booked rather than left as a balance the accounting ignores.
   echo "    booked as a recovery tx $(tx "$ENGINE" book_recovery --admin "$ADMIN" --pool_id "$PC" --amount "$SHORT")"
 fi
+# agUSD is a classic asset and the contract address is its Stellar Asset
+# Contract, so an account that has never held it has no trustline and the
+# transfer fails with #13, "trustline entry is missing for account". That is
+# the SAC refusing, not the token or the Vault, and it took every assertion
+# after it down with a number that looked like a protocol fault. Opened here,
+# idempotently: change-trust on a line that already exists is a no-op.
+AGUSD_ISSUER=$(j "d['agusdClassic']['issuer']")
+for who in $STUCK $OTHER; do
+  stellar tx new change-trust --source-account $who --network $NET \
+    --line "agUSD:$AGUSD_ISSUER" >/dev/null 2>&1
+done
 echo "    agUSD to bob     tx $(tx "$AGUSD" transfer --from "$ADMIN" --to "$STUCK_ADDR" --amount "$CLAIM")"
 echo "    agUSD to alice   tx $(tx "$AGUSD" transfer --from "$ADMIN" --to "$OTHER_ADDR" --amount "$CLAIM")"
 
