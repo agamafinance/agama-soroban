@@ -977,5 +977,56 @@
       "script": "scripts/e2e-peg-gate.sh",
       "note": "Not part of the protocol and not pointed at by anything. The peg gate is in the Vault source with nine unit cases, and the deployed Vault predates it: no contract in this repository has an upgrade entry point, so carrying it to the live instance means the generation migration in scripts/deploy-vault-generation.sh, which retires the Vault, agUSD and staking and is a decision rather than a deployment step. This is the same wasm, built from the same tree, deployed on its own so the gate can be demonstrated on chain without retiring anything. It uses its own feed, PEGTEST, so that moving a price around to show a refusal does not put invented points into the history of USDC_USD, which is sourced from Reflector and has to stay sourced. It cannot show a successful deposit, having no agUSD to mint, and that is the cleaner demonstration: require_peg runs before the mint, so PegBroken (331) means the gate refused and NotInitialized (301) means it let the call through."
     }
-  }
+  },
+  "pendingRedeployment": [
+    {
+      "contract": "engine",
+      "address": "CBDVZPMBUQQ6OML3WTT4TP6QIOJDRC4BWYXR7UZQAAZG2LETAVZE6FFD",
+      "specMatchesTree": true,
+      "ledgerCodeSection": "c9ba96a3555dde2e3f582c358475b4de44101cc5f0a7e690b7afcf6ac8279f02",
+      "reason": "The deployed bytecode does not reproduce from this tree, and what differs is the build tool rather than the source. Checked, on 2026-10-30, with a deterministic build: cargo clean then a full rebuild gives byte-identical artefacts, so the local side is not an incremental-build artefact. rsver and rssdkver read 1.98.1 and 23.5.3#d3e1ab24 on both sides, contractenvmetav0 is byte-identical, and contractspecv0 is byte-identical, so the interface and every doc comment in it match exactly. The difference is confined to the code section, which is smaller locally, plus a DataCount section and a second contractmetav0 entry that only the local build has. That is the signature of a newer stellar CLI post-processing the module: the contracts here were deployed with an older one, and the Etherfuse adapter, deployed from this tree on 2026-10-30 with CLI 28.1.0, reproduces byte for byte, which is what proves the build itself is reproducible and these five predate the tool."
+    },
+    {
+      "contract": "private-credit",
+      "address": "CDNWXGSSP3BOAIKIYTGDHST2BBSZNWIW6RMDQERM3HOQ24EO43WLP3VE",
+      "specMatchesTree": true,
+      "ledgerCodeSection": "a07128158868dfa7d6f20d304856d6c2bd840d3e40f179b57c3297bbb58cd1d7",
+      "reason": "The deployed bytecode does not reproduce from this tree, and what differs is the build tool rather than the source. Checked, on 2026-10-30, with a deterministic build: cargo clean then a full rebuild gives byte-identical artefacts, so the local side is not an incremental-build artefact. rsver and rssdkver read 1.98.1 and 23.5.3#d3e1ab24 on both sides, contractenvmetav0 is byte-identical, and contractspecv0 is byte-identical, so the interface and every doc comment in it match exactly. The difference is confined to the code section, which is smaller locally, plus a DataCount section and a second contractmetav0 entry that only the local build has. That is the signature of a newer stellar CLI post-processing the module: the contracts here were deployed with an older one, and the Etherfuse adapter, deployed from this tree on 2026-10-30 with CLI 28.1.0, reproduces byte for byte, which is what proves the build itself is reproducible and these five predate the tool."
+    },
+    {
+      "contract": "staking",
+      "address": "CBOHG5YGAE7ORFDE5GIUN6MYYSXMHYWGLZTH3Y563HZCBBWFVQ4CACV3",
+      "specMatchesTree": true,
+      "ledgerCodeSection": "8b38f807810ee9bff10f43b024c5d46935f5e7a7ff5ac79f8fabd921d63f392a",
+      "reason": "The deployed bytecode does not reproduce from this tree, and what differs is the build tool rather than the source. Checked, on 2026-10-30, with a deterministic build: cargo clean then a full rebuild gives byte-identical artefacts, so the local side is not an incremental-build artefact. rsver and rssdkver read 1.98.1 and 23.5.3#d3e1ab24 on both sides, contractenvmetav0 is byte-identical, and contractspecv0 is byte-identical, so the interface and every doc comment in it match exactly. The difference is confined to the code section, which is smaller locally, plus a DataCount section and a second contractmetav0 entry that only the local build has. That is the signature of a newer stellar CLI post-processing the module: the contracts here were deployed with an older one, and the Etherfuse adapter, deployed from this tree on 2026-10-30 with CLI 28.1.0, reproduces byte for byte, which is what proves the build itself is reproducible and these five predate the tool. Redeploying this one is not free: it holds 3487650919 shares against a NAV of 5985072233 for holders who are not all ours, and its set_agusd guard freezes at the first stake, so a replacement needs the position unwound first."
+    },
+    {
+      "contract": "oracleAdapter",
+      "address": "CAUOHPPNHUIYQI3KIVPLP75CGWKFBGSXK3RW75UO52PKY3YKQRTWIQUS",
+      "specMatchesTree": true,
+      "ledgerCodeSection": "3ea5a6330ddd6563f2c93f2a56394351adc0185061424c46ab2c566faeaff260",
+      "reason": "The deployed bytecode does not reproduce from this tree, and what differs is the build tool rather than the source. Checked, on 2026-10-30, with a deterministic build: cargo clean then a full rebuild gives byte-identical artefacts, so the local side is not an incremental-build artefact. rsver and rssdkver read 1.98.1 and 23.5.3#d3e1ab24 on both sides, contractenvmetav0 is byte-identical, and contractspecv0 is byte-identical, so the interface and every doc comment in it match exactly. The difference is confined to the code section, which is smaller locally, plus a DataCount section and a second contractmetav0 entry that only the local build has. That is the signature of a newer stellar CLI post-processing the module: the contracts here were deployed with an older one, and the Etherfuse adapter, deployed from this tree on 2026-10-30 with CLI 28.1.0, reproduces byte for byte, which is what proves the build itself is reproducible and these five predate the tool. Redeploying this one loses every feed's history and its quorum configuration, which the Vault and the yield keeper both read."
+    },
+    {
+      "contract": "cctpAdapter",
+      "address": "CDSO4GJRY7BFVMQ4PYP3ISVOFPQLPA3C7ZFT5HQOUDM3VXTGOUWUWFML",
+      "specMatchesTree": true,
+      "ledgerCodeSection": "e70190d882a8e6c34a90387fcb8a73c8303663a7066018944631f90903afc5e6",
+      "reason": "The deployed bytecode does not reproduce from this tree, and what differs is the build tool rather than the source. Checked, on 2026-10-30, with a deterministic build: cargo clean then a full rebuild gives byte-identical artefacts, so the local side is not an incremental-build artefact. rsver and rssdkver read 1.98.1 and 23.5.3#d3e1ab24 on both sides, contractenvmetav0 is byte-identical, and contractspecv0 is byte-identical, so the interface and every doc comment in it match exactly. The difference is confined to the code section, which is smaller locally, plus a DataCount section and a second contractmetav0 entry that only the local build has. That is the signature of a newer stellar CLI post-processing the module: the contracts here were deployed with an older one, and the Etherfuse adapter, deployed from this tree on 2026-10-30 with CLI 28.1.0, reproduces byte for byte, which is what proves the build itself is reproducible and these five predate the tool. And this one cannot be repointed at a new Engine at all while it holds its position: set_counterparties requires the adapter to be empty, and deallocate refuses with ReturnNotArrived because the USDC was burned through CCTP and has not come back."
+    }
+  ],
+  "treeAheadOfLedger": [
+    {
+      "contract": "vault",
+      "address": "CCVNCXPJXCA5GKJKNUNZRMJEEWYL74ASYYTL2DULPO5TZDGSHUPZTTJF",
+      "entryPointsNotDeployed": [
+        "set_peg_feed",
+        "peg_feed",
+        "peg_tolerance_bps",
+        "peg"
+      ],
+      "provenBy": "scripts/e2e-peg-gate.sh",
+      "reason": "A different statement from the five above, kept apart from them on purpose. The tree is ahead of the ledger here by a feature, not behind it by a build tool: the peg gate reads USDC_USD on every deposit and refuses outside 200 bps of par, which is what Tranche 2 Deliverable 2's Reflector feed is for. contractspecv0 therefore differs, by exactly those four entry points and their doc comments, and the difference is checkable as an interface delta rather than asserted. No contract in this repository has an upgrade entry point, by design, so carrying it to the live Vault means a generation migration: a new Vault, a new agUSD because agusd-core::set_minter freezes after the first mint, a redeployed staking for the same reason, and the outstanding supply redeemed first. That is scripts/deploy-vault-generation.sh and it retires the generation Tranche 2 is proven on, so it is a decision. Meanwhile the gate has nine unit cases and eleven on-chain assertions against a Vault deployed for the purpose, recorded under demonstrations.pegGate."
+    }
+  ]
 }
