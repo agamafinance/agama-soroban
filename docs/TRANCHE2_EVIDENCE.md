@@ -278,59 +278,59 @@ expire only because that feed, the peg check, is read by nothing on chain.
 Send us an address and we will fund it with testnet USDC within the day, if you
 would rather run the write path yourself than watch it in the video.
 
-## Declared: the cross-chain adapter is outside the awarded scope
+## Declared: the cross-chain adapter, what it is for, and that it goes to mainnet
 
-The Stellar reviewer asked for this in those terms, and the answer is yes, it
-is, and it does change the risk model.
+The Stellar reviewer asked for this in those terms: declare it, and say whether
+it goes to mainnet. Both answers are here, and the second one is yes.
 
-**What it is.** `adapters/cctp` is a third pool adapter registered on the
-Engine (`CDSO4GJRY7BFVMQ4PYP3ISVOFPQLPA3C7ZFT5HQOUDM3VXTGOUWUWFML`). An
-allocation to it burns the Vault's USDC through Circle's CCTP Token Messenger
-on Stellar, against a destination domain and a destination address the adapter's
-admin sets, so the capital lands in a credit book on an EVM chain.
+**One distinction first, because it changes the question.** CCTP *into* Stellar
+is funded by this award: Tranche 1 Deliverable 2 names "a bridge tab built on
+Circle CCTP for native 1:1 USDC transfers into Stellar". What is not named
+anywhere in the award is the adapter that goes the other way, and that is the
+contract this section is about.
 
-**What the award funds.** Tranche 2 Deliverable 1 names two adapters, an
-Etherfuse adapter and a private credit adapter, sharing one interface. The
-cross-chain adapter is a third one, and nothing in the award asks for it. It
-was built because CCTP is a Tranche 1 Deliverable 2 integration and the adapter
-interface made it cheap, which is a reason and not an authorisation.
+**What it is.** `adapters/cctp` is a third pool adapter registered on the Engine
+(`CDSO4GJRY7BFVMQ4PYP3ISVOFPQLPA3C7ZFT5HQOUDM3VXTGOUWUWFML`). An allocation to
+it burns the Vault's USDC through Circle's CCTP Token Messenger on Stellar,
+against a destination domain and address the adapter's admin sets, so the
+capital lands on an EVM chain.
 
-**How it changes the risk model, in three specifics rather than in general.**
+**Why it exists, said plainly.** It is not an experiment on the side. The credit
+yield this protocol distributes is produced by a protocol on EVM, which takes
+the capital off-chain, into real-world instruments, and remits back. Stellar is
+where the vault, the share accounting, the risk caps and the depositor live;
+Ethereum is where the capital has to arrive for that yield to be generated. So
+this adapter is the path the money actually takes, and it goes to mainnet
+because without it the yield in Tranche 3 has nowhere to come from.
+
+That is a larger statement than "a third adapter exists", and it is the honest
+one. It also means the private credit adapter and this one are two routes to the
+same economics rather than two different asset classes, and the award's
+Deliverable 1 wording, "private credit adapters for off-chain originator
+allocations", describes the destination rather than the rail.
+
+**How it changes the risk model, in four specifics rather than in general.**
 
 1. `set_destination` is admin-set. A compromised or mistaken admin key aims the
    next allocation at an address of its choosing, and a CCTP burn is not
-   reversible from this side. Every other adapter in this protocol can only
-   move capital to the Vault it was registered against.
+   reversible from this side. Every other adapter here can only move capital to
+   the Vault it was registered against.
 2. Capital that crosses stops being measurable by any contract on Stellar. The
-   Engine goes on carrying the exposure at cost basis and the far book is read
-   by nothing. `oracle_feed()` on this adapter answers `PC_NAV`, with the
-   rationale that the crossing is transport rather than an asset of its own,
-   and that rationale is only as good as the reporting on the far side.
+   Engine carries the exposure at cost basis and the far book is read by
+   nothing. `oracle_feed()` answers `PC_NAV`, on the rationale that the crossing
+   is transport rather than an asset of its own, and that rationale is only as
+   good as the reporting on the far side.
 3. It puts a bridge in the withdrawal path. The liquidity hierarchy the award
    describes ends in private credit repayment; here it ends in a CCTP message
    coming back, with that protocol's liveness in the way.
+4. There is no call on Stellar that can unwind a position once it has crossed.
+   This is not theoretical: see below.
 
-**Whether it goes to mainnet.** Not in Tranche 3. The Tranche 3 deliverable is
-the mainnet launch of the Vault, the Engine, the Etherfuse adapter and the
-first credit pool, and this adapter is not part of it. If it is ever proposed
-for mainnet it should arrive as its own scope with its own review, and with two
-changes to what exists today: `set_destination` behind a timelock, and an
-allowlist of destinations rather than a free field.
-
-**And what became of the position it held.** Until 2026-10-30 this adapter held
-the only live exposure in the protocol, 100000000 stroops, and the yield
-distributed in `docs/evidence/reconciliation-2026-10-30.log` was earned on it:
-computed from a private credit servicing tape against the `PC_NAV` feed, on
-capital sitting in a book on another chain, through an adapter the award does
-not fund. That was the reviewer's concern as the actual state of the book rather
-than as a hypothesis, and it is left written here rather than edited out.
-
-It is resolved, and not by the resolution anyone would have preferred.
-`deallocate` refused it with `ReturnNotArrived`, because the USDC was burned
-through CCTP and has not come back, so no call could clear it and the exposure
-would have reported face value for the life of the contract. It is written down,
-reason `CCTPBURN`, which is exactly what that entry point exists for: the loss
-is recognised rather than carried as an asset that is not there.
+**Demonstrated, not theorised.** On 2026-10-30 the 100000000 stroops this
+adapter held could not be returned. `deallocate` refused with
+`ReturnNotArrived`, because the USDC had been burned through CCTP and had not
+come back, so no call could clear it and the exposure would have reported face
+value for the life of the contract. It is written down, reason `CCTPBURN`:
 
 ```
   get_exposure(cross-chain)   0
@@ -338,13 +338,50 @@ is recognised rather than carried as an asset that is not there.
   written_off                 29238631047
 ```
 
-The charge against the pool's cap is permanent, by design, and that is the cost
-of having burned test capital across a bridge. The honest reading is that ten
-USDC left Stellar through an adapter outside the awarded scope and did not come
-back, and the book now says so.
+The charge against that pool's cap is permanent, by design, because a write-down
+reopening a cap was a finding this Engine closed. Ten USDC left Stellar through
+this adapter and did not come back, and the book says so.
+
+**What has to change before mainnet, then.** Since it is going, the two
+weaknesses above are not acceptable as they stand, and neither is a code change
+we are claiming to have made:
+
+- `set_destination` behind a timelock, so an aimed destination is visible before
+  it can be used rather than after.
+- An allowlist of destination domains and addresses rather than a free field,
+  so the admin chooses among destinations that were agreed, not any address.
+- A reporting obligation on the far side that is at least as strong as the
+  `PC_NAV` quorum here, because today the far book is read by nothing.
+
+None of those is built. They belong to the Tranche 3 scope alongside the mainnet
+launch, and naming them here is the declaration the reviewer asked for rather
+than a claim that the risk is already handled.
 
 It stays registered on testnet because unregistering it would hide it, and
 because the Engine's cap arithmetic is exercised by having a third pool.
+
+## Open, and decided: the third reporter
+
+The reviewer's other observation on Deliverable 2 was that "the 26 Oct PC_NAV
+moves came from your own two reporter keys". That is still true. The quorum on
+`PC_NAV` is two, there are exactly two reporters, and both are keys this project
+holds:
+
+```
+  GASAXCP2Z4BSK5RGPFU257FA57K47JSPD6BJYYKH3RDQ2CKYXIYQOM4H   dedicated reporter
+  GBSX2ZFLIJVE75VFWJURAXPSS4TBOV4FZ34VCRLWM2D7GKI37AD3FFNV   deployment admin
+```
+
+A two-of-two among our own keys bounds operator error, not operator intent. It
+stops one fat-fingered push and stops nothing we decide to do deliberately.
+
+The decision, recorded here rather than left as a gap: **a third reporter held
+by an originator, at mainnet.** The right third signer is not another key of
+ours and not a price oracle, because Reflector does not price private credit.
+It is the counterparty whose book the NAV describes, signing its own servicing
+figure. That makes the quorum a reduction in trust instead of a reduction in
+typos, and it is a Tranche 3 commitment because it needs one of the signed
+issuers to agree to hold a key.
 
 ## Every suite, as of 2026-10-30
 

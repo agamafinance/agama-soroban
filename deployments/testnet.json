@@ -991,5 +991,36 @@
       "provenBy": "scripts/e2e-peg-gate.sh",
       "reason": "The tree is ahead of the ledger here by a feature: the peg gate reads USDC_USD on every deposit and refuses outside 200 bps of par, which is what Tranche 2 Deliverable 2's Reflector feed is for. contractspecv0 therefore differs, by exactly those four entry points and their doc comments, and the difference is checkable as an interface delta rather than asserted. Every other deployed contract does rebuild from this tree byte for byte, against the raw compiler artefact in target/wasm32v1-none/release/deps, which is what the deploy scripts sent before the CLI grew an optimise step; the Etherfuse adapter, deployed on 2026-10-30 with CLI 28.1.0, matches the optimised artefact instead. This Vault is the only one that matches neither, and the reason is the four entry points and nothing else. No contract in this repository has an upgrade entry point, by design, so carrying the gate to the live Vault means a generation migration: a new Vault, a new agUSD because agusd-core::set_minter freezes after the first mint, a redeployed staking for the same reason, and the outstanding supply redeemed first. That is scripts/deploy-vault-generation.sh and it retires the generation Tranche 2 is proven on, so it is a decision. Meanwhile the gate has nine unit cases and eleven on-chain assertions against a Vault deployed for the purpose, recorded under demonstrations.pegGate."
     }
-  ]
+  ],
+  "decisions": {
+    "crossChainToMainnet": {
+      "answer": "yes",
+      "why": "The credit yield this protocol distributes is produced by a protocol on EVM that takes the capital off-chain into real-world instruments and remits back. Stellar holds the vault, the share accounting, the risk caps and the depositor; Ethereum is where the capital has to arrive for the yield to exist. So this adapter is the path the money takes, not an experiment beside it, and Tranche 3 has no yield without it.",
+      "requiredBeforeMainnet": [
+        "set_destination behind a timelock",
+        "an allowlist of destination domains and addresses rather than a free field",
+        "a reporting obligation on the far side at least as strong as the PC_NAV quorum here"
+      ],
+      "builtSoFar": "none of the three",
+      "note": "CCTP into Stellar is a funded Tranche 1 Deliverable 2 integration and is a different thing from this adapter, which goes the other way and is named nowhere in the award."
+    },
+    "thirdReporter": {
+      "answer": "an originator holds the third key, at mainnet",
+      "why": "Quorum on PC_NAV is two and both reporters are keys this project holds, which bounds operator error and not operator intent. The right third signer is the counterparty whose book the NAV describes, signing its own servicing figure. Not another key of ours, and not a price oracle: Reflector does not price private credit.",
+      "blockedOn": "one of the signed issuers agreeing to hold a key"
+    },
+    "pegGate": {
+      "answer": "ships with the Tranche 3 mainnet deployment",
+      "why": "The gate is in contracts/vault with nine unit cases and eleven on-chain assertions. Carrying it to the live testnet Vault means a generation migration that retires agUSD and staking, has to redeem 73388582072 stroops of outstanding agUSD first, and touches 351433725 stroops of sagUSD held by third parties, about a tenth of the supply. The mainnet Vault is deployed fresh, so the gate ships with it at no cost."
+    },
+    "codeFreeze": {
+      "answer": "after the reviewer confirms Tranche 2, not before",
+      "why": "The freeze was lifted on 2026-10-30 to answer the review, because you cannot both freeze for an audit and fix what a reviewer found. Re-freezing now risks a third thaw mid-audit if anything else comes back. The current tree is a first version and is not what goes to the auditor."
+    },
+    "moneygram": {
+      "answer": "onboarding not started as of 2026-10-30, and it is the only thing missing",
+      "evidence": "docs/evidence/moneygram-sandbox-2026-10-30.log",
+      "note": "SEP-1, SEP-10 and SEP-24 all run against extmgxanchor.moneygram.com with no onboarding. The MoneyGram Ramps widget stops at their error RMP-01 with wallet_provider empty, which is partner registration and not code."
+    }
+  }
 }
