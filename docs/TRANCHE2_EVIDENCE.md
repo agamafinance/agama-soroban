@@ -184,7 +184,10 @@ than one we hand them.
 
 One word about who ran these. The adversarial reviews this file and the
 README refer to are ours, run internally, not a third party engagement, and
-no outside party has reviewed this repository.
+no outside party has reviewed this repository. The word "auditable" survives in
+six source comments, where it means checkable by a reader and nothing more, and
+three of those are `///` doc comments that `contractspecv0` embeds, so changing
+them would move a deployed bytecode hash for a word.
 A reader who takes "adversarial review" for an outside report would be reading
 more into it than it says, so here it is said plainly.
 

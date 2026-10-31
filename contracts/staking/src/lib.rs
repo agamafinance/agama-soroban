@@ -19,8 +19,8 @@
 //! honours that commitment; it previously used `accrue_yield` and `share_price`
 //! and so did not.
 //!
-//! One correction, recorded here because the repository is going to audit and
-//! the claim is checkable. DeFindex's own vault does not publish functions
+//! One correction, recorded here because the claim is checkable and somebody
+//! will check it. DeFindex's own vault does not publish functions
 //! under either of these names. Its interface is multi-asset
 //! (`fetch_total_managed_funds`, `get_asset_amounts_per_shares`,
 //! `distribute_fees`, and strategy level `harvest`), it exposes no scalar
@@ -48,8 +48,8 @@
 //! The yield entry point is a hard rename rather than an alias. It is a state
 //! changing, admin authorized path with no on-chain caller anywhere in this
 //! workspace, so there is nothing to break, and keeping two names for one way
-//! of moving real money into the contract would mean two entry points an
-//! auditor has to check instead of one.
+//! of moving real money into the contract would mean two entry points a reader
+//! has to check instead of one.
 //!
 //! # The agUSD pointer
 //!

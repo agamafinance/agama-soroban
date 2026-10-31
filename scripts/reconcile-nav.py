@@ -142,7 +142,7 @@ def main():
     out = value(rows, as_of)
     # The tape is the input to a number that moves money, so its digest travels
     # with the result. A NAV that cannot be tied back to a specific file is a
-    # NAV nobody can audit.
+    # NAV nobody can check.
     with open(a.tape, "rb") as fh:
         out["tape"] = a.tape
         out["tape_sha256"] = hashlib.sha256(fh.read()).hexdigest()

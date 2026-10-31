@@ -51,7 +51,13 @@ Proved on testnet rather than argued. `bash scripts/e2e-two-originators.sh`,
 **13 passed, 0 failed**: two instances answering `PC_NAV` and `PC_NAV2`, two
 originators and two jurisdictions on the Engine, both feeds bounded and at
 quorum two, the keeper showing three feed groups with the new exposure under its
-own, and a funded instance refusing to be repointed with `#605`.
+own, and a funded instance refusing to be repointed with `#605 NotEmpty`.
+
+That last one is on chain only when the instance holds capital. The suite prints
+a `SKIP` with its reason on an empty book rather than asserting through it, so
+the refusal is carried unconditionally by two unit cases instead:
+`the_feed_moves_only_while_the_adapter_is_empty`, which also checks the feed did
+not move and that it does move once empty, and `only_the_admin_moves_the_feed`.
 
 One honest detail about "one wasm". The first instance, `CDNWXGSS`, was
 deployed before the feed became a constructor parameter, so it carries the
