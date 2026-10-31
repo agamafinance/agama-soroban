@@ -229,13 +229,23 @@ the code did are corrected above.
 | `bash scripts/keeper-etherfuse.sh` | `EF_BOND` from Etherfuse's USTRY, five sources agreeing around their median |
 | `bash scripts/keeper-oracle.sh` | dispatches the two above, reports PC_NAV's window |
 
-Every figure above was measured in one serial pass. Serially and not in
-parallel, because the suites take an exclusive lock on the deployment and two at
-once collide on the account's sequence number: run together they reported
-smoke-review2 at 35 passed 10 failed and smoke-mediums at 40 passed 6 failed,
-and the same two alone reported 45 and 61 with nothing failing. The repository
-documents that trap and it still caught us, so it is written here beside the
-numbers rather than left for the next reader to rediscover.
+Every figure above was measured in one serial pass, the last of them on
+2026-10-31. Serially and not in parallel, because the suites take an exclusive
+lock on the deployment and two at once collide on the account's sequence number:
+run together they reported smoke-review2 at 35 passed 10 failed and smoke-mediums
+at 40 passed 6 failed, and the same two alone reported 45 and 61 with nothing
+failing. The repository documents that trap and it still caught us, so it is
+written here beside the numbers rather than left for the next reader to
+rediscover.
+
+The same trap has a smaller version that is worth naming, because it produced a
+red line during this pass. `verify-tranche2` read `nav`, `total_shares` and
+`exchange_rate` as three separate calls and compared the ratio, and a yield
+distribution landing between the second and the third reported a 0.47% mismatch
+on an invariant that is exact. It re-reads once before calling that a failure
+now: a ratio that disagrees twice is a broken invariant, one that disagrees once
+is a transaction that landed mid read. The numbers agreed to the stroop a minute
+later.
 
 Three of the reviewer's seven items were fixes to numbers that were wrong rather
 than missing, and those are the ones worth re-reading: the keeper applying one
