@@ -245,7 +245,7 @@ echo "-- which also keeps the demonstration off the live pools."
 # read as a contract refusing rather than as a script never building its pool.
 EXPLOIT_POOL=$(stellar contract deploy --wasm target/wasm32v1-none/release/private_credit.wasm \
   --source $SRC --network $NET \
-  -- --admin "$ADMIN" --engine "$OLD_ENGINE" --vault "$OLD_VAULT" --usdc "$USDC" 2>&1 \
+  -- --admin "$ADMIN" --engine "$OLD_ENGINE" --vault "$OLD_VAULT" --usdc "$USDC" --feed PC_NAV 2>&1 \
   | grep -oE 'C[A-Z2-7]{55}' | tail -1)
 if [ -z "$EXPLOIT_POOL" ]; then
   echo "  the exploit pool did not deploy, so there is nothing to prove the finding on"

@@ -832,12 +832,16 @@
     "supplyIsTracked": "A Stellar Asset Contract publishes no total supply, so the staking contract counts shares itself, moving the figure on every mint and burn. Two directions of drift, and they are not symmetric. Reading high is harmless: a supply too high prices every share too low, so the contract pays out less than it holds. A holder can cause that by calling burn on the SAC directly instead of unstaking, which the contract cannot observe. Reading low is the dangerous one, because it prices every share too high and a redemption then pays more than its share of the assets, diluting everybody else. Only one thing can cause it: units that existed before this contract became the SAC's admin, which it never counted. One did, from the payment that brought the classic asset into existence, and it was burned once the gap was measured. The reconciliation is now asserted on every run of scripts/e2e-generation3.sh, against Horizon's own figure for the classic asset, which is the only number that can contradict this one."
   },
   "oracleReporters": {
-    "set": [
+    "keys": [
+      "agama-oracle-2",
+      "agama-reporter-2"
+    ],
+    "addresses": [
       "GASAXCP2Z4BSK5RGPFU257FA57K47JSPD6BJYYKH3RDQ2CKYXIYQOM4H",
       "GA47CX4UMUBAXKO35DURHPTNNFJTCHM3AYCJVUPYBOUTT4X7NWTF7WEI"
     ],
     "admin": "GBSX2ZFLIJVE75VFWJURAXPSS4TBOV4FZ34VCRLWM2D7GKI37AD3FFNV",
-    "note": "The admin is deliberately not a reporter. Changed 2026-10-31, see decisions.thirdReporter."
+    "note": "The admin is deliberately not a reporter, changed 2026-10-31: it used to be one of the two, so that single key could lower the quorum to one, remove the other reporter and post any NAV. See decisions.thirdReporter."
   },
   "cctp": {
     "note": "Circle's own CCTP V2 contracts, not Agama's. They are in this record for the same reason every other address is: so there is one place an address is decided and one place a reviewer checks it. They were hardcoded in the application until October 2026, which meant the two most expensive facts here, which contract the Stellar leg calls and what mintRecipient must be, lived somewhere nothing verified.",
@@ -1016,6 +1020,18 @@
       ],
       "provenBy": "scripts/e2e-peg-gate.sh",
       "reason": "The tree is ahead of the ledger here by a feature: the peg gate reads USDC_USD on every deposit and refuses outside 200 bps of par, which is what Tranche 2 Deliverable 2's Reflector feed is for. contractspecv0 therefore differs, by exactly those four entry points and their doc comments, and the difference is checkable as an interface delta rather than asserted. Every other deployed contract does rebuild from this tree byte for byte, against the raw compiler artefact in target/wasm32v1-none/release/deps, which is what the deploy scripts sent before the CLI grew an optimise step; the Etherfuse adapter, deployed on 2026-10-30 with CLI 28.1.0, matches the optimised artefact instead. This Vault is the only one that matches neither, and the reason is the four entry points and nothing else. No contract in this repository has an upgrade entry point, by design, so carrying the gate to the live Vault means a generation migration: a new Vault, a new agUSD because agusd-core::set_minter freezes after the first mint, a redeployed staking for the same reason, and the outstanding supply redeemed first. That is scripts/deploy-vault-generation.sh and it retires the generation Tranche 2 is proven on, so it is a decision. Meanwhile the gate has nine unit cases and eleven on-chain assertions against a Vault deployed for the purpose, recorded under demonstrations.pegGate."
+    },
+    {
+      "contract": "private-credit",
+      "entryPointsNotDeployed": [
+        "set_oracle_feed"
+      ],
+      "note": "CDNWXGSS is the instance deployed before the feed became a constructor parameter, so it carries the compiled constant and does not answer set_oracle_feed. It is not being replaced: it holds a written-off charge of 29138631047, which unregister_pool refuses to erase, and that refusal is the guard working rather than an obstacle to route around. The new shape is deployed and live as private-credit-2, CBAO767N, which does answer it. One instance per originator is the design, so two instances of two generations is a true picture of the book rather than a migration left half done."
+    },
+    {
+      "contract": "allocationEngine",
+      "entryPointsNotDeployed": [],
+      "note": "No entry point changed. The Engine lists private-credit as a regular dependency and not only a dev one, so changing the adapter changed the Engine's bytecode without changing its interface. Declared rather than redeployed: a new Engine means migrating the pool registry, four pools with their originators, jurisdictions, caps, exposures and the written-off charge, for a dependency hash and no behaviour. It goes with the next deployment that has a reason of its own."
     }
   ],
   "decisions": {

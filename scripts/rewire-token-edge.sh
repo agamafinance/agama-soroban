@@ -132,7 +132,7 @@ echo ""
 echo "==> the replacement adapters, built against the Engine that is live"
 echo "-- Their constructors interrogate the Engine, so they need one that"
 echo "-- already governs this Vault, and that is the outgoing one."
-PC=$(deploy "$WASM/private_credit.wasm" --admin "$ADMIN" --engine "$OLD_ENGINE" --vault "$VAULT" --usdc "$USDC")
+PC=$(deploy "$WASM/private_credit.wasm" --admin "$ADMIN" --engine "$OLD_ENGINE" --vault "$VAULT" --usdc "$USDC" --feed PC_NAV)
 echo "    private-credit = $PC"
 EF=$(deploy "$WASM/etherfuse.wasm" --admin "$ADMIN" --engine "$OLD_ENGINE" --vault "$VAULT" --usdc "$USDC")
 echo "    etherfuse      = $EF"

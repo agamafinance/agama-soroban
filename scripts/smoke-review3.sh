@@ -129,9 +129,30 @@ refused() {
   fi
 }
 deploy() { # deploy <wasm> [ctor args...] -> contract id on stdout, tx hash on stderr
-  local out; out=$(stellar contract deploy --wasm "$1" --source $SRC --network $NET -- "${@:2}" 2>&1)
-  echo "$out" | grep -oE 'Transaction hash is [0-9a-f]{64}' | sed 's/Transaction hash is/      deploy tx/' >&2
-  echo "$out" | grep -oE 'C[A-Z2-7]{55}' | tail -1
+  # Retried once, then loud, because the quiet version cost an afternoon.
+  #
+  # This used to print nothing on failure and return an empty string. The caller
+  # reads five addresses out of one line with `read -r a b c d e`, so one empty
+  # field shifts every field after it: the pool slot ended up holding the mock
+  # USDC address, and the suite then reported ten assertion failures about an
+  # adapter that was never deployed, including "unrecognized subcommand
+  # set_counterparties" against a token contract. Ten failures pointing at the
+  # wrong thing is worse than one pointing at the right one, and a transient
+  # testnet deploy is exactly the kind of thing that happens in the middle of a
+  # suite that stands up four contracts per stack.
+  local out attempt=1
+  while [ "$attempt" -le 2 ]; do
+    out=$(stellar contract deploy --wasm "$1" --source $SRC --network $NET -- "${@:2}" 2>&1)
+    echo "$out" | grep -oE 'Transaction hash is [0-9a-f]{64}' \
+      | sed 's/Transaction hash is/      deploy tx/' >&2
+    local id; id=$(echo "$out" | grep -oE 'C[A-Z2-7]{55}' | tail -1)
+    if [ -n "$id" ]; then echo "$id"; return 0; fi
+    printf '      deploy of %s failed (attempt %s)\n' "$(basename "$1")" "$attempt" >&2
+    printf '%s\n' "$out" | tail -3 | sed 's/^/        /' >&2
+    attempt=$((attempt+1))
+  done
+  printf '  FAIL  deploy of %s did not produce a contract id\n' "$(basename "$1")" >&2
+  return 1
 }
 
 echo "== deployment under test =="
@@ -177,7 +198,7 @@ build_drifted_stack() { # build_drifted_stack <engine wasm> -> "OLDVAULT NEWVAUL
   eng=$(deploy "$engine_wasm" --admin "$ADMIN" --vault "$vault_old")
   tx "$vault_old" set_engine --admin "$ADMIN" --allocation_engine "$eng" >/dev/null
   pool=$(deploy "$WASM/private_credit.wasm" --admin "$ADMIN" --engine "$eng" \
-    --vault "$vault_old" --usdc "$tusdc")
+    --vault "$vault_old" --usdc "$tusdc" --feed PC_NAV)
   tx "$eng" set_caps --admin "$ADMIN" --pool_cap_bps "$POOL_CAP" \
     --originator_cap_bps "$ORIGINATOR_CAP" --jurisdiction_cap_bps "$JURISDICTION_CAP" >/dev/null
   tx "$eng" set_reserve_floor --admin "$ADMIN" --floor_bps "$FLOOR" >/dev/null

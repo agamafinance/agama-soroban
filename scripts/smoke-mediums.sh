@@ -259,7 +259,7 @@ assert_eq "the superseded Engine governs the superseded Vault, so the pair match
 EX_CAP=3000
 EXPLOIT_POOL=$(stellar contract deploy --wasm target/wasm32v1-none/release/private_credit.wasm \
   --source $SRC --network $NET -- --admin "$ADMIN" --engine "$OLD_ENGINE" --vault "$OLD_VAULT" \
-  --usdc "$USDC" 2>&1 | grep -oE 'C[A-Z2-7]{55}' | tail -1)
+  --usdc "$USDC" --feed PC_NAV 2>&1 | grep -oE 'C[A-Z2-7]{55}' | tail -1)
 echo "  exploit pool      $EXPLOIT_POOL"
 echo "    set_caps         tx $(tx "$OLD_ENGINE" set_caps --admin "$ADMIN" --pool_cap_bps $EX_CAP --originator_cap_bps $BPS --jurisdiction_cap_bps $BPS)"
 # The superseded pair carries the fix to the first Critical finding, so its
@@ -707,7 +707,16 @@ ZPY
   elif python3 - "$name" <<'ZPY' 2>/dev/null
 import json, sys
 d = json.load(open('deployments/testnet.json'))
-hit = [e for e in (d.get('treeAheadOfLedger') or []) if e['contract'] == sys.argv[1]]
+# Matched on a normalised name, because the record and this suite do not spell
+# these the same: the record says allocationEngine and the loop here says
+# engine, so an exact match silently reported that a declared divergence was
+# undeclared. Third time today that two spellings of one contract cost an hour,
+# so both lookups normalise now.
+def norm(x):
+    return ''.join(c for c in x.lower() if c.isalnum())
+want = norm(sys.argv[1])
+hit = [e for e in (d.get('treeAheadOfLedger') or [])
+       if norm(e['contract']) == want or want in norm(e['contract']) or norm(e['contract']) in want]
 sys.exit(0 if hit else 1)
 ZPY
   then
@@ -725,14 +734,25 @@ ZPY
     DECLARED=$(python3 - "$name" <<'ZPY' 2>/dev/null
 import json, sys
 d = json.load(open('deployments/testnet.json'))
+def norm(x):
+    return ''.join(c for c in x.lower() if c.isalnum())
+want = norm(sys.argv[1])
 for e in d.get('treeAheadOfLedger') or []:
-    if e['contract'] == sys.argv[1]:
+    n = norm(e['contract'])
+    if n == want or want in n or n in want:
         print(' '.join(sorted(e.get('entryPointsNotDeployed', []))) + ' ')
         break
 ZPY
 )
     if [ -n "$MISSING" ]; then
       bad "$name is declared as the tree being ahead, but the ledger has entry points the tree does not: $MISSING"
+    elif [ -z "$(printf '%s' "$EXTRA" | tr -d ' ')" ] && [ -z "$(printf '%s' "$DECLARED" | tr -d ' ')" ]; then
+      # Bytecode moved, interface did not. A real and different state from a
+      # missing entry point: it is what a dependency bump looks like, and the
+      # Engine lists the pool adapters as regular dependencies, so editing an
+      # adapter changes the Engine's wasm while every function it exposes stays
+      # exactly the same.
+      ok "$name: the bytecode differs, the interface does not, and the record says so"
     elif [ "$EXTRA" = "$DECLARED" ]; then
       ok "$name: the tree is ahead by exactly what the record declares ($DECLARED)"
     else

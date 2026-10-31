@@ -393,6 +393,10 @@ for name, addr, wasm in [
     ('oracleAdapter', c['oracleAdapter'], 'oracle_adapter.wasm'),
     ('cctpAdapter', c['cctpAdapter'], 'cctp_adapter.wasm'),
     ('private-credit', p['private-credit'], 'private_credit.wasm'),
+    # The second originator, same wasm. Worth comparing rather than skipping:
+    # it is the instance that proves the feed became a constructor parameter, so
+    # if its bytecode ever stops matching the tree the claim stops being true.
+    ('private-credit-2', p['private-credit-2'], 'private_credit.wasm'),
     ('etherfuse', p['etherfuse'], 'etherfuse.wasm'),
 ]:
     print(f'{name}|{addr}|{wasm}')
@@ -420,7 +424,7 @@ d = json.load(open('deployments/testnet.json'))
 compared = {'contracts.vault', 'contracts.staking',
             'contracts.allocationEngine', 'contracts.oracleAdapter',
             'contracts.cctpAdapter',
-            'poolAdapters.private-credit', 'poolAdapters.etherfuse'}
+            'poolAdapters.private-credit', 'poolAdapters.private-credit-2', 'poolAdapters.etherfuse'}
 declared = set(d.get('notCompared', {}))
 seen = []
 for group in ('contracts', 'poolAdapters', 'creditVaults'):

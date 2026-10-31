@@ -167,7 +167,7 @@ echo "    set_reserve_floor tx $(tx "$VAULT" set_reserve_floor --admin "$ADMIN" 
 
 echo ""
 echo "==> 6. pool adapters, each checking its Engine governs the Vault given"
-PC=$(deploy "$WASM/private_credit.wasm" --admin "$ADMIN" --engine "$ENGINE" --vault "$VAULT" --usdc "$USDC")
+PC=$(deploy "$WASM/private_credit.wasm" --admin "$ADMIN" --engine "$ENGINE" --vault "$VAULT" --usdc "$USDC" --feed PC_NAV)
 EF=$(deploy "$WASM/etherfuse.wasm" --admin "$ADMIN" --engine "$ENGINE" --vault "$VAULT" --usdc "$USDC")
 echo "    private-credit    = $PC"
 echo "    etherfuse         = $EF"

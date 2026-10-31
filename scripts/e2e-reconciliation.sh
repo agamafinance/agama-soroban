@@ -38,7 +38,7 @@ ORACLE=$(j "['contracts']['oracleAdapter']")
 STAKING=$(j "['contracts']['staking']")
 AGUSD=$(j "['contracts']['agusd']")
 ENGINE=$(j "['contracts']['allocationEngine']")
-PC=$(j "['poolAdapters']['privateCredit']")
+PC=$(j "['poolAdapters']['private-credit']")
 # The reporters are two dedicated keys and the admin is not one of them.
 #
 # It used to be, and that was the real hole under the reviewer's observation that
@@ -192,8 +192,11 @@ print(json.load(open('state/yield-nav.json'))['feeds'].get('PC_NAV','none'))")
     printf '              price and recorded nothing. Its last reading was %s.\n' "$RECORDED"
     ok "the keeper declined to distribute against an empty book" "exposure $PCEXP"
   fi
+  # Anchored on the whole field, because PC_NAV2 contains PC_NAV and an
+  # unanchored count of the shorter name matches the longer one's line too. That
+  # became reachable the day a second originator was deployed.
   eq "the keeper priced this pool from PC_NAV and nothing else" \
-     "$(printf '%s' "$PLAN" | grep -c 'PC_NAV')" "1"
+     "$(printf '%s' "$PLAN" | grep -cE '^ +PC_NAV +exposure')" "1"
   printf '%s' "$PLAN" | grep -q "EF_BOND" \
     && ok "the Etherfuse pool is still a line of its own" \
     || bad "the Etherfuse pool is still a line of its own"
