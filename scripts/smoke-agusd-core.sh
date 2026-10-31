@@ -219,7 +219,36 @@ echo ""
 echo "== DEPOSIT: USDC in, agUSD out 1:1 =="
 SUPPLY_BEFORE=$(agusd_supply)
 IDLE_BEFORE=$(num "$(q "$VAULT" idle_reserves)")
-U0=$(num "$(q "$USDC" balance --id "$ADMIN")")
+# Spendable, not held. The SAC's `balance` on a classic asset reports what the
+# trustline holds, and a trustline that is backing the account's own SDEX offers
+# cannot spend all of it: this deployment runs a market maker, so 291.8 USDC of
+# balance was 288.4 of selling liabilities and 3.45 actually movable. The suite
+# read 291, decided it had plenty, and the deposit came back #10 from the token,
+# which is TrustlineMissingError and reads like a missing trustline rather than
+# like an offer holding the funds. Five assertions then failed on arithmetic
+# derived from a deposit that never happened.
+#
+# Held is still the fallback: a plain trustline with no offers against it makes
+# the two numbers equal, and if Horizon cannot be reached the SAC's answer is
+# better than no answer.
+spendable_usdc() {
+  local out
+  out=$(curl -s --max-time 20 "https://horizon-testnet.stellar.org/accounts/$ADMIN" \
+    | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+for b in d.get('balances', []):
+    if b.get('asset_code') == 'USDC':
+        bal = float(b['balance']); sell = float(b.get('selling_liabilities', 0) or 0)
+        print(int(round(max(0.0, bal - sell) * 10_000_000)))
+        break
+" 2>/dev/null)
+  case "$out" in (*[!0-9]*|"") num "$(q "$USDC" balance --id "$ADMIN")";; (*) echo "$out";; esac
+}
+U0=$(spendable_usdc)
 if [ "$U0" -lt "$DEPOSIT" ]; then
   # A short balance here usually is not a short balance. An earlier run queues
   # a withdrawal and does not settle it, so the USDC is in the Vault owed to
@@ -229,10 +258,10 @@ if [ "$U0" -lt "$DEPOSIT" ]; then
   # shellcheck source=lib-ensure-usdc.sh
   . "$(dirname "$0")/lib-ensure-usdc.sh"
   ensure_usdc "$VAULT" "$USDC" "$AGUSD_CORE" "$DEPOSIT" "$SRC" "$NET" "$ADMIN" || true
-  U0=$(num "$(q "$USDC" balance --id "$ADMIN")")
+  U0=$(spendable_usdc)
 fi
 if [ "$U0" -lt "$DEPOSIT" ]; then
-  echo "  the admin holds $U0 (7dp) of USDC and the deposit is $DEPOSIT"
+  echo "  the admin can spend $U0 (7dp) of USDC and the deposit is $DEPOSIT"
   echo "  top up at https://faucet.circle.com (USDC / Stellar Testnet) for $ADMIN"
   exit 2
 fi
@@ -242,6 +271,7 @@ fi
 SUPPLY_BEFORE=$(agusd_supply)
 IDLE_BEFORE=$(num "$(q "$VAULT" idle_reserves)")
 A0=$(num "$(q "$AGUSD_CORE" balance --id "$ADMIN")")
+HELD0=$(num "$(q "$USDC" balance --id "$ADMIN")")
 R0=$(num "$(q "$VAULT" idle_reserves)")
 D0=$(num "$(q "$VAULT" deposits)")
 echo "  deposit $DEPOSIT  tx $(tx "$VAULT" deposit --from "$ADMIN" --amount "$DEPOSIT")"
@@ -253,8 +283,12 @@ assert_eq "the depositor was minted 1 agUSD per USDC" \
 assert_eq "total supply rose by the same amount" \
   "$(agusd_supply)" "$((SUPPLY_BEFORE + DEPOSIT))"
 assert_eq "the USDC is in the Vault" "$(q "$VAULT" idle_reserves)" "$((R0 + DEPOSIT))"
+# Held before against held after, not spendable before against held after. U0 is
+# the spendable figure the precondition needs and it is smaller than the
+# trustline's balance whenever an offer is backed by it, so subtracting the
+# deposit from it describes an account nobody has.
 assert_eq "and out of the depositor's account" \
-  "$(q "$USDC" balance --id "$ADMIN")" "$((U0 - DEPOSIT))"
+  "$(q "$USDC" balance --id "$ADMIN")" "$((HELD0 - DEPOSIT))"
 assert_eq "the Vault counted the deposit" "$(q "$VAULT" deposits)" "$((D0 + 1))"
 
 echo ""
@@ -307,12 +341,30 @@ assert_eq "the deposit minted exactly one agUSD per USDC" \
 # changed. Deployed capital is the Vault's own number for exactly that.
 IDLE=$(num "$(q "$VAULT" idle_reserves)")
 OUT=$(num "$(q "$VAULT" deployed_capital)")
-HELD=$(( ${IDLE:-0} + ${OUT:-0} ))
+# Plus what has been recognised as lost, which is the third place the Vault's
+# capital can be and the one this assertion was missing.
+#
+# It reported the Vault short by 72000000 while the Engine declared 100000000
+# written off, and that is not insolvency being detected, it is a write-down
+# being double counted. A write_down is the admission that capital left and is
+# not coming back: the USDC is gone, the agUSD minted against it is still
+# outstanding, and no honest accounting makes those two meet again. An invariant
+# that says a Vault is never short of what its token claims therefore cannot
+# hold on any deployment where a loss has ever been recognised, and this one has
+# a 10 USDC CCTP burn on it that is deliberately permanent.
+#
+# What is still worth asserting, and what this does assert, is that the shortfall
+# is no larger than the losses that were declared. A Vault short by more than it
+# has written off is short for a reason nobody wrote down, and that is the thing
+# worth failing on.
+LOST=$(num "$(q "$ENGINE" written_off)")
+HELD=$(( ${IDLE:-0} + ${OUT:-0} + ${LOST:-0} ))
 OWED=$(agusd_supply)
 if [ "$HELD" -ge "$OWED" ]; then
-  ok "the Vault is not short of what agUSD claims ($IDLE idle plus $OUT deployed against $OWED)"
+  ok "the Vault is short by no more than it has written off" \
+     "$IDLE idle plus $OUT deployed plus $LOST recognised as lost, against $OWED"
 else
-  bad "the Vault holds $IDLE idle plus $OUT deployed, $HELD, against $OWED of agUSD: it is short"
+  bad "the Vault holds $IDLE idle plus $OUT deployed, and declares $LOST lost, $HELD against $OWED of agUSD: short by more than anyone wrote down"
 fi
 
 echo ""
