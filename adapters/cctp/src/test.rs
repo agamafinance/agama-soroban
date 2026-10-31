@@ -265,13 +265,70 @@ fn the_destination_cannot_move_while_capital_is_deployed() {
         .try_set_destination(&f.admin, &6u32, &other)
         .is_err());
 
-    // Once the book is clear it moves.
+    // Once the book is clear it moves, and it still waits out its delay: the
+    // lock and the delay are two guards, not one, and clearing the book only
+    // answers the first of them.
     f.usdc.mint(&f.adapter_id, &(100 * USDC));
     f.adapter.deallocate(&(100 * USDC));
+    f.adapter.set_destination(&f.admin, &6u32, &other);
+    let (_, _, ready_at) = f.adapter.pending_destination().unwrap();
+    f.e.ledger().set_timestamp(ready_at);
     f.adapter.set_destination(&f.admin, &6u32, &other);
     let (domain, recipient) = f.adapter.destination();
     assert_eq!(domain, 6);
     assert_eq!(recipient, other);
+}
+
+/// The exposure lock was described in the source as the whole safety property
+/// in front of the pointer, and it is not, because the admin holds both ends of
+/// it: `write_down` zeroes exposure with no cash moving and is admin only. So
+/// the sequence is write the position off, find the lock open, repoint at an
+/// address of your own, and the next `allocate` burns the Vault's USDC towards
+/// it. The delay is what actually stands there.
+#[test]
+fn writing_the_position_off_opens_the_lock_and_still_does_not_open_the_pointer() {
+    let f = setup();
+    fund(&f, 100 * USDC);
+    f.adapter.allocate(&(100 * USDC));
+
+    // The admin's own lever, and it moves no cash: exposure to zero.
+    f.adapter.write_down(&(100 * USDC));
+    assert_eq!(f.adapter.get_exposure(), 0, "the lock is open");
+
+    let mine = BytesN::from_array(&f.e, &[9u8; 32]);
+    f.adapter.set_destination(&f.admin, &6u32, &mine);
+    let (_, _, ready_at) = f.adapter.pending_destination().unwrap();
+    assert_eq!(ready_at, f.e.ledger().timestamp() + DESTINATION_DELAY_SECS);
+    let (domain, recipient) = f.adapter.destination();
+    assert_ne!(recipient, mine, "the pointer has not moved");
+    assert_ne!(domain, 6);
+
+    // Asking again does not shorten the wait, and one second short is short.
+    assert_eq!(
+        f.adapter.try_set_destination(&f.admin, &6u32, &mine),
+        Err(Ok(AdapterError::DestinationNotReady))
+    );
+    f.e.ledger().set_timestamp(ready_at - 1);
+    assert_eq!(
+        f.adapter.try_set_destination(&f.admin, &6u32, &mine),
+        Err(Ok(AdapterError::DestinationNotReady))
+    );
+
+    // And a different destination starts its own wait rather than inheriting
+    // one that has nearly run out.
+    let elsewhere = BytesN::from_array(&f.e, &[11u8; 32]);
+    f.adapter.set_destination(&f.admin, &6u32, &elsewhere);
+    let (_, _, second) = f.adapter.pending_destination().unwrap();
+    assert!(second > ready_at, "the new address waits its own full delay");
+
+    f.e.ledger().set_timestamp(second);
+    f.adapter.set_destination(&f.admin, &6u32, &elsewhere);
+    assert_eq!(f.adapter.destination().1, elsewhere);
+    assert_eq!(
+        f.adapter.pending_destination(),
+        None,
+        "and the announcement is spent, so it cannot be replayed"
+    );
 }
 
 #[test]

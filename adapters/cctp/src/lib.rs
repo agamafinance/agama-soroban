@@ -114,7 +114,25 @@ pub enum AdapterError {
     /// `deallocate` was asked for more USDC than has actually come back from
     /// the far chain and landed on this contract.
     ReturnNotArrived = 714,
+    /// A repoint of the crossing was asked for again before its delay had run
+    /// out. The announcement stands; repeat the call with the same domain and
+    /// recipient once `pending_destination` says it is ready.
+    DestinationNotReady = 715,
 }
+
+/// How long a repoint of the crossing waits between being announced and being
+/// applied, 72 hours.
+///
+/// `allocate` burns the Vault's USDC towards whatever address this adapter
+/// names, and the burn is irreversible: CCTP carries 32 bare bytes with no type
+/// tag, and a wrong recipient is unrecoverable from Stellar. The exposure lock
+/// was the only thing standing in front of the pointer and it does not hold
+/// against the admin, who can zero exposure with `write_down` and no cash
+/// moving. So the delay is what stands there instead: 72 hours in which the
+/// announced destination is readable on chain, before a stroop can be sent to
+/// it.
+pub const DESTINATION_DELAY_SECS: u64 = 72 * 60 * 60;
+
 
 #[derive(Clone)]
 #[contracttype]
@@ -133,6 +151,10 @@ enum Cfg {
     /// the 20 byte address left padded, which is the whole of the encoding and
     /// the only part a mistake is invisible in.
     Recipient,
+    /// An announced repoint of the crossing, as the domain, the recipient and
+    /// the ledger time it can be applied at. Nothing can be sent to a
+    /// destination until it has sat here for `DESTINATION_DELAY_SECS`.
+    PendingDestination,
     /// Ceiling on Circle's fee, in basis points of the amount crossed.
     MaxFeeBps,
 }
@@ -162,6 +184,21 @@ pub struct Returned {
 }
 
 /// Emitted when the destination is set or changed. The one decision this
+/// Emitted when a repoint of the crossing is announced, with the destination
+/// and the moment it becomes usable.
+///
+/// The delay is only a control if somebody can see what is coming, and this is
+/// how they see it. A depositor watching this contract learns the address their
+/// capital is about to be sent to three days before it can be.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DestinationAnnounced {
+    #[topic]
+    pub domain: u32,
+    pub recipient: BytesN<32>,
+    pub ready_at: u64,
+}
+
 /// adapter makes that cannot be undone, so it belongs in the stream.
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -408,13 +445,32 @@ impl CctpAdapter {
         Ok(surplus)
     }
 
-    /// Repoint the crossing, refused while anything is deployed.
+    /// Repoint the crossing: announced, then applied by a second call with the
+    /// same domain and recipient after `DESTINATION_DELAY_SECS`. Refused while
+    /// anything is deployed.
     ///
-    /// The lock is the whole safety property. Exposure booked here is a claim
-    /// on capital at the old destination; moving the pointer while it stands
-    /// would leave the book saying one thing and the money sitting at another
-    /// address, with the next return arriving from a place the adapter no
-    /// longer names.
+    /// The exposure lock was described here as the whole safety property and it
+    /// is not, because the admin holds both ends of it. `write_down` zeroes
+    /// exposure with no cash moving and is admin only, so the sequence is: write
+    /// the position off, find the lock open, repoint at an address of your own,
+    /// and the next `allocate` burns the Vault's USDC towards it. The lock was
+    /// doing nothing against the one key it needed to constrain, and the
+    /// separation of duties the old comment here relied on was not implemented
+    /// anywhere.
+    ///
+    /// It is implemented as a delay rather than as a second role, because a
+    /// second role on a one-operator deployment is two keys in the same hand and
+    /// reads as a control without being one. A delay is not: 72 hours between
+    /// announcing a destination and being able to send anything to it is 72
+    /// hours in which `pending_destination` and `DestinationAnnounced` say where
+    /// the money is about to go, to anybody watching, including the depositors.
+    /// An allowlist of domains and addresses is the other half and is listed
+    /// under `decisions.crossChainToMainnet` as required before mainnet.
+    ///
+    /// The exposure lock stays, for the reason it was written: exposure booked
+    /// here is a claim on capital at the old destination, and moving the pointer
+    /// while it stands would leave the book saying one thing and the money
+    /// sitting at another address.
     pub fn set_destination(
         e: Env,
         admin: Address,
@@ -426,11 +482,44 @@ impl CctpAdapter {
             return Err(AdapterError::DestinationLocked);
         }
         Self::require_recipient(&recipient)?;
+
+        let now = e.ledger().timestamp();
+        let announced: Option<(u32, BytesN<32>, u64)> =
+            e.storage().instance().get(&Cfg::PendingDestination);
+        match announced {
+            Some((d, ref r, ready_at)) if d == domain && *r == recipient && now >= ready_at => {
+                e.storage().instance().remove(&Cfg::PendingDestination);
+            }
+            Some((d, ref r, _)) if d == domain && *r == recipient => {
+                return Err(AdapterError::DestinationNotReady);
+            }
+            _ => {
+                let ready_at = now.saturating_add(DESTINATION_DELAY_SECS);
+                e.storage()
+                    .instance()
+                    .set(&Cfg::PendingDestination, &(domain, recipient.clone(), ready_at));
+                Self::bump(&e);
+                DestinationAnnounced {
+                    domain,
+                    recipient,
+                    ready_at,
+                }
+                .publish(&e);
+                return Ok(());
+            }
+        }
+
         e.storage().instance().set(&Cfg::Domain, &domain);
         e.storage().instance().set(&Cfg::Recipient, &recipient);
         Self::bump(&e);
         DestinationSet { domain, recipient }.publish(&e);
         Ok(())
+    }
+
+    /// The repoint in flight, as the domain, the recipient and the ledger time
+    /// it can be applied at, or `None` when nothing is announced.
+    pub fn pending_destination(e: Env) -> Option<(u32, BytesN<32>, u64)> {
+        e.storage().instance().get(&Cfg::PendingDestination)
     }
 
     pub fn set_counterparties(

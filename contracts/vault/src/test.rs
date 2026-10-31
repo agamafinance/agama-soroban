@@ -2631,3 +2631,87 @@ fn only_the_admin_sets_the_peg() {
         .is_err());
     assert_eq!(f.vault.peg_tolerance_bps(), 200, "unchanged");
 }
+
+/// `set_agusd` counted what this Vault had issued, and that stopped being the
+/// same statement as what the token has outstanding the day agUSD became a
+/// classic asset. The deployment record carries the case that proves it under
+/// `retiredAgusdResidue`: 38000000 stroops outstanding on an agUSD whose Vault
+/// had taken no deposit, so `deposits` was zero and the pointer was free to move
+/// away from units somebody was holding.
+#[test]
+fn the_pointer_will_not_move_away_from_a_token_that_still_has_supply() {
+    let f = setup();
+    // Nothing issued by this Vault, which is what the old guard measured.
+    assert_eq!(f.vault.deposits(), 0);
+
+    // But the token it points at has supply, minted by somebody else: a
+    // previous generation of this Vault, on the real deployment.
+    let holder = Address::generate(&f.e);
+    f.agusd.mint(&holder, &(38 * USDC / 10));
+    assert_eq!(f.agusd.total_supply(), 38 * USDC / 10);
+
+    let replacement_id = f.e.register(MockUsdc, ());
+    MockUsdcClient::new(&f.e, &replacement_id).initialize(
+        &f.vault.address,
+        &7u32,
+        &String::from_str(&f.e, "Agama USD"),
+        &String::from_str(&f.e, "agUSD"),
+    );
+    assert_eq!(
+        f.vault.try_set_agusd(&f.admin, &replacement_id),
+        Err(Ok(VaultError::AgUsdSupplyOutstanding))
+    );
+    assert_eq!(f.vault.agusd(), f.agusd.address, "the pointer did not move");
+
+    // Burned back to nothing, and the door opens: the guard is about who is
+    // holding the token, not about whether it was ever used.
+    f.agusd.burn(&holder, &(38 * USDC / 10));
+    assert_eq!(f.agusd.total_supply(), 0);
+    f.vault.set_agusd(&f.admin, &replacement_id);
+    assert_eq!(f.vault.agusd(), replacement_id);
+}
+
+/// A classic asset publishes no supply a contract can read, so for a Stellar
+/// Asset Contract the question has to become one that can be answered: is this
+/// Vault the token's mint authority. If it is, this Vault is what stands behind
+/// that token and will not walk away from it on an assumption that nobody is
+/// there. Horizon has the number, and moving the mint authority first is the
+/// deliberate way through.
+#[test]
+fn a_sac_this_vault_mints_for_cannot_be_abandoned_on_an_assumption() {
+    let e = Env::default();
+    e.mock_all_auths();
+    e.ledger().set_timestamp(T0);
+    let admin = Address::generate(&e);
+    let usdc_id = e.register(MockUsdc, ());
+    MockUsdcClient::new(&e, &usdc_id).initialize(
+        &admin,
+        &7u32,
+        &String::from_str(&e, "USD Coin"),
+        &String::from_str(&e, "USDC"),
+    );
+    let vault_id = e.register(Vault, (admin.clone(), usdc_id.clone()));
+    let vault = VaultClient::new(&e, &vault_id);
+
+    let sac_id = e.register(SacShapedToken, ());
+    SacShapedTokenClient::new(&e, &sac_id).initialize(&vault_id);
+    vault.set_agusd(&admin, &sac_id);
+
+    // A second SAC this Vault could also mint through, so the incoming checks
+    // all pass and this guard is the only thing left to refuse it.
+    let next_id = e.register(SacShapedToken, ());
+    SacShapedTokenClient::new(&e, &next_id).initialize(&vault_id);
+    assert_eq!(
+        vault.try_set_agusd(&admin, &next_id),
+        Err(Ok(VaultError::AgUsdSupplyUnverifiable))
+    );
+    assert_eq!(vault.agusd(), sac_id);
+
+    // Hand the mint authority away and the token is no longer this Vault's to
+    // abandon, so the pointer moves. That is the deliberate route, and it takes
+    // a transaction on the token rather than an assumption in here.
+    let elsewhere = Address::generate(&e);
+    SacShapedTokenClient::new(&e, &sac_id).initialize(&elsewhere);
+    vault.set_agusd(&admin, &next_id);
+    assert_eq!(vault.agusd(), next_id);
+}

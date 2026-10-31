@@ -256,6 +256,12 @@ pub trait ShareToken {
     /// Only consulted for a token that cannot answer `minter`, because for one
     /// that can the two are different powers and `mint` obeys the first.
     fn admin(e: Env) -> Address;
+    /// Everything the token has issued and not burned. `agusd-core` keeps it;
+    /// a Stellar Asset Contract does not publish one at all, which is the whole
+    /// difficulty `set_agusd` has in deciding whether a repoint abandons
+    /// anybody. Called through `try_`, because the answer "there is no such
+    /// entry point" is itself the information.
+    fn total_supply(e: Env) -> i128;
 }
 
 /// The Allocation Engine, as seen from the Vault.
@@ -353,6 +359,18 @@ pub enum VaultError {
     /// `set_peg_feed` was given a tolerance outside the range a peg check can
     /// usefully have.
     InvalidPegTolerance = 332,
+    /// `set_agusd` was asked to point away from a token that still has supply
+    /// outstanding. Those units would be left backed by a token this Vault no
+    /// longer mints or burns, and `deposits` does not see them because a
+    /// previous generation minted them.
+    AgUsdSupplyOutstanding = 333,
+    /// `set_agusd` was asked to point away from a Stellar Asset Contract this
+    /// Vault is the mint authority of. A classic asset publishes no supply that
+    /// a contract can read, so this Vault cannot establish that nobody is
+    /// holding it, and it will not abandon a token it stands behind on an
+    /// assumption. Horizon has the number; moving the mint authority first is
+    /// the deliberate way through.
+    AgUsdSupplyUnverifiable = 334,
     /// Withdrawal requests are frozen. Temporary by construction: read
     /// `exits_frozen_until()` for the ledger time it lapses, after which this
     /// stops being returned whether or not an admin acts.
@@ -685,6 +703,50 @@ impl Vault {
         match token.try_decimals() {
             Ok(Ok(d)) if d == usdc_decimals => {}
             _ => return Err(VaultError::DecimalMismatch),
+        }
+        // And the token being pointed away from has to be one nobody is holding.
+        //
+        // Last of the checks deliberately. The three above judge the token being
+        // pointed at, which is where an operator's mistake usually is, so a call
+        // that is wrong in both directions still reports the incoming problem
+        // first. This one only refuses calls that would otherwise have gone
+        // through.
+        //
+        // `deposits` counts what this Vault has issued. It stopped being the
+        // same statement as "the token has no supply" the day agUSD became a
+        // classic asset, because supply can exist that this Vault did not mint:
+        // a previous generation's. The deployment record carries the case that
+        // proves it, `retiredAgusdResidue`, 38000000 stroops outstanding on a
+        // contract whose Vault had taken no deposit.
+        //
+        // Two tokens answer this differently and both answers are used. One
+        // that publishes a supply is judged on it: anything but zero and the
+        // repoint is refused, because pointing away leaves those units backed
+        // by a token this Vault will no longer mint or burn. A Stellar Asset
+        // Contract publishes none, and no call from inside a contract can read
+        // the supply of a classic asset, so the question becomes the one that
+        // can be answered: is this Vault the token's mint authority. If it is,
+        // this Vault is the thing standing behind that token and may not walk
+        // away from it while unable to prove nobody is there. If it is not, the
+        // token was never this Vault's to abandon.
+        // Nothing to abandon when there is nothing pointed at: on a fresh Vault
+        // this entry point is how the pointer is first set, and the Vault is
+        // deployed with it unset.
+        let current: Option<Address> = e.storage().instance().get(&Cfg::AgUsd);
+        if let Some(current) = current.filter(|c| *c != agusd_token) {
+            let cur = AgUsdClient::new(&e, &current);
+            match cur.try_total_supply() {
+                Ok(Ok(outstanding)) => {
+                    if outstanding != 0 {
+                        return Err(VaultError::AgUsdSupplyOutstanding);
+                    }
+                }
+                _ => {
+                    if matches!(cur.try_admin(), Ok(Ok(a)) if a == e.current_contract_address()) {
+                        return Err(VaultError::AgUsdSupplyUnverifiable);
+                    }
+                }
+            }
         }
         e.storage().instance().set(&Cfg::AgUsd, &agusd_token);
         Self::bump_instance(&e);
