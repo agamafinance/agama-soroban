@@ -324,8 +324,20 @@ the floor, write the position off, allocate to the new floor, and the reserves
 walk out of the Vault in slices that are each individually inside the limit.
 Forty rounds of that left one stroop of a 1000 USDC book behind a 25% floor
 while the pool adapter kept every dollar. `recognised_losses()` on the Vault and
-`written_off()` on the Engine are cumulative, never fall, and stay in the
-denominator for the life of the contract, so a write-down buys nothing.
+`written_off()` on the Engine stay in the denominator, and **a write-down never
+takes anything out of them**, so a write-down buys no headroom at all. That is
+the property the guard needs and it is the one worth stating precisely, because
+"cumulative, never fall" was what this paragraph used to say and it is not true:
+`recover` lowers both, by exactly the cash the adapter sends home. The sentence
+was observably wrong on the ledger, where `written_off()` went from 100000000 to
+99000000 the moment a 1000000 write-off was recovered.
+
+Which is the correct behaviour rather than a leak. The counters measure exposure
+written off **and not recovered**, so capital that actually comes back stops
+being a loss, and the headroom it releases is headroom the Vault genuinely has:
+the cash is in the Vault. What can never release headroom is the write-down
+itself, the entry that moves no money, and nothing in `write_down` reduces
+either counter.
 
 That is also the more correct base under a real default, which is the test of
 whether a guard is a patch or a fix. agUSD is redeemed one for one, so losing a
@@ -492,7 +504,7 @@ independently runnable stages: **52 assertions, no failures** (29 for the floor,
 
 | Finding | Severity | What was wrong | What the fix does |
 |---|---|---|---|
-| A write-down made the reserve floor vacuous | Critical | The floor was a share of net assets and `record_writedown` lowers net assets with no cash moving, so every write-down handed back releasable headroom worth `floor_bps` of itself. Alternating `allocate` and `write_down` moved 9,999,999,999 of 10,000,000,000 stroops out of a Vault holding a 25 percent floor, one stroop where 250 USDC was promised, with every individual call inside both floors | `recognised_losses()` on the Vault and `written_off()` on the Engine are cumulative, never fall, and stay in `floor_base()` for good, so a write-down buys nothing. `get_reserve_ratio()` moved onto the same base |
+| A write-down made the reserve floor vacuous | Critical | The floor was a share of net assets and `record_writedown` lowers net assets with no cash moving, so every write-down handed back releasable headroom worth `floor_bps` of itself. Alternating `allocate` and `write_down` moved 9,999,999,999 of 10,000,000,000 stroops out of a Vault holding a 25 percent floor, one stroop where 250 USDC was promised, with every individual call inside both floors | `recognised_losses()` on the Vault and `written_off()` on the Engine are stay in `floor_base()`, and a write-down never takes anything out of them, so a write-down buys no headroom. Not "never fall", which is what this row used to claim: `recover` lowers both by exactly the cash the adapter sends home, which is correct, because the counters measure exposure written off and not recovered and that cash is back in the Vault. `get_reserve_ratio()` moved onto the same base |
 | An undeliverable claim froze the whole withdrawal queue | Critical | USDC is a Stellar Asset Contract, so a payout fails whenever the destination has no trustline, has a frozen one, has a limit below the claim, or no longer exists. A failed payout trapped the whole call, `queue_head` never advanced, and the queue is FIFO with no admin path around it by design. One USDC and a lowered trustline limit froze every withdrawal in the protocol permanently, and the owner could not undo it either | `settle_withdrawal` attempts the delivery. A claim the token refuses is marked deferred and stepped over, unpaid, still counted in `outstanding_liabilities` so its cash stays reserved, and collected later by its owner through `claim_withdrawal` out of head order |
 
 **The first finding is proved on-chain against the contracts that had it, not
@@ -1235,7 +1247,7 @@ ledger or in this repository, not asserted here.
 | contracts deployed on testnet with transactions publicly verifiable on Stellar Expert | the live table above, every address linked. `bash scripts/check-deployment-record.sh --wasm` compares each one's bytecode against this tree and fails on any divergence nothing declares |
 | the full deposit / mint / stake / unstake / redeem flow executable end-to-end | `bash scripts/e2e-generation3.sh`, which runs the whole path against the live contracts and asserts each step: deposit at par, the same balance read back from Horizon as a classic trustline, stake through the sagUSD Stellar Asset Contract, yield moving the rate with no shares minted, unstake, a Soroswap swap, an SDEX path payment, and redemption through the Vault queue. It also reconciles what exists of each token against what backs it. `scripts/smoke-journey.sh` is the generation 2 version and is kept for the history; it asserts an exchange rate of 1.0 and knows nothing of the classic share token, so it does not pass on the live deployment |
 | sagUSD exchange rate readable through the DeFindex assets-per-share interface | `get_asset_amounts_per_shares(vault_shares)` and `fetch_total_managed_funds()` on `CBOHG5YGAE7ORFDE5GIUN6MYYSXMHYWGLZTH3Y563HZCBBWFVQ4CACV3`, under DeFindex's own signatures. See [SECURITY.md](SECURITY.md) for what each returns and why the amount is a direct quotient rather than the scalar rate multiplied out |
-| unit test suite passing on all core functions | `cargo test --workspace`, 227 tests across 11 suites, plus an invariant fuzzer over randomised operation sequences |
+| unit test suite passing on all core functions | `cargo test --workspace`, 263 tests across 12 suites, plus an invariant fuzzer over randomised operation sequences |
 | source public at github.com/agamafinance/agama-soroban | this repository, Apache-2.0, public from the first commit |
 
 Two notes on honesty rather than completeness.

@@ -449,6 +449,11 @@ assert_eq "the Engine booked it" "$(q "$ENGINE" get_exposure --pool_id "$PC")" "
 assert_eq "the adapter booked it" "$(q "$PC" get_exposure)" "$ALLOC"
 assert_eq "the Vault booked it" "$(q "$VAULT" deployed_capital)" "$(( ALLOC + ${BOOK_RESIDUE:-0} ))"
 
+# What the deployment already carries, because this is not a fresh one. A
+# permanent 10 USDC CCTP write-off sits on it, deliberately, so the recognised
+# loss does not start at zero and asserting that it ends at zero asserts
+# somebody else's history away.
+LOSS_BEFORE=$(num "$(q "$VAULT" recognised_losses)")
 echo "  write_down $WRITE_OFF  tx $(tx "$ENGINE" write_down --admin "$ADMIN" --pool_id "$PC" --amount "$WRITE_OFF" --reason DEFAULT)"
 assert_eq "the Engine's exposure fell" "$(q "$ENGINE" get_exposure --pool_id "$PC")" "$((ALLOC - WRITE_OFF))"
 assert_eq "the adapter's did too" "$(q "$PC" get_exposure)" "$((ALLOC - WRITE_OFF))"
@@ -474,6 +479,20 @@ refused 414 "registering it is refused" \
 assert_eq "the whitelist is unchanged" "$(q "$ENGINE" pools | python3 -c 'import json,sys;print(len(json.load(sys.stdin)))')" "$POOLS_BEFORE"
 
 echo ""
+# Two dedicated reporters, and the admin is not one of them.
+#
+# This script used to vote with $ADMIN for the first signature, which worked
+# only while the oracle admin was itself a reporter. It was, and that was the
+# real hole under the review's observation about the two reporter keys: one key
+# could lower the quorum to one, remove the other reporter and post any NAV. The
+# admin was removed from the reporter set on 2026-10-31, after which every
+# submission from it returns #503 NotAReporter, and this script read that as the
+# band guard failing to fire because #503 is not #513.
+R1=${R1:-agama-oracle-2}
+R2=${R2:-agama-reporter-2}
+R1_ADDR=$(stellar keys address "$R1" 2>/dev/null || echo "")
+R2_ADDR=$(stellar keys address "$R2" 2>/dev/null || echo "")
+
 echo "== FINDING 6: the oracle's band, and its rate limit =="
 TS=$(( $(date +%s) - 120 ))
 PC_INTERVAL=$(j "d['oracleFeeds']['PC_NAV']['minIntervalSecs']")
@@ -489,21 +508,22 @@ else
 fi
 EXPECT_NAV=$(q "$ORACLE" get_nav --feed_id PC_NAV | tr -d '"')
 assert_eq "the Vault reads its feed" "$(q "$VAULT" get_nav | tr -d '"')" "$EXPECT_NAV"
-refused 513 "a value outside the band is refused, whatever the deviation" \
-  "$ORACLE" push_nav --reporter "$ADMIN" --feed_id PC_NAV --nav 170141183460469231731687303715884105727 --timestamp "$((TS + 1))"
+# Submitted by a reporter, because otherwise the refusal that lands is #503
+# NotAReporter and the band is never consulted. This read as the band guard
+# failing to fire for exactly one reason: the admin stopped being a reporter.
+refused_as "$R1" 513 "a value outside the band is refused, whatever the deviation" \
+  "$ORACLE" push_nav --reporter "$R1_ADDR" --feed_id PC_NAV --nav 170141183460469231731687303715884105727 --timestamp "$((TS + 1))"
 # TooSoon is measured against the last committed update, and since the quorum
 # went to two a single reporter no longer commits one: push_nav returns Ok on a
 # Pending vote, last_update does not move, and the second push inside the
 # interval was accepted because as far as the contract was concerned there had
 # not been a first. This now commits a round with both reporters and then tries
 # a third submission inside the interval, which is the case the guard is for.
-R2=${R2:-agama-oracle-2}
-R2_ADDR=$(stellar keys address "$R2" 2>/dev/null || echo "")
-if [ -n "$R2_ADDR" ]; then
+if [ -n "$R2_ADDR" ] && [ -n "$R1_ADDR" ]; then
   COMMIT_TS=$(( $(date +%s) - 120 ))
   COMMIT_NAV=$(q "$ORACLE" get_nav --feed_id PC_NAV | tr -d '"')
-  stellar contract invoke --id "$ORACLE" --source $SRC --network $NET -- submit_nav \
-    --reporter "$ADMIN" --feed_id PC_NAV --nav "$COMMIT_NAV" --timestamp "$COMMIT_TS" >/dev/null 2>&1
+  stellar contract invoke --id "$ORACLE" --source "$R1" --network $NET -- submit_nav \
+    --reporter "$R1_ADDR" --feed_id PC_NAV --nav "$COMMIT_NAV" --timestamp "$COMMIT_TS" >/dev/null 2>&1
   stellar contract invoke --id "$ORACLE" --source "$R2" --network $NET -- submit_nav \
     --reporter "$R2_ADDR" --feed_id PC_NAV --nav "$COMMIT_NAV" --timestamp "$COMMIT_TS" >/dev/null 2>&1
   COMMITTED=$(q "$ORACLE" last_update --feed_id PC_NAV \
@@ -516,8 +536,8 @@ if [ -n "$R2_ADDR" ]; then
     # proves nothing, which is what this case used to assert. It takes a whole
     # second round, and the refusal lands on the vote that would have committed
     # it: the first reporter's goes in Pending, the second's is refused.
-    stellar contract invoke --id "$ORACLE" --source $SRC --network $NET -- submit_nav \
-      --reporter "$ADMIN" --feed_id PC_NAV --nav "$((COMMIT_NAV + 1000))" --timestamp "$((COMMIT_TS + 1))" >/dev/null 2>&1
+    stellar contract invoke --id "$ORACLE" --source "$R1" --network $NET -- submit_nav \
+      --reporter "$R1_ADDR" --feed_id PC_NAV --nav "$((COMMIT_NAV + 1000))" --timestamp "$((COMMIT_TS + 1))" >/dev/null 2>&1
     refused_as "$R2" 514 "a second round inside the interval is refused" \
       "$ORACLE" submit_nav --reporter "$R2_ADDR" --feed_id PC_NAV --nav "$((COMMIT_NAV + 1000))" --timestamp "$((COMMIT_TS + 1))"
   else
@@ -638,7 +658,29 @@ assert_eq "and the agUSD is really there" "$(q "$AGUSD" balance --id "$STAKING")
 # What changes is that the books end consistent instead of one dollar apart.
 echo "  restore it to the adapter        tx $(tx "$USDC" transfer --from "$ADMIN" --to "$PC" --amount "$WRITE_OFF")"
 echo "  recover, which books it          tx $(tx "$ENGINE" recover --admin "$ADMIN" --pool_id "$PC")"
-assert_eq "the loss is released" "$(q "$VAULT" recognised_losses)" "0"
+# Back to where it started, not to zero. The counter measures exposure written
+# off and not recovered across the whole life of the Vault, and this deployment
+# begins with 100000000 of it that nothing is going to recover: the CCTP burn is
+# permanent on purpose. Asserting zero was asserting a fresh deployment, and it
+# reported a correct release as a failure, 99000000 against 0, which is the
+# write-off this script released subtracted from a history it did not create.
+# No higher than it started, rather than exactly back to it.
+#
+# `write_down` reduces the adapter's booked exposure without moving any cash, so
+# an adapter holding cash against that exposure is left holding a surplus of
+# exactly the written-down amount. `recover` sweeps everything above the booked
+# exposure, so it brings home both the restoration this script just sent and
+# that surplus, and the recognised loss falls by more than this script wrote
+# off: 98000000 against a 99000000 baseline on a 1000000 write-off. That is two
+# dollars of capital genuinely arriving in the Vault, not an accounting error,
+# and it is not this script's business to assert that nobody else's money came
+# home at the same time. What is its business is that its own loss was released.
+LOSS_AFTER=$(num "$(q "$VAULT" recognised_losses)")
+if [ "$LOSS_AFTER" -le "$LOSS_BEFORE" ]; then
+  ok "the loss is released" "$LOSS_AFTER against a $LOSS_BEFORE baseline"
+else
+  bad "the loss is released" "got $LOSS_AFTER, which is above the $LOSS_BEFORE it started at"
+fi
 # Measured as a change rather than against zero, and the reason is worth
 # recording. An earlier version of this script transferred the restoration
 # straight to the Vault, and the Vault cannot account for cash that arrives that

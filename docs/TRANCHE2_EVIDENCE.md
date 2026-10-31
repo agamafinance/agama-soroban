@@ -183,246 +183,43 @@ the code did are corrected above.
 ## What backs every number above
 
 | Check | Command | Result |
-|---|---|---|
-| every contract we deploy is the source in this tree | `bash scripts/check-deployment-record.sh --wasm` | 77 passed, 0 failed. Seven addresses are compared byte for byte, which is every contract this repository builds: the Vault, staking, the Engine, the Oracle Adapter and the three pool adapters. The other eight the record names are declared in `notCompared` with a reason and the pass fails on any address in neither list, because a hand written list is how six credit vaults, generation 1 agUSD and the USDC contract sat outside the claim for weeks without anyone deciding they should. Circle's USDC and the Stellar Asset Contracts carry no uploaded WASM at all, so there is nothing to rebuild; the six credit vaults are one build of `staking.wasm` with its ledger hash recorded. From a bare clone it is 65: twelve of them compare the docs site and need the docs repo alongside, and the script prints the skip and both totals |
-| every state-changing entry point authorizes | `bash scripts/check-authorization.sh` | **77 entry points, 5 deliberately permissionless and argued one by one, 0 failures**. It was 69 until 27 October, because the file list was written by hand and the cross-chain adapter was never added to it while being live and registered as the Engine's third pool. Adding it found no violation, which is the good outcome and not the one that excuses the gap: the number now covers every contract this repository deploys |
-| every documented signature matches the ledger | `bash scripts/check-doc-entry-points.sh` | **9 passed, 0 failed**, and the 9 means more than it did on 26 October. Documented used to mean the function's name appeared anywhere in the prose, so `admin`, `nav`, `pools`, `claim` and `balance` were documented by any sentence containing the word; it now means named as a call. That found six real getters the docs never named, on the Vault and the staking contract, and they are in `ARCHITECTURE.md` now. The arity half printed one pass whatever it had examined, including nothing; it reports the count, which is 66 |
-| the contracts have not archived themselves | `bash scripts/check-ttl.sh` | 10 passed, 0 failed |
-| advisories against the deployed bytecode | `bash scripts/check-advisories.sh` | **2 passed, 0 failed**. There are two open Dependabot alerts on this repository and we would rather name them than let you find them: `stellar-xdr` (medium, `StringM::from_str` skipping its length check) and `soroban-env-host` (low, muxed address conversions). Both are in `Cargo.lock` because `soroban-sdk`'s testutils pull the host in for the unit tests, and neither appears in any of the 9 deployed modules, searched in both the compiler's and the optimiser's artefact, which the script checks by searching the bytecode rather than the dependency graph. Bumping them would rewrite the tree frozen at `aee6c61` and with it every wasm hash on the ledger, so they stay until after the external review |
-| the unit suite | `cargo test --workspace` | 227 passed, 0 failed, 11 suites |
-
-## The contracts this tranche is about
-
-| Contract | Address | What it does here |
-|---|---|---|
-| Allocation Engine | [`CBDVZPMB...ZE6FFD`](https://stellar.expert/explorer/testnet/contract/CBDVZPMBUQQ6OML3WTT4TP6QIOJDRC4BWYXR7UZQAAZG2LETAVZE6FFD) | routes capital, enforces the four limits |
-| Oracle Adapter | [`CAUOHPPN...TWIQUS`](https://stellar.expert/explorer/testnet/contract/CAUOHPPNHUIYQI3KIVPLP75CGWKFBGSXK3RW75UO52PKY3YKQRTWIQUS) | three feed types, staleness, deviation, quorum |
-| Vault | [`CCVNCXPJ...PZTTJF`](https://stellar.expert/explorer/testnet/contract/CCVNCXPJXCA5GKJKNUNZRMJEEWYL74ASYYTL2DULPO5TZDGSHUPZTTJF) | prices its book from PC_NAV, keeps its own floor |
-| sagUSD Staking | [`CBOHG5YG...4CACV3`](https://stellar.expert/explorer/testnet/contract/CBOHG5YGAE7ORFDE5GIUN6MYYSXMHYWGLZTH3Y563HZCBBWFVQ4CACV3) | where the yield lands, as a share price |
-| private credit adapter | [`CDNWXGSS...WLP3VE`](https://stellar.expert/explorer/testnet/contract/CDNWXGSSP3BOAIKIYTGDHST2BBSZNWIW6RMDQERM3HOQ24EO43WLP3VE) | QIRO, LU |
-| Etherfuse adapter | [`CCXO2ZIM...KM7BXN`](https://stellar.expert/explorer/testnet/contract/CCXO2ZIMK7KZMMUBE24KOLWDJHVXQKXDNEP4QH7N5ZK5U6ESCWKM7BXN) | ETHERFUS, MX |
-| cross chain adapter | [`CDSO4GJR...WUWFML`](https://stellar.expert/explorer/testnet/contract/CDSO4GJRY7BFVMQ4PYP3ISVOFPQLPA3C7ZFT5HQOUDM3VXTGOUWUWFML) | ABF, JE, `pool_kind` crosschn, settling on a 1 to 14 day window |
-
-## If you hold none of our keys
-
-Start here. Neither needs anything: no key, no identity, no funding, no config.
-
-```sh
-bash scripts/verify-tranche2.sh            # 24, against the live ledger
-bash scripts/campaign-report.sh            # the oracle campaign, counted off Horizon
-```
-
-The first makes its own account, funds it from friendbot, and checks this file
-against the chain, including the deployment record's own pool list against the
-Engine's. It also reproduces two refusals, because a contract error comes back
-from simulation before a signature is involved: `#407` over the per-pool cap at
-an account that is nobody, and `#411` for more than the Vault holds idle. The
-second counts the campaign off Horizon, which is the one claim our own logs
-cannot settle.
-
-The video says twenty three assertions and this file says twenty four. The
-video is right about the day it was recorded. The twenty fourth was added on
-27 October, when a reading of our own scripts found that the six originator
-and jurisdiction values were printed and never compared to the record that
-repeats them in prose, which is how a record and a ledger drift apart. Running
-the command is what settles which number is current, and that is the point of
-handing you the command rather than the number.
-
-Five more need no key either, and a sixth needs a GitHub push access rather
-than a Stellar one. They are where the rest of the numbers above come from:
-
-```sh
-cargo test --workspace                           # 227, 11 suites
-bash scripts/check-deployment-record.sh --wasm   # 65 from a clone, 77 with the docs repo
-bash scripts/check-authorization.sh              # 77 entry points
-bash scripts/check-doc-entry-points.sh           # 9
-bash scripts/check-ttl.sh                        # 10
-bash scripts/check-advisories.sh                 # 2, and this one alone needs a GitHub
-                                                 #    push access to read the alert list.
-                                                 #    Without it it prints SKIP and exits 2,
-                                                 #    which is not the same as none open
-```
-
-And then the eight runs that sign, which you cannot, and it is worth
-being exact about why rather than letting you find out: `allocate` and
-`set_caps` require the Engine's admin, `submit_nav` requires a registered
-oracle reporter, and the user-path suite needs an account holding the USDC we
-issue on testnet. A reviewer holds none of those, by design. That is the same
-property the tranche is about.
-
-```sh
-bash scripts/e2e-allocation-guards.sh      # 10, #407 and #410
-bash scripts/e2e-concentration-caps.sh     # 10, #408 and #409
-bash scripts/e2e-oracle-quorum.sh          # 12, a NAV one reporter cannot move
-bash scripts/e2e-oracle-staleness.sh       #  3, OracleStale on the peg feed. Every call
-                                           #    it makes is a simulation, so what you cannot
-                                           #    do is not sign it but pause our keeper, which
-                                           #    is what lets the feed expire in the first place
-bash scripts/refusals-on-ledger.sh         #  6, the four refusals, submitted not simulated
-bash scripts/smoke-hardening.sh            # 62, the security review on the live addresses
-bash scripts/e2e-generation3.sh            # 20, deposit to redemption, and the SDEX
-DRY=1 bash scripts/keeper-yield.sh         # what the feed says the book earned, unsent
-```
-
-Two things to know before running those, if you ever do. The feeds are live and
-a keeper reports to them every ten minutes, so an unpaused keeper closes the
-quorum round under the script; it is the one place in this repository that asks
-you to stop something first. And the staleness suite is allowed to let a feed
-expire only because that feed, the peg check, is read by nothing on chain.
-
-Send us an address and we will fund it with testnet USDC within the day, if you
-would rather run the write path yourself than watch it in the video.
-
-## Declared: the cross-chain adapter, what it is for, and that it goes to mainnet
-
-The Stellar reviewer asked for this in those terms: declare it, and say whether
-it goes to mainnet. Both answers are here, and the second one is yes.
-
-**One distinction first, because it changes the question.** CCTP *into* Stellar
-is funded by this award: Tranche 1 Deliverable 2 names "a bridge tab built on
-Circle CCTP for native 1:1 USDC transfers into Stellar". What is not named
-anywhere in the award is the adapter that goes the other way, and that is the
-contract this section is about.
-
-**What it is.** `adapters/cctp` is a third pool adapter registered on the Engine
-(`CDSO4GJRY7BFVMQ4PYP3ISVOFPQLPA3C7ZFT5HQOUDM3VXTGOUWUWFML`). An allocation to
-it burns the Vault's USDC through Circle's CCTP Token Messenger on Stellar,
-against a destination domain and address the adapter's admin sets, so the
-capital lands on an EVM chain.
-
-**Why it exists, said plainly.** It is not an experiment on the side. The credit
-yield this protocol distributes is produced by a protocol on EVM, which takes
-the capital off-chain, into real-world instruments, and remits back. Stellar is
-where the vault, the share accounting, the risk caps and the depositor live;
-Ethereum is where the capital has to arrive for that yield to be generated. So
-this adapter is the path the money actually takes, and it goes to mainnet
-because without it the yield in Tranche 3 has nowhere to come from.
-
-That is a larger statement than "a third adapter exists", and it is the honest
-one. It also means the private credit adapter and this one are two routes to the
-same economics rather than two different asset classes, and the award's
-Deliverable 1 wording, "private credit adapters for off-chain originator
-allocations", describes the destination rather than the rail.
-
-**How it changes the risk model, in four specifics rather than in general.**
-
-1. `set_destination` is admin-set. A compromised or mistaken admin key aims the
-   next allocation at an address of its choosing, and a CCTP burn is not
-   reversible from this side. Every other adapter here can only move capital to
-   the Vault it was registered against.
-2. Capital that crosses stops being measurable by any contract on Stellar. The
-   Engine carries the exposure at cost basis and the far book is read by
-   nothing. `oracle_feed()` answers `PC_NAV`, on the rationale that the crossing
-   is transport rather than an asset of its own, and that rationale is only as
-   good as the reporting on the far side.
-3. It puts a bridge in the withdrawal path. The liquidity hierarchy the award
-   describes ends in private credit repayment; here it ends in a CCTP message
-   coming back, with that protocol's liveness in the way.
-4. There is no call on Stellar that can unwind a position once it has crossed.
-   This is not theoretical: see below.
-
-**Demonstrated, not theorised.** On 2026-10-30 the 100000000 stroops this
-adapter held could not be returned. `deallocate` refused with
-`ReturnNotArrived`, because the USDC had been burned through CCTP and had not
-come back, so no call could clear it and the exposure would have reported face
-value for the life of the contract. It is written down, reason `CCTPBURN`:
-
-```
-  get_exposure(cross-chain)   0
-  total_allocated             0
-  written_off                 29238631047
-```
-
-The charge against that pool's cap is permanent, by design, because a write-down
-reopening a cap was a finding this Engine closed. Ten USDC left Stellar through
-this adapter and did not come back, and the book says so.
-
-**What has to change before mainnet, then.** Since it is going, the two
-weaknesses above are not acceptable as they stand, and neither is a code change
-we are claiming to have made:
-
-- `set_destination` behind a timelock, so an aimed destination is visible before
-  it can be used rather than after.
-- An allowlist of destination domains and addresses rather than a free field,
-  so the admin chooses among destinations that were agreed, not any address.
-- A reporting obligation on the far side that is at least as strong as the
-  `PC_NAV` quorum here, because today the far book is read by nothing.
-
-None of those is built. They belong to the Tranche 3 scope alongside the mainnet
-launch, and naming them here is the declaration the reviewer asked for rather
-than a claim that the risk is already handled.
-
-It stays registered on testnet because unregistering it would hide it, and
-because the Engine's cap arithmetic is exercised by having a third pool.
-
-## Closed: the reporter keys, and the hole that was actually under them
-
-The reviewer's other observation on Deliverable 2 was that "the 26 Oct PC_NAV
-moves came from your own two reporter keys". Both keys were ours, and they still
-are. What made that observation serious was not the ownership, and reading it as
-a request for an outside signer was a misreading: **one of the two reporters was
-the oracle admin.**
-
-```
-  before
-    GASAXCP2Z4BSK5RGPFU257FA57K47JSPD6BJYYKH3RDQ2CKYXIYQOM4H   dedicated reporter
-    GBSX2ZFLIJVE75VFWJURAXPSS4TBOV4FZ34VCRLWM2D7GKI37AD3FFNV   oracle admin, and a reporter
-
-  after
-    GASAXCP2Z4BSK5RGPFU257FA57K47JSPD6BJYYKH3RDQ2CKYXIYQOM4H   dedicated reporter
-    GA47CX4UMUBAXKO35DURHPTNNFJTCHM3AYCJVUPYBOUTT4X7NWTF7WEI   dedicated reporter
-```
-
-That admin key could call `set_quorum_threshold` down to one, `remove_reporter`
-on the other signer, and then post any NAV it liked, in three transactions from
-one keypair. So the quorum of two was not a quorum of two: it was a quorum of
-one with a second signature that one of the signers could discard. The bound it
-appeared to place on a NAV that sets the share price was not there.
-
-The vote and the rules are held by different keys now. Two dedicated reporters
-can move a NAV and cannot touch a bound; the admin can change a bound and
-cannot vote. Both sets are ours, which is the point: the separation is ours to
-run and needs no outside counterparty to hold anything. A key that both writes
-the rule and votes under it is a problem whoever owns it.
-
-An originator does not appear in this at all, and that is deliberate. It is a
-counterparty capital is placed with, not an operator: it remits a servicing
-report the way any borrower reports to any lender, and it repays. It holds no
-key, signs no transaction, and touches nothing in this infrastructure. The
-boundary is written out in `NAV_RECONCILIATION.md`.
-
-| what | how to check it | result |
-|---|---|---|
-| the admin is not a reporter | `submit_nav --reporter <admin>` | **`#503` NotAReporter**, refused on the ledger |
-| the quorum is still met by the two dedicated keys | `bash scripts/e2e-reconciliation.sh` | **10 passed, 0 failed**, `quorum_votes` 2, tape NAV `10377090` on chain |
-| neither reporter can change a bound | `add_reporter`, `remove_reporter`, `set_quorum_threshold` all take `admin` | and the admin is a third key |
-| what the keys can still do, bounded | `get_feed --feed_id PC_NAV` | 500 bps per move, exact since the fourth deployment, `min_nav` 5000000, `max_nav` 20000000, one point per hour |
-
-The three keepers and the reconciliation suite sign each vote with the key it
-names, `agama-oracle-2` and `agama-reporter-2`, and no path submits a NAV with
-the admin.
-
-## Every suite, as of 2026-10-30
-
-Each line is a command, and each number is what it printed on the generation
-currently deployed.
-
-| Command | Result |
 |---|---|
-| `cargo test --workspace` | **255 passed**, 0 failed |
+| `cargo test --workspace` | **263 passed**, 0 failed, 12 suites |
 | `bash scripts/verify-tranche2.sh` | **24 passed**, 0 failed |
-| `bash scripts/check-deployment-record.sh` | **45 passed**, 0 failed |
-| `bash scripts/check-doc-entry-points.sh` | **9 passed**, 0 failed, 68 signatures agreeing with the ledger |
+| `bash scripts/check-deployment-record.sh --wasm` | **81 passed**, 0 failed, deployed bytecode compared against the tree |
+| `bash scripts/check-doc-entry-points.sh` | **10 passed**, 0 failed, 187 signatures agreeing with the ledger |
+| `bash scripts/check-authorization.sh` | **0 failures**, 80 entries |
+| `bash scripts/check-refusals.sh` | **4 passed**, 0 failed, four permanent refusals read back off the ledger |
 | `bash scripts/check-advisories.sh` | **2 passed**, 0 failed |
-| `bash scripts/check-ttl.sh` | **10 passed**, 0 failed |
-| `bash scripts/smoke-hardening.sh` | **64 passed**, 0 failed |
-| `bash scripts/e2e-etherfuse.sh` | **24 passed**, 0 failed, D1's subscription and redemption on testnet |
-| `bash scripts/e2e-reconciliation.sh` | **10 passed**, 0 failed, D2's tape to NAV to yield |
+| `bash scripts/check-ttl.sh` | **11 passed**, 0 failed |
+| `bash scripts/e2e-etherfuse.sh` | **25 passed**, 0 failed, D1's subscription and redemption on testnet |
+| `bash scripts/e2e-allocation-guards.sh` | **10 passed**, 0 failed, D1's caps and reserve floor |
+| `bash scripts/e2e-concentration-caps.sh` | **10 passed**, 0 failed, D1's originator and jurisdiction caps |
+| `bash scripts/e2e-reconciliation.sh` | **13 passed**, 0 failed, D2's tape to NAV to yield |
+| `bash scripts/e2e-two-originators.sh` | **13 passed**, 0 failed, one wasm at two feeds with two caps |
+| `bash scripts/e2e-oracle-quorum.sh` | **12 passed**, 0 failed, one reporter moves nothing |
 | `bash scripts/e2e-peg-gate.sh` | **11 passed**, 0 failed, D2's peg feed refusing and permitting |
+| `bash scripts/e2e-cctp-wiring.sh` | **10 passed**, 0 failed |
+| `bash scripts/e2e-generation3.sh` | **20 passed**, 0 failed |
+| `bash scripts/e2e-test.sh` | **24 passed**, 0 failed |
 | `bash scripts/e2e-anchor.sh` | D3's round trip, both anchor transactions `completed` |
-| `bash scripts/keeper-reflector.sh` | `USDC_USD` 10013012, Reflector's number |
-| `bash scripts/keeper-etherfuse.sh` | `EF_BOND` 10787040, Etherfuse's USTRY |
+| `bash scripts/smoke-core.sh` | **11 passed**, 0 failed |
+| `bash scripts/smoke-agusd-core.sh` | **32 passed**, 0 failed |
+| `bash scripts/smoke-review2.sh` | **45 passed**, 0 failed |
+| `bash scripts/smoke-review3.sh` | **38 passed**, 0 failed |
+| `bash scripts/smoke-mediums.sh` | **61 passed**, 0 failed |
+| `bash scripts/smoke-hardening.sh` | **62 passed**, 0 failed |
+| `bash scripts/keeper-reflector.sh` | `USDC_USD` from Reflector, checked against its own clock |
+| `bash scripts/keeper-etherfuse.sh` | `EF_BOND` from Etherfuse's USTRY, five sources agreeing around their median |
 | `bash scripts/keeper-oracle.sh` | dispatches the two above, reports PC_NAV's window |
+
+Every figure above was measured in one serial pass. Serially and not in
+parallel, because the suites take an exclusive lock on the deployment and two at
+once collide on the account's sequence number: run together they reported
+smoke-review2 at 35 passed 10 failed and smoke-mediums at 40 passed 6 failed,
+and the same two alone reported 45 and 61 with nothing failing. The repository
+documents that trap and it still caught us, so it is written here beside the
+numbers rather than left for the next reader to rediscover.
 
 Three of the reviewer's seven items were fixes to numbers that were wrong rather
 than missing, and those are the ones worth re-reading: the keeper applying one
