@@ -38,7 +38,8 @@ declares agree with the ledger on arity,
 calendar days**, `check-ttl.sh` **11 / 0**, `check-authorization.sh` **0 failures** over **81**
 state-changing entry points, `verify-tranche2.sh` **27 / 0** once it stopped
 typing the feed list and the pool count into itself, `e2e-etherfuse.sh` **25 / 0**,
-`e2e-reconciliation.sh` **13 / 0**, `smoke-mediums.sh` **61 / 0**, and two
+`e2e-reconciliation.sh` **13 / 0**, which reads **10 / 0** on a run inside
+`PC_NAV`'s hour and says so, `smoke-mediums.sh` **61 / 0**, and two
 suites that did not exist when this sweep ran, `e2e-two-originators.sh`
 **13 / 0** and the second private credit pool it exercises.
 

@@ -113,7 +113,7 @@ afterwards, asserting they are back even when it exits through a failure.
 | stale reports revert with OracleStale | `cargo test --workspace` | `stale_read_errors_with_oracle_stale`, `get_nav_reads_the_oracle_and_propagates_staleness` |
 | out-of-bounds reports rejected | same | `out_of_bounds_deviation_fails_push_nav`, `out_of_bounds_deviation_emits_nav_rejected_on_submit_nav`, `the_deviation_bound_is_exact_to_the_stroop`, and `NavOutOfBand` (513) and `TooSoon` (514) in `smoke-hardening.sh`, which shows those two by simulation rather than on the ledger: the CLI will not submit a transaction whose simulation fails, and the four refusals that are on the ledger got there by patching a prepared transaction |
 | a NAV cannot be moved by one reporter | `bash scripts/e2e-oracle-quorum.sh` | **12 passed, 0 failed** on 27 October against a quorum of two: one reporter gets `Pending` and moves nothing, a repeat vote is `#518`, a second distinct reporter commits, now against a value the feed does not already hold. Until 27 October it submitted the stored value, which made "nothing committed, the feed is unchanged" hold whether or not the lone vote had committed: the assertion could not fail, so it was not evidence. It now moves the feed by one stroop and also asserts the stored round did not advance after the first vote. What it does not cover, stated here rather than left to be found: `set_quorum_threshold` is admin settable with no floor above one, so the admin key can lower a quorum of two back to one and then post alone. The quorum holds against a compromised reporter key and not against a compromised admin key. What changed on 31 October is that those are now different keys: the admin was one of the two reporters until then, so a single key both wrote the rule and voted under it, and `is_reporter` on the admin reads `false` today. A threshold that only ratchets upward is the remaining one line change, and it is a redeployment of the Oracle Adapter under a submitted milestone, so it ships with the Tranche 3 mainnet deployment |
-| yield distribution driven by oracle data | `bash scripts/e2e-reconciliation.sh` | **13 passed, 0 failed**, and the chain of custody is five links: a servicing tape, a pure function of it, one vote per reporter to quorum, the feed's own guards, and a keeper that prices each pool from the feed that pool names. The run that distributed is in `docs/evidence/reconciliation-2026-10-30.log`: tape to `10374235`, `NavQuorumReached` with two votes, **1897996** stroops delivered, `exchange_rate` 17138171 to 17143622, `total_shares` unmoved. **The two runs this row used to cite are the defect and not the proof**, and the reviewer was right about both. On 26 October it paid 36357814 stroops on 1210 USDC of deployed capital by applying the private credit move to every pool, including capital in a Stablebond that `PC_NAV` says nothing about; 700 USDC was at that feed and 21033446 was owed. The earlier run the same day, 500000 stroops, reconciles only at 10 USDC and was labelled 100. The keeper groups exposure by feed now, reads every feed through the Adapter so one stale feed stops the whole run, and clamps a falling feed to zero because a loss is a `write_down` |
+| yield distribution driven by oracle data | `bash scripts/e2e-reconciliation.sh` | **13 passed, 0 failed** on a run that can push, **10** on one inside `PC_NAV`'s hour, which the suite says rather than failing. The chain of custody is five links: a servicing tape, a pure function of it, one vote per reporter to quorum, the feed's own guards, and a keeper that prices each pool from the feed that pool names. The run that distributed is in `docs/evidence/reconciliation-2026-10-30.log`: tape to `10374235`, `NavQuorumReached` with two votes, **1897996** stroops delivered, `exchange_rate` 17138171 to 17143622, `total_shares` unmoved. **The two runs this row used to cite are the defect and not the proof**, and the reviewer was right about both. On 26 October it paid 36357814 stroops on 1210 USDC of deployed capital by applying the private credit move to every pool, including capital in a Stablebond that `PC_NAV` says nothing about; 700 USDC was at that feed and 21033446 was owed. The earlier run the same day, 500000 stroops, reconciles only at 10 USDC and was labelled 100. The keeper groups exposure by feed now, reads every feed through the Adapter so one stale feed stops the whole run, and clamps a falling feed to zero because a loss is a `write_down` |
 | reconciled against what backs it | `bash scripts/e2e-generation3.sh`, section 8 | agUSD in circulation against its backing, and sagUSD against the tracked share count, both closing in the same run |
 
 **What drives what, exactly.** The Vault prices its book by reading PC_NAV
@@ -208,10 +208,10 @@ the code did are corrected above.
 | `bash scripts/check-refusals.sh` | **4 passed**, 0 failed, four permanent refusals read back off the ledger |
 | `bash scripts/check-advisories.sh` | **2 passed**, 0 failed |
 | `bash scripts/check-ttl.sh` | **11 passed**, 0 failed |
-| `bash scripts/e2e-etherfuse.sh` | **25 passed**, 0 failed, D1's subscription and redemption on testnet |
+| `bash scripts/e2e-etherfuse.sh` | **25 to 27 passed**, 0 failed, D1's subscription and redemption on testnet. `EF_BOND` takes one point an hour: inside that hour the accrual step asserts that the feed refuses a second point and skips the three assertions about the move, outside it the three run. 25 or 27, nothing fails either way |
 | `bash scripts/e2e-allocation-guards.sh` | **10 passed**, 0 failed, D1's caps and reserve floor |
 | `bash scripts/e2e-concentration-caps.sh` | **10 passed**, 0 failed, D1's originator and jurisdiction caps |
-| `bash scripts/e2e-reconciliation.sh` | **13 passed**, 0 failed, D2's tape to NAV to yield |
+| `bash scripts/e2e-reconciliation.sh` | **10 to 13 passed**, 0 failed, D2's tape to NAV to yield. `PC_NAV` takes one point an hour, so a run inside that hour cannot push and the five assertions about the vote mechanics are replaced by two weaker ones on the stored value, with the reason printed. 13 on a run that can push, 10 on one that cannot, and nothing fails either way |
 | `bash scripts/e2e-two-originators.sh` | **13 passed**, 0 failed, one wasm at two feeds with two caps |
 | `bash scripts/e2e-oracle-quorum.sh` | **12 passed**, 0 failed, one reporter moves nothing |
 | `bash scripts/e2e-peg-gate.sh` | **11 passed**, 0 failed, D2's peg feed refusing and permitting |
@@ -219,12 +219,12 @@ the code did are corrected above.
 | `bash scripts/e2e-generation3.sh` | **20 passed**, 0 failed |
 | `bash scripts/e2e-test.sh` | **23 to 24 passed**, 0 failed. The variance is one of the six generation 1 credit vaults, `flagship`, whose yield distribution does not always land; the suite reports that as a `SKIP` with the error rather than counting it, so the total moves by one and nothing fails. Its deposit and its exit are asserted on every run |
 | `bash scripts/e2e-anchor.sh` | D3's round trip, both anchor transactions `completed` |
-| `bash scripts/smoke-core.sh` | **11 passed**, 0 failed |
+| `bash scripts/smoke-core.sh` | **11 to 14 passed**, 0 failed, one assertion per feed that can actually take a value. `USDC_USD` takes one point per 300s and the two NAV feeds one per 3600s, so a run inside those windows skips the read-back with its reason instead of comparing against the value the guard correctly refused to replace |
 | `bash scripts/smoke-agusd-core.sh` | **32 passed**, 0 failed |
 | `bash scripts/smoke-review2.sh` | **45 passed**, 0 failed |
 | `bash scripts/smoke-review3.sh` | **38 passed**, 0 failed |
 | `bash scripts/smoke-mediums.sh` | **61 passed**, 0 failed |
-| `bash scripts/smoke-hardening.sh` | **62 passed**, 0 failed |
+| `bash scripts/smoke-hardening.sh` | **62 to 64 passed**, 0 failed. The interval guard needs a round to commit first, and a round cannot commit inside `PC_NAV`'s hour, so the two assertions behind it run on a run that can push and are skipped with the reason on one that cannot |
 | `bash scripts/keeper-reflector.sh` | `USDC_USD` from Reflector, checked against its own clock |
 | `bash scripts/keeper-etherfuse.sh` | `EF_BOND` from Etherfuse's USTRY, five sources agreeing around their median |
 | `bash scripts/keeper-oracle.sh` | dispatches the two above, reports PC_NAV's window |
@@ -238,6 +238,17 @@ at 40 passed 6 failed, and the same two alone reported 45 and 61 with nothing
 failing. The repository documents that trap and it still caught us, so it is
 written here beside the numbers rather than left for the next reader to
 rediscover.
+
+Five of the totals above are ranges and not numbers, and the reason is a guard
+rather than a flake. Every feed has a minimum interval in ledger time, 300
+seconds on `USDC_USD` and an hour on the NAV feeds, and a suite that runs inside
+one cannot push a value. Where that happens the suite says so and skips the
+assertions that needed the push, rather than comparing against a value the guard
+correctly refused to replace. So `e2e-test` reads 23 or 24, `e2e-reconciliation`
+10 or 13, `e2e-etherfuse` 25 or 27, `smoke-core` 11 to 14 and `smoke-hardening`
+62 or 64, with nothing failing at either end. A single number in this column
+would have been a number that is right about half the time, which is the thing
+this file is for.
 
 The same trap has a smaller version that is worth naming, because it produced a
 red line during this pass. `verify-tranche2` read `nav`, `total_shares` and
