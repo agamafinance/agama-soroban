@@ -6,7 +6,7 @@ use super::*;
 use etherfuse::{EtherfuseAdapter, EtherfuseAdapterClient};
 use mock_stablebond::MockStablebond;
 use mock_usdc::{MockUsdc, MockUsdcClient};
-use private_credit::{PrivateCreditAdapter, PrivateCreditAdapterClient};
+use private_credit::{PrivateCreditAdapter, PrivateCreditAdapterClient, DEFAULT_ORACLE_FEED};
 use soroban_sdk::testutils::{Address as _, MockAuth, MockAuthInvoke};
 use soroban_sdk::{
     contract, contractimpl, symbol_short, token::TokenClient, IntoVal, InvokeError, String,
@@ -313,6 +313,7 @@ fn setup() -> Fix {
             engine_id.clone(),
             vault_id.clone(),
             usdc_id.clone(),
+            DEFAULT_ORACLE_FEED,
         ),
     );
     let adapter_a = PrivateCreditAdapterClient::new(&e, &pool_a);
@@ -324,6 +325,7 @@ fn setup() -> Fix {
             engine_id.clone(),
             vault_id.clone(),
             usdc_id.clone(),
+            DEFAULT_ORACLE_FEED,
         ),
     );
 
@@ -398,6 +400,7 @@ fn extra_private_credit_pool(f: &Fix) -> Address {
             f.engine.address.clone(),
             f.vault_id.clone(),
             f.usdc.address.clone(),
+            DEFAULT_ORACLE_FEED,
         ),
     )
 }
@@ -519,6 +522,7 @@ fn an_unconfigured_engine_cannot_deploy_capital() {
             engine_id.clone(),
             vault_id.clone(),
             usdc_id.clone(),
+            DEFAULT_ORACLE_FEED,
         ),
     );
     engine.register_pool(
@@ -864,6 +868,7 @@ fn the_deployed_limits_leave_the_reserve_floor_able_to_bind() {
             engine_id.clone(),
             vault_id.clone(),
             usdc_id.clone(),
+            DEFAULT_ORACLE_FEED,
         ),
     );
     let ef = e.register(
@@ -975,6 +980,7 @@ fn a_pool_that_does_not_name_this_engine_and_this_vault_cannot_be_registered() {
             other_engine.clone(),
             f.vault_id.clone(),
             f.usdc.address.clone(),
+            DEFAULT_ORACLE_FEED,
         ),
     );
     assert_eq!(
@@ -1006,6 +1012,7 @@ fn a_pool_that_does_not_name_this_engine_and_this_vault_cannot_be_registered() {
             f.engine.address.clone(),
             f.vault_id.clone(),
             f.usdc.address.clone(),
+            DEFAULT_ORACLE_FEED,
         ),
     );
     f.engine.set_vault(&f.admin, &other_vault);
@@ -2161,6 +2168,7 @@ fn an_adapter_cannot_be_built_against_a_vault_custodying_another_token() {
             f.engine.address.clone(),
             f.vault_id.clone(),
             other_id,
+            DEFAULT_ORACLE_FEED,
         ),
     );
 }

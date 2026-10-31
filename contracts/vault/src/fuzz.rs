@@ -100,7 +100,7 @@ use allocation_engine::{AllocationEngine, AllocationEngineClient};
 use etherfuse::{EtherfuseAdapter, EtherfuseAdapterClient};
 use mock_stablebond::MockStablebond;
 use mock_usdc::{MockUsdc, MockUsdcClient};
-use private_credit::{PrivateCreditAdapter, PrivateCreditAdapterClient};
+use private_credit::{PrivateCreditAdapter, PrivateCreditAdapterClient, DEFAULT_ORACLE_FEED};
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 use soroban_sdk::testutils::{Address as _, Ledger as _};
@@ -264,6 +264,7 @@ fn setup() -> FuzzState {
             engine_id.clone(),
             vault_id.clone(),
             usdc_id.clone(),
+            DEFAULT_ORACLE_FEED,
         ),
     );
     let pc_pool = PrivateCreditAdapterClient::new(&e, &pc_pool_id);

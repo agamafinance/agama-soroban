@@ -3,7 +3,7 @@ use super::*;
 use allocation_engine::{AllocationEngine, AllocationEngineClient, EngineError};
 use mock_usdc::{MockUsdc, MockUsdcClient};
 use oracle_adapter::{OracleAdapter, OracleAdapterClient};
-use private_credit::{PrivateCreditAdapter, PrivateCreditAdapterClient};
+use private_credit::{PrivateCreditAdapter, PrivateCreditAdapterClient, DEFAULT_ORACLE_FEED};
 use soroban_sdk::testutils::storage::Persistent as _;
 use soroban_sdk::testutils::{Address as _, Ledger as _};
 use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
@@ -87,6 +87,7 @@ fn setup() -> Fix {
             engine_id.clone(),
             vault_id.clone(),
             usdc_id.clone(),
+            DEFAULT_ORACLE_FEED,
         ),
     );
     engine.register_pool(
@@ -620,6 +621,7 @@ fn spare_engine(f: &Fix, vault: &Address) -> (AllocationEngineClient<'static>, A
             engine_id.clone(),
             vault.clone(),
             f.usdc.address.clone(),
+            DEFAULT_ORACLE_FEED,
         ),
     );
     engine.register_pool(
@@ -778,6 +780,7 @@ fn an_engine_that_governs_another_vault_does_not_freeze_this_one() {
             foreign_id.clone(),
             other_vault_id.clone(),
             f.usdc.address.clone(),
+            DEFAULT_ORACLE_FEED,
         ),
     );
     foreign.register_pool(
@@ -1660,6 +1663,7 @@ fn a_write_down_buys_no_room_under_the_reserve_floor() {
             f.engine.address.clone(),
             f.vault.address.clone(),
             f.usdc.address.clone(),
+            DEFAULT_ORACLE_FEED,
         ),
     );
     f.engine.register_pool(

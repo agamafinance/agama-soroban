@@ -92,6 +92,7 @@ fn setup() -> Fix {
             engine.clone(),
             vault.clone(),
             usdc_id.clone(),
+            DEFAULT_ORACLE_FEED,
         ),
     );
     let adapter = PrivateCreditAdapterClient::new(&e, &adapter_id);
@@ -185,7 +186,7 @@ fn metadata_matches_the_feed_the_pool_is_priced_from() {
     assert_eq!(f.adapter.pool_kind(), POOL_KIND);
     // The Oracle Adapter registers PC_NAV with a 7 day staleness window, which
     // is the on-chain counterpart of this settlement window.
-    assert_eq!(f.adapter.oracle_feed(), ORACLE_FEED);
+    assert_eq!(f.adapter.oracle_feed(), DEFAULT_ORACLE_FEED);
     assert_eq!(f.adapter.settlement_window(), (15, 90));
 }
 
@@ -533,6 +534,97 @@ fn an_adapter_cannot_be_deployed_pointing_at_a_vault_its_engine_does_not_govern(
             engine,
             f.vault.clone(),
             f.usdc.address.clone(),
+            DEFAULT_ORACLE_FEED,
         ),
+    );
+}
+
+#[test]
+fn two_instances_of_one_wasm_carry_two_originators_at_two_feeds() {
+    // The reason the feed stopped being a compiled constant. One adapter
+    // instance is one originator, because an originator's NAV is a statement
+    // about its own book, and the keeper groups exposure by the answer to
+    // `oracle_feed`. With the feed compiled in, a second originator needed a
+    // second build of the same contract.
+    let f = setup();
+    // A second Engine, correctly formed, governing the same Vault, because the
+    // constructor checks that symmetry.
+    let engine = f.e.register(MockEngine, ());
+    MockEngineClient::new(&f.e, &engine).initialize(&f.vault);
+    let second = f.e.register(
+        PrivateCreditAdapter,
+        (
+            f.admin.clone(),
+            engine,
+            f.vault.clone(),
+            f.usdc.address.clone(),
+            Symbol::new(&f.e, "PC_NAV2"),
+        ),
+    );
+    let second = PrivateCreditAdapterClient::new(&f.e, &second);
+
+    assert_eq!(f.adapter.oracle_feed(), DEFAULT_ORACLE_FEED);
+    assert_eq!(second.oracle_feed(), Symbol::new(&f.e, "PC_NAV2"));
+    assert_eq!(f.adapter.pool_kind(), second.pool_kind(), "same contract");
+}
+
+#[test]
+#[should_panic(expected = "#612")]
+fn a_feed_of_no_name_is_refused_at_construction() {
+    // An instance answering with an empty symbol would have its capital priced
+    // against a feed that cannot be registered, and the keeper would read that
+    // as flat rather than as an error.
+    let f = setup();
+    let engine = f.e.register(MockEngine, ());
+    MockEngineClient::new(&f.e, &engine).initialize(&f.vault);
+    f.e.register(
+        PrivateCreditAdapter,
+        (
+            f.admin.clone(),
+            engine,
+            f.vault.clone(),
+            f.usdc.address.clone(),
+            Symbol::new(&f.e, ""),
+        ),
+    );
+}
+
+#[test]
+fn the_feed_moves_only_while_the_adapter_is_empty() {
+    // Moving the feed under live capital reprices that capital against a
+    // different originator's book in one transaction, with nothing reverting:
+    // the exposure stays, the NAV it is multiplied by changes, and the share
+    // price moves for a reason no event explains.
+    let f = setup();
+    let other = Symbol::new(&f.e, "PC_NAV2");
+
+    f.usdc.faucet(&f.adapter_id, &(100 * USDC));
+    f.adapter.allocate(&(100 * USDC));
+    assert_eq!(
+        f.adapter.try_set_oracle_feed(&f.admin, &other),
+        Err(Ok(AdapterError::NotEmpty)),
+        "not while it holds exposure"
+    );
+    assert_eq!(f.adapter.oracle_feed(), DEFAULT_ORACLE_FEED);
+
+    f.adapter.deallocate(&(100 * USDC));
+    f.adapter.set_oracle_feed(&f.admin, &other);
+    assert_eq!(f.adapter.oracle_feed(), other, "and once empty it moves");
+
+    assert_eq!(
+        f.adapter.try_set_oracle_feed(&f.admin, &Symbol::new(&f.e, "")),
+        Err(Ok(AdapterError::InvalidFeed)),
+        "and never to nothing"
+    );
+}
+
+#[test]
+fn only_the_admin_moves_the_feed() {
+    let f = setup();
+    let stranger = Address::generate(&f.e);
+    assert_eq!(
+        f.adapter
+            .try_set_oracle_feed(&stranger, &Symbol::new(&f.e, "PC_NAV2")),
+        Err(Ok(AdapterError::NotAdmin))
     );
 }

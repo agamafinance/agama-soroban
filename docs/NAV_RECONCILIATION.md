@@ -8,6 +8,52 @@ Tranche 2, Deliverable 2 of the SCF #45 award asks for this, in its own words:
 This is the procedure. It is written so that a reviewer can disagree with our
 NAV by rerunning the computation, rather than by deciding whether to trust us.
 
+## Several originators
+
+The unit of everything is a pair: **one adapter instance and one feed**, one
+originator each.
+
+| what it holds | where |
+|---|---|
+| who is in, and under what name and jurisdiction | `register_pool` on the Engine |
+| how much each one may hold at most | `set_caps`, nested pool under originator under jurisdiction |
+| what range of each one's number is acceptable | `register_feed`, deviation, floor, ceiling, staleness, interval |
+| how many signatures move each number | `set_quorum_threshold`, per feed |
+| whether capital goes there at all | `allocate`, and not allocating is the strongest of these |
+
+The weights are not a judgement call. A pool's share of the blended return is
+the capital placed in it, which is already on the ledger as its exposure, so
+`keeper-yield.sh` groups exposure by the feed each adapter names and prices each
+group against its own. Three originators at 40/40/20 need no new arithmetic:
+they need three rows.
+
+Nothing is averaged. An originator's NAV is a statement about its own book, and
+blending two books into one number would price capital at a figure no originator
+reported, while throwing away the only thing a concentration cap can act on.
+
+### What this cost, and what it was
+
+The feed used to be compiled into the adapter:
+
+```rust
+pub const ORACLE_FEED: Symbol = symbol_short!("PC_NAV");
+```
+
+So a second originator needed a second **build** of the same contract, and a
+protocol that needs a compiler to take on a counterparty will not take one on.
+It is a constructor parameter now, stored per instance, movable by the admin
+only while the instance is empty: repointing a funded one would reprice live
+capital against a different originator's book in a single transaction, with the
+exposure unchanged, the NAV it is multiplied by changed, and the share price
+moving for a reason no event explains.
+
+Proved on testnet rather than argued. `bash scripts/e2e-two-originators.sh`,
+**15 passed, 0 failed**: one wasm, two instances answering `PC_NAV` and
+`PC_NAV2`, two originators and two jurisdictions on the Engine, both feeds
+bounded and at quorum two, the keeper showing three feed groups with the new
+exposure under its own, and a funded instance refusing to be repointed with
+`#605`.
+
 ## Who does what, and who touches nothing
 
 The chain has exactly three parties and only one of them operates anything.

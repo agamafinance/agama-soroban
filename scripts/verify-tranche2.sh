@@ -71,7 +71,11 @@ ok "reserve floor" "$(num "$ENGINE" reserve_floor_bps)" "2500"
 
 echo "== the pools it routes into"
 POOLS=$(call "$ENGINE" pools)
-ok "adapters registered" "$(printf '%s' "$POOLS" | python3 -c "import sys,json;print(len(json.load(sys.stdin)))")" "3"
+# Counted from the record rather than typed, because a fourth pool was added
+# and both of these said three. A number in a verification script that has to be
+# edited every time the thing it verifies changes is a number that will be wrong.
+EXPECTED=$(python3 -c "import json;print(len(json.load(open('deployments/testnet.json'))['engineConfig']['pools']))")
+ok "adapters registered" "$(printf '%s' "$POOLS" | python3 -c "import sys,json;print(len(json.load(sys.stdin)))")" "$EXPECTED"
 # pools() hands back addresses; who each one is comes from get_pool. Printed
 # because the reason the originator and jurisdiction caps cannot bind here is
 # visible in these six values and nowhere else.
@@ -84,7 +88,7 @@ m = json.load(sys.stdin)
 print('%-9s %-3s cap %s bps' % (m['originator'], m['jurisdiction'], m['cap_bps']))" 2>/dev/null)"
   printf '%s' "$META" | grep -q '"originator"' && printf '%s' "$META" | grep -q '"jurisdiction"' && NAMED=$((NAMED+1))
 done
-ok "each carries an originator and a jurisdiction" "$NAMED" "3"
+ok "each carries an originator and a jurisdiction" "$NAMED" "$EXPECTED"
 # The six values above are the reason the aggregate caps cannot bind, and the
 # record repeats them in prose. Printed and never compared is how a record and
 # a ledger drift apart, so the classification itself is checked too.

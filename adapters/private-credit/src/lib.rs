@@ -106,8 +106,17 @@ const INSTANCE_LIFETIME: u32 = INSTANCE_BUMP - DAY_LEDGERS;
 
 /// Identifies the pool type to anything reading the adapter generically.
 pub const POOL_KIND: Symbol = symbol_short!("PRIVCRED");
-/// Oracle Adapter feed this pool is valued from.
-pub const ORACLE_FEED: Symbol = symbol_short!("PC_NAV");
+/// The feed a deployment gets when the deployer does not name one.
+///
+/// It is a default and not the answer. One adapter instance is one originator,
+/// because an originator's NAV is a statement about its own book and averaging
+/// two books into one number throws away the only thing a concentration cap can
+/// act on. So a second originator is a second instance of this same wasm with a
+/// feed of its own, and the feed therefore has to be a deployment parameter
+/// rather than something compiled in. It used to be compiled in, which meant a
+/// second originator needed a second build, and a protocol that needs a
+/// compiler to onboard a counterparty will not onboard one.
+pub const DEFAULT_ORACLE_FEED: Symbol = symbol_short!("PC_NAV");
 /// Settlement window, in days, advertised to the Engine and the UI.
 pub const MIN_SETTLEMENT_DAYS: u32 = 15;
 pub const MAX_SETTLEMENT_DAYS: u32 = 90;
@@ -143,6 +152,11 @@ pub enum AdapterError {
     /// The adapter holds nothing above its booked exposure, so there is nothing
     /// to send home.
     NothingToRecover = 611,
+    /// A feed of no name. The keeper groups exposure by the answer to
+    /// `oracle_feed`, so an instance that answers with nothing would have its
+    /// capital priced against a feed that cannot be registered, which reads as
+    /// flat rather than as an error.
+    InvalidFeed = 612,
 }
 
 #[derive(Clone)]
@@ -153,6 +167,9 @@ enum Cfg {
     Vault,
     Usdc,
     Exposure,
+    /// The Oracle Adapter feed this instance is valued from, set at
+    /// construction. Movable only while the adapter is empty.
+    Feed,
     /// Half finished admin handover: proposed, not yet accepted.
     PendingAdmin,
 }
@@ -167,6 +184,19 @@ pub struct CounterpartiesSet {
     pub engine: Address,
     #[topic]
     pub vault: Address,
+}
+
+/// Emitted when this instance is repointed at a different feed. The feed is
+/// what the keeper multiplies this pool's exposure by, so a change to it
+/// changes every valuation that follows and belongs in the stream. It can only
+/// happen while the adapter is empty, which is why no amount appears here.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OracleFeedMoved {
+    #[topic]
+    pub from: Symbol,
+    #[topic]
+    pub to: Symbol,
 }
 
 /// Emitted when exposure is written off. It is the only way this adapter's book
@@ -229,14 +259,19 @@ impl PrivateCreditAdapter {
         engine: Address,
         vault: Address,
         usdc: Address,
+        feed: Symbol,
     ) -> Result<(), AdapterError> {
         admin.require_auth();
         Self::require_symmetry(&e, &engine, &vault, &usdc)?;
+        if feed == Symbol::new(&e, "") {
+            return Err(AdapterError::InvalidFeed);
+        }
         e.storage().instance().set(&Cfg::Admin, &admin);
         e.storage().instance().set(&Cfg::Engine, &engine);
         e.storage().instance().set(&Cfg::Vault, &vault);
         e.storage().instance().set(&Cfg::Usdc, &usdc);
         e.storage().instance().set(&Cfg::Exposure, &0i128);
+        e.storage().instance().set(&Cfg::Feed, &feed);
         Self::bump(&e);
         Ok(())
     }
@@ -494,8 +529,41 @@ impl PrivateCreditAdapter {
         POOL_KIND
     }
 
-    pub fn oracle_feed(_e: Env) -> Symbol {
-        ORACLE_FEED
+    pub fn oracle_feed(e: Env) -> Symbol {
+        e.storage()
+            .instance()
+            .get(&Cfg::Feed)
+            .unwrap_or(DEFAULT_ORACLE_FEED)
+    }
+
+    /// Repoint this instance at a different feed, while it is empty.
+    ///
+    /// Empty is the whole guard. The keeper prices booked exposure against the
+    /// feed this answers with, so moving the feed under live capital reprices
+    /// that capital against a different originator's book in one transaction
+    /// and nothing reverts: the exposure stays, the NAV it is multiplied by
+    /// changes, and the share price moves for a reason no event explains. With
+    /// nothing booked there is nothing to misprice.
+    ///
+    /// It exists because the alternative is worse. A feed that can never move
+    /// means an instance whose originator renames its series, or whose feed has
+    /// to be re-registered with different bounds, is an instance to redeploy and
+    /// re-register, and a redeployment is where exposure gets stranded.
+    pub fn set_oracle_feed(e: Env, admin: Address, feed: Symbol) -> Result<(), AdapterError> {
+        Self::require_admin(&e, &admin)?;
+        Self::require_empty(&e)?;
+        if feed == Symbol::new(&e, "") {
+            return Err(AdapterError::InvalidFeed);
+        }
+        let old: Symbol = e
+            .storage()
+            .instance()
+            .get(&Cfg::Feed)
+            .unwrap_or(DEFAULT_ORACLE_FEED);
+        e.storage().instance().set(&Cfg::Feed, &feed);
+        Self::bump(&e);
+        OracleFeedMoved { from: old, to: feed }.publish(&e);
+        Ok(())
     }
 
     /// Settlement window in days, as `(min, max)`. Nothing on-chain enforces
