@@ -203,7 +203,7 @@ the code did are corrected above.
 | `cargo test --workspace` | **263 passed**, 0 failed, 12 suites |
 | `bash scripts/verify-tranche2.sh` | **27 passed**, 0 failed, run by an account it makes itself |
 | `bash scripts/check-deployment-record.sh --wasm` | **81 passed**, 0 failed, deployed bytecode compared against the tree |
-| `bash scripts/check-doc-entry-points.sh` | **10 passed**, 0 failed, 187 signatures agreeing with the ledger |
+| `bash scripts/check-doc-entry-points.sh` | **10 passed**, 0 failed. Across nine contracts, all **187** live entry points that are this repository's own are named in `docs/ARCHITECTURE.md`, the SEP-41 token interface the host supplies being described once as a standard rather than re-listed per token, and all **69** signatures that document declares agree with the ledger on arity |
 | `bash scripts/check-authorization.sh` | **0 failures** over **81** state-changing entry points, 5 of them deliberately permissionless and each with its reason printed |
 | `bash scripts/check-refusals.sh` | **4 passed**, 0 failed, four permanent refusals read back off the ledger |
 | `bash scripts/check-advisories.sh` | **2 passed**, 0 failed |

@@ -29,7 +29,11 @@ that belongs to somebody else.
 **263 / 0** across twelve crates, `check-deployment-record.sh --wasm`
 **81 / 0** and **47 / 0** without it, the two new checks being the second
 private credit instance, whose bytecode the record declares rather than shares
-with the first, `check-doc-entry-points.sh` **10 / 0** over 187 signatures,
+with the first, `check-doc-entry-points.sh` **10 / 0**: across nine contracts, all **187** live
+entry points that are this repository's own are named in the architecture
+document, the SEP-41 token interface the host supplies being described once as a
+standard rather than re-listed per token, and all **69** signatures that document
+declares agree with the ledger on arity,
 `campaign-report.sh` **853 submissions, none failed, 23 consecutive
 calendar days**, `check-ttl.sh` **11 / 0**, `check-authorization.sh` **0 failures** over **81**
 state-changing entry points, `verify-tranche2.sh` **27 / 0** once it stopped
