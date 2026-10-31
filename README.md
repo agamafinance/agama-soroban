@@ -338,7 +338,8 @@ the property the guard needs and it is the one worth stating precisely, because
 "cumulative, never fall" was what this paragraph used to say and it is not true:
 `recover` lowers both, by exactly the cash the adapter sends home. The sentence
 was observably wrong on the ledger, where `written_off()` went from 100000000 to
-99000000 the moment a 1000000 write-off was recovered.
+99000000 the moment a 1000000 write-off was recovered, and reads 97000000 after
+two more. Three readings of a counter that was documented as never falling.
 
 Which is the correct behaviour rather than a leak. The counters measure exposure
 written off **and not recovered**, so capital that actually comes back stops

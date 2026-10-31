@@ -134,6 +134,11 @@ for feed in sorted(by_feed):
         lines.append(f"  {feed:<10} exposure {exposure:>14}  {before} -> {now}  yield {amount}")
     elif moved < 0:
         lines.append(f"  {feed:<10} exposure {exposure:>14}  {before} -> {now}  FELL by {-amount}, not distributed: a loss is a write_down")
+    elif moved > 0:
+        # The feed moved and the yield floored to nothing, which is not the same
+        # as the feed being flat and used to print as though it were. It happens
+        # when the exposure behind a feed is small relative to the move.
+        lines.append(f"  {feed:<10} exposure {exposure:>14}  {before} -> {now}  rose, and the yield floors to 0 at this exposure")
     else:
         lines.append(f"  {feed:<10} exposure {exposure:>14}  flat at {now}")
 print(json.dumps({'total': total, 'lines': lines, 'feeds': navs,
