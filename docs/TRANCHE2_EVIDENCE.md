@@ -219,7 +219,7 @@ the code did are corrected above.
 | `bash scripts/e2e-peg-gate.sh` | **11 passed**, 0 failed, D2's peg feed refusing and permitting |
 | `bash scripts/e2e-cctp-wiring.sh` | **10 passed**, 0 failed |
 | `bash scripts/e2e-generation3.sh` | **20 passed**, 0 failed |
-| `bash scripts/e2e-test.sh` | **23 to 24 passed**, 0 failed. The variance is one of the six generation 1 credit vaults, `flagship`, whose yield distribution does not always land; the suite reports that as a `SKIP` with the error rather than counting it, so the total moves by one and nothing fails. Its deposit and its exit are asserted on every run |
+| `bash scripts/e2e-test.sh` | **23 to 24 passed**, 0 failed, both ends observed on 2026-10-31. The variance is one of the six generation 1 credit vaults, `flagship`, whose yield distribution does not always land; the suite reports that as a `SKIP` with the error rather than counting it, so the total moves by one and nothing fails. Its deposit and its exit are asserted on every run, and on the run that read 24 the distribution landed and the share price rose 11564789 to 11637102 |
 | `bash scripts/e2e-anchor.sh` | D3's round trip, both anchor transactions `completed` |
 | `bash scripts/smoke-core.sh` | **11 to 14 passed**, 0 failed, one assertion per feed that can actually take a value. `USDC_USD` takes one point per 300s and the two NAV feeds one per 3600s, so a run inside those windows skips the read-back with its reason instead of comparing against the value the guard correctly refused to replace |
 | `bash scripts/smoke-agusd-core.sh` | **32 passed**, 0 failed |
