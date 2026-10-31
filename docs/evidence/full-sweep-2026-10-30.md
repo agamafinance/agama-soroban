@@ -120,6 +120,25 @@ this file was the thing it was warning about. Every run of it left a stale lock,
 and the eight smoke suites after it refused to start, naming a dead pid.
 **Fixed:** both exits from `restore_engine` release the lock.
 
+### 2a. The same helper's lesson, not learned far enough (31 October)
+
+The fix below taught `lib-ensure-usdc.sh` to subtract selling liabilities.
+`smoke-hardening.sh` learned the same thing and then sized its deposit at the
+whole spendable balance rounded down to whole USDC, which leaves under a dollar
+of margin. The market maker re-quotes from that same account, so it can widen
+its selling liabilities between the read and the submit and take the margin with
+it. On 31 October it did: the deposit was refused and the three assertions after
+it compared the book against a deposit that never landed, reporting one lost
+race as **three protocol failures**, 59 passed 3 failed.
+
+A fixed margin is not the fix, because this account's budget is a few tens of
+USDC and the suite needs three of them, so holding two back makes it refuse to
+run on a balance it can work with. It re-reads spendable immediately before the
+submit and shrinks the deposit to fit, and if the deposit still does not land
+the three assertions are skipped with the reason instead of failed. A step that
+did not happen is a skip, which is the rule this file states below and the one
+place in that suite that did not follow it.
+
 ### 2. A helper that measured held rather than spendable
 
 `lib-ensure-usdc.sh` asked the SAC for `balance`. For a classic asset that is

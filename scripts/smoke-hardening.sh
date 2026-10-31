@@ -266,10 +266,42 @@ AG0=$(q0 "$AGUSD" balance --id "$ADMIN")
 # it, so asserting zero here fails on a book that is merely in use rather than
 # on a book that is wrong.
 DEP0=$(q0 "$VAULT" deployed_capital)
-echo "  deposit $DEPOSIT  tx $(tx "$VAULT" deposit --from "$ADMIN" --amount "$DEPOSIT")"
-assert_eq "agUSD minted one for one" "$(q "$AGUSD" balance --id "$ADMIN")" "$((AG0 + DEPOSIT))"
-assert_eq "idle reserves rose by the deposit" "$(q "$VAULT" idle_reserves)" "$((IDLE0 + DEPOSIT))"
-assert_eq "free reserves are idle less what is owed" "$(q "$VAULT" free_reserves)" "$((IDLE0 + DEPOSIT - LIAB0))"
+# A step that did not happen is a skip and not a failure, and this line was the
+# one place in this suite that did not honour that. The deposit is sized at the
+# whole spendable balance rounded down to whole USDC, which leaves under a dollar
+# of margin, and the sagUSD market maker re-quotes on SDEX from this same
+# account: it can move its selling liabilities between the read and the submit
+# and take that margin with it. When it did, the deposit was refused and the
+# three assertions below compared the book against a deposit that never landed,
+# reporting one lost race as three protocol failures.
+# Spendable again, immediately before the submit. A fixed margin is not the fix
+# here: this account's budget is a few tens of USDC and the suite needs three of
+# them, so holding two back makes it refuse to run on a balance it can work
+# with. Re-reading costs one call and shrinks the deposit to whatever is actually
+# there.
+FRESH=$(spendable "$USDC_CODE" "$USDC_ISSUER")
+if [ "${FRESH:-0}" -lt "$DEPOSIT" ]; then
+  echo "  spendable moved from $WALLET to $FRESH between the read and the submit,"
+  echo "  which is the market maker re-quoting from this same account"
+  DEPOSIT=$(( FRESH / 1000000 * 1000000 ))
+fi
+DEPOSIT_TX=$(tx "$VAULT" deposit --from "$ADMIN" --amount "$DEPOSIT")
+echo "  deposit $DEPOSIT  tx $DEPOSIT_TX"
+case "$DEPOSIT_TX" in
+  FAILED*)
+    echo "  SKIP  the deposit did not land ($DEPOSIT_TX). It was sized at $DEPOSIT against"
+    echo "        $FRESH spendable, and the market maker quotes from this same account, so"
+    echo "        the margin can be gone by the time the transaction is submitted."
+    echo "        The three assertions below are about a deposit, so they are skipped"
+    echo "        rather than compared against one that never happened."
+    echo "  now:  $(spendable "$USDC_CODE" "$USDC_ISSUER") spendable"
+    ;;
+  *)
+    assert_eq "agUSD minted one for one" "$(q "$AGUSD" balance --id "$ADMIN")" "$((AG0 + DEPOSIT))"
+    assert_eq "idle reserves rose by the deposit" "$(q "$VAULT" idle_reserves)" "$((IDLE0 + DEPOSIT))"
+    assert_eq "free reserves are idle less what is owed" "$(q "$VAULT" free_reserves)" "$((IDLE0 + DEPOSIT - LIAB0))"
+    ;;
+esac
 assert_eq "a deposit leaves deployed capital where it was" "$(q "$VAULT" deployed_capital)" "$DEP0"
 
 echo ""
