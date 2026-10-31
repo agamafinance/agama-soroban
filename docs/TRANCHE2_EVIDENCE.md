@@ -383,9 +383,13 @@ The vote and the rules are held by different keys now. Two dedicated reporters
 can move a NAV and cannot touch a bound; the admin can change a bound and
 cannot vote. Both sets are ours, which is the point: the separation is ours to
 run and needs no outside counterparty to hold anything. A key that both writes
-the rule and votes under it is a problem whoever owns it, and a key held by an
-originator signing the NAV of its own book would have been the debtor rating its
-own debt.
+the rule and votes under it is a problem whoever owns it.
+
+An originator does not appear in this at all, and that is deliberate. It is a
+counterparty capital is placed with, not an operator: it remits a servicing
+report the way any borrower reports to any lender, and it repays. It holds no
+key, signs no transaction, and touches nothing in this infrastructure. The
+boundary is written out in `NAV_RECONCILIATION.md`.
 
 | what | how to check it | result |
 |---|---|---|

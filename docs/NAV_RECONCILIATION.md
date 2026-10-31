@@ -8,6 +8,28 @@ Tranche 2, Deliverable 2 of the SCF #45 award asks for this, in its own words:
 This is the procedure. It is written so that a reviewer can disagree with our
 NAV by rerunning the computation, rather than by deciding whether to trust us.
 
+## Who does what, and who touches nothing
+
+The chain has exactly three parties and only one of them operates anything.
+
+| party | what it does | what it holds |
+|---|---|---|
+| the originator | remits a servicing report, loan level, on a cadence set by the facility agreement, and repays | nothing. No key, no transaction, no access to any contract or script here |
+| Agama | receives the report, computes the NAV from it with `reconcile-nav.py`, and submits that number | the two dedicated reporter keys, and separately the oracle admin key |
+| the Oracle Adapter | accepts or refuses the number against bounds set in advance | the stored reading |
+
+The originator reporting its own book is not a trust problem to engineer away,
+it is what lending is: a lender's figures come from the borrower's statements in
+every private credit facility that has ever existed. What matters is that the
+step from that statement to a number on a public ledger is **mechanical and
+reproducible**, which is why `reconcile-nav.py` is a pure function of a tape and
+an as-of date and emits the tape's sha256 next to its result. Anyone with the
+tape recomputes the number.
+
+What would be a trust problem is the originator holding a reporter key, because
+then the borrower would be voting on the value of its own debt and on the share
+price of depositors who never agreed to that. It holds no key.
+
 ## What was wrong before
 
 `scripts/keeper-oracle.sh` reposted the value already stored on the feed, to
