@@ -30,7 +30,8 @@ that belongs to somebody else.
 **81 / 0** and **47 / 0** without it, the two new checks being the second
 private credit instance, whose bytecode the record declares rather than shares
 with the first, `check-doc-entry-points.sh` **10 / 0** over 187 signatures,
-`check-ttl.sh` **11 / 0**, `check-authorization.sh` **0 failures** over **81**
+`campaign-report.sh` **853 submissions, none failed, 23 consecutive
+calendar days**, `check-ttl.sh` **11 / 0**, `check-authorization.sh` **0 failures** over **81**
 state-changing entry points, `verify-tranche2.sh` **27 / 0** once it stopped
 typing the feed list and the pool count into itself, `e2e-etherfuse.sh` **25 / 0**,
 `e2e-reconciliation.sh` **13 / 0**, `smoke-mediums.sh` **61 / 0**, and two

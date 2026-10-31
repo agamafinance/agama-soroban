@@ -43,7 +43,18 @@ with no deviation bound, that NAV being deterministic.
 > deposit and withdrawal flows completing end-to-end on Stellar Testnet against
 > the MoneyGram Access sandbox, cash to USDC to agUSD and the reverse, with the
 > SDF Stellar Test Anchor covering the same flows during MoneyGram onboarding;
-> sustained multi-day testnet campaign without critical failures; codebase
+> sustained multi-day testnet campaign without critical failures; [...]
+
+The last clause of that criterion is elided, and the elision is marked rather
+than silent, because a truncated quotation of the yardstick is the one thing
+this section exists to avoid. It concerns freezing the codebase and handing it
+over, and what it asks for is a decision rather than a measurement: the freeze
+was lifted on 30 October to answer this review, since you cannot both hold a
+tree still for an outside reader and fix what a reader found, and it
+re-establishes on whichever commit the reviewer accepts. That is recorded under
+`decisions.codeFreeze` in the deployment record, with the date and the reason,
+so the state of it is readable next to the addresses it governs rather than
+asserted here.
 
 ## Status against those criteria
 
@@ -62,7 +73,8 @@ with no deviation bound, that NAV being deterministic.
 | D3 SEP-10 end to end | **met 2026-10-30** | `anchor/sep_client.py`, challenge verified before signing, JWT from `testanchor.stellar.org`; `docs/ANCHOR_RAMP.md` |
 | D3 SEP-24 interactive deposit and withdrawal end to end | **met 2026-10-30** | both flows reached `completed` on testnet: deposit `ae2734cc`, withdrawal `57eaf7e1`. `scripts/e2e-anchor.sh` |
 | D3 cash to USDC to agUSD and the reverse | **met 2026-10-30** | 5 USD of cash to 4.5 USDC to 4.5 agUSD, back through the FIFO queue, out as 4.1 USD. Every leg is a transaction in `docs/evidence/anchor-roundtrip-2026-10-30.log` |
-| D3 sustained multi-day campaign | **met** | `campaign-report.sh`, 21 consecutive days |
+| D3 sustained multi-day campaign | **met** | `campaign-report.sh`, **853 submissions, none failed, 23 consecutive calendar days** as of 2026-10-31, and the dedicated reporter key has signed nothing else |
+| D3 the elided clause, the codebase held still and handed over | **a decision, deliberately not met yet** | Lifted 2026-10-30 to answer this review and re-established on whichever commit the reviewer accepts. `decisions.codeFreeze` in `deployments/testnet.json`. `git diff --name-only bbeae11..HEAD -- contracts/ adapters/` is the command that says what moved since the baseline: **eight files today**, the Etherfuse adapter and its tests, the private credit adapter and its tests, the Engine's tests, and the Vault with its tests and its fuzzer. It is meant to report something until the baseline is moved deliberately |
 
 Nothing in that table is softened. Three rows say the work is not finished and
 one says a built thing is not deployed.
@@ -141,7 +153,8 @@ evidence, of Deliverable 2 of the previous tranche, and they are cited there.
 | SEP-24 interactive withdrawal end to end | the same run | **`completed`.** Transaction `57eaf7e1-2ce1-410d-9396-84969f227568`, 4.5 USDC in, 0.4 USDC fee, 4.1 USD out. The anchor's account and memo are read off its own transaction record, not hardcoded: payment `994d83972c03439c02dc27eba3f4ab3b84e365f748fb27130102ae95c8bb59c2`, memo `id:6100031375387207126` |
 | cash to USDC to agUSD and the reverse | `docs/evidence/anchor-roundtrip-2026-10-30.log` | **closed.** 5.0 USD of cash to 4.5 USDC to 4.5 agUSD minted one for one by the Vault, back out through the FIFO queue as claim 54, and out to 4.1 USD of cash. Every leg is a transaction in that log |
 | against the MoneyGram Access sandbox | `docs/evidence/moneygram-sandbox-2026-10-30.log` | **not run, and not a substitution.** Two facts, both checkable. First, the award names the cover itself: "with the SDF Stellar Test Anchor covering the same flows during MoneyGram onboarding", and that onboarding began on 2026-10-30, partner account under Agama Labs Inc., non-custodial on Stellar. Second, and found by trying rather than assumed: MoneyGram has moved new partners off this path. Their Stellar hub reads "Partners already on the Stellar whitelist integrate via SEP-10 and SEP-24, not the widget SDK", their legacy guide opens "New partners: use the Stellar widget hub instead", and the partner portal has no "Whitelist in TestNet" section at all, only the widget track. So the SEP path the award names is one the vendor has closed to new entrants since the award was written. The client is nonetheless complete against their anchor: SEP-1, SEP-10 with client domain attestation returning a JWT that carries `client_domain: agama.finance`, SEP-24 with their limits enforced and transaction `4ddb0b16-b40a-41f7-8ce6-6698f7c0dead` opened. Their widget then fails on two of their own calls, `transactions/prepare` and `reference-data/countries`, both HTTP 500, for a partner they have not allowlisted |
-| sustained multi-day testnet campaign without critical failures | `bash scripts/campaign-report.sh`, which needs no key, or the reporter account on [stellar.expert](https://stellar.expert/explorer/testnet/account/GASAXCP2Z4BSK5RGPFU257FA57K47JSPD6BJYYKH3RDQ2CKYXIYQOM4H) | **589 `submit_nav` transactions, none failed, every one of the 22 calendar days in the span covered.** That account has never signed anything else, which is why it is the one to count, and the report checks that too rather than filtering the rest away in silence: any operation on it that is not a `submit_nav` fails the run. Our own logs add the passes that submitted nothing because every feed was still fresh: **1098 keeper passes, 14 with a failed push**, each one the public RPC not answering with a ledger, so nothing was submitted and the next pass carried it; the market maker, **2140 quoting cycles, no error**. A third job extends the contracts' TTL every 72 hours, which is why every address in this file still answers |
+| sustained multi-day testnet campaign without critical failures | `bash scripts/campaign-report.sh`, which needs no key, or the reporter account on [stellar.expert](https://stellar.expert/explorer/testnet/account/GASAXCP2Z4BSK5RGPFU257FA57K47JSPD6BJYYKH3RDQ2CKYXIYQOM4H) | **853 `submit_nav` transactions, none failed, every one of the 23 calendar days in the span covered**, read on 2026-10-31. That account has never signed anything else, which is why it is the one to count, and the report checks that too rather than filtering the rest away in silence: any operation on it that is not a `submit_nav` fails the run. Our own logs add the passes that submitted nothing because every feed was still fresh: **1098 keeper passes, 14 with a failed push**, each one the public RPC not answering with a ledger, so nothing was submitted and the next pass carried it; the market maker, **2371 quoting cycles, no error**. A third job extends the contracts' TTL every 72 hours, which is why every address in this file still answers |
+| the elided clause, the codebase held still and handed over | `git diff --name-only bbeae11..HEAD -- contracts/ adapters/` | **a decision, and deliberately not met yet.** The freeze was lifted on 30 October to answer this review, because you cannot both hold a tree still for an outside reader and fix what a reader found, and of the two the fix is worth more. It re-establishes on whichever commit the reviewer accepts. The command above reports **eight files** today, the Etherfuse adapter and the private credit adapter with their tests, the Engine's tests, and the Vault with its tests and its fuzzer, and it is meant to keep reporting them until the baseline is moved deliberately. Recorded under `decisions.codeFreeze` |
 
 ## A second review, on 27 October, and what it found
 
