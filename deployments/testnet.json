@@ -1065,13 +1065,23 @@
       "why": "The gate is in contracts/vault with nine unit cases and eleven on-chain assertions. Carrying it to the live testnet Vault means a generation migration that retires agUSD and staking, has to redeem 73388582072 stroops of outstanding agUSD first, and touches 351433725 stroops of sagUSD held by third parties, about a tenth of the supply. The mainnet Vault is deployed fresh, so the gate ships with it at no cost."
     },
     "codeFreeze": {
-      "answer": "after the reviewer confirms Tranche 2, not before",
-      "why": "The freeze was lifted on 2026-10-30 to answer the review, because you cannot both freeze for an external review and fix what a reviewer found. Re-freezing now risks a third thaw mid-external review if anything else comes back. The current tree is a first version and is not what goes to the external reviewor."
+      "answer": "re-established on whichever commit the reviewer accepts, not before",
+      "why": "The freeze was lifted on 2026-10-30 to answer the review, because you cannot both hold a tree still for an outside reader and fix what a reader found, and of the two the fix is worth more. Re-freezing before the reviewer has looked risks a second thaw if anything else comes back. The clause it answers is the last one of Deliverable 3 on the award record, quoted in docs/TRANCHE2_EVIDENCE.md with the elision marked.",
+      "baseline": "bbeae11",
+      "whatMoved": "git diff --name-only bbeae11..HEAD -- contracts/ adapters/ reports eight files as of 2026-10-31: the Etherfuse adapter and the private credit adapter with their tests, the Engine tests, and the Vault with its tests and its fuzzer. It is meant to keep reporting them until the baseline is moved deliberately."
     },
     "moneygram": {
       "answer": "onboarding not started as of 2026-10-30, and it is the only thing missing",
       "evidence": "docs/evidence/moneygram-sandbox-2026-10-30.log",
       "note": "SEP-1, SEP-10 and SEP-24 all run against extmgxanchor.moneygram.com with no onboarding. The MoneyGram Ramps widget stops at their error RMP-01 with wallet_provider empty, which is partner registration and not code."
+    },
+    "sharedFeed": {
+      "question": "the cross chain pool is capped as its own originator and priced from another one",
+      "answer": "the keeper refuses to distribute in that shape, and the adapter is fixed at mainnet",
+      "found": "2026-10-31, verifying the 26 October yield fix",
+      "detail": "cross-chain CDSO4GJR is registered on the Engine under originator ABF, jurisdiction JE, and its oracle_feed() returns a compiled PC_NAV, which is QIRO LU book. The adapter comment argues a crossing is transport and the far book is the same one; the concentration caps contradict it by treating ABF as a separate counterparty. Both cannot be true. Grouping exposure by feed, which is the 26 October fix, only works while each feed belongs to one originator.",
+      "mitigation": "keeper-yield.sh reads each pool originator off the Engine and refuses to distribute when two originators share a feed with capital behind it, naming the feed and the originators. The exposure on this pool is 0, so today it reports the shape and continues: \"PC_NAV is read by ABF, QIRO (exposure 0)\".",
+      "fix": "the feed as a constructor parameter, which adapters/private-credit already has. That is a redeployment of the cross chain adapter, and unregister_pool refuses while the pool carries a write-off charge, which this one does. It ships with the mainnet deployment."
     }
   }
 }
