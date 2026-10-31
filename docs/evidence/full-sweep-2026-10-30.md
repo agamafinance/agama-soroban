@@ -23,7 +23,12 @@ returns the restoration plus that surplus. The assertion is a direction now.
 
 **The suite that refuses is two, not three**, `smoke-journey.sh` and
 `smoke-sagusd.sh`, both for the reason given below: they will not unwind sagUSD
-that belongs to somebody else.
+that belongs to somebody else. Measured again on 31 October, `smoke-journey.sh`
+exits 2 at the same precondition, this account holding 3164334571 of a 3515768296
+supply. One consequence worth stating: the NAV block in that suite sits after the
+precondition, so a fix applied to it there cannot be exercised while the supply
+is shared. It is the same two-reporter shape as `smoke-core.sh`, which is proven
+on chain.
 
 **The figures moved.** Measured serially on 31 October: `cargo test --workspace`
 **263 / 0** across twelve crates, `check-deployment-record.sh --wasm`
