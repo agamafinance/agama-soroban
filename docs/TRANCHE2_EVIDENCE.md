@@ -3,7 +3,7 @@
 Every claim below is a command anyone can run or a transaction anyone can open.
 
 Network: Stellar testnet. First generated 2026-10-26, rewritten 2026-10-30
-against the award record.
+against the award record, every figure re-measured 2026-10-31.
 
 ## The criteria, transcribed
 
