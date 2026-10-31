@@ -43,18 +43,17 @@ with no deviation bound, that NAV being deterministic.
 > deposit and withdrawal flows completing end-to-end on Stellar Testnet against
 > the MoneyGram Access sandbox, cash to USDC to agUSD and the reverse, with the
 > SDF Stellar Test Anchor covering the same flows during MoneyGram onboarding;
-> sustained multi-day testnet campaign without critical failures; [...]
+> sustained multi-day testnet campaign without critical failures; codebase
+> frozen and handed over for audit.
 
-The last clause of that criterion is elided, and the elision is marked rather
-than silent, because a truncated quotation of the yardstick is the one thing
-this section exists to avoid. It concerns freezing the codebase and handing it
-over, and what it asks for is a decision rather than a measurement: the freeze
-was lifted on 30 October to answer this review, since you cannot both hold a
-tree still for an outside reader and fix what a reader found, and it
-re-establishes on whichever commit the reviewer accepts. That is recorded under
-`decisions.codeFreeze` in the deployment record, with the date and the reason,
-so the state of it is readable next to the addresses it governs rather than
-asserted here.
+That last clause is quoted whole, like the rest of it, and it is the one clause
+on this page that asks for a decision rather than a measurement. The freeze was
+lifted on 30 October to answer this review, because you cannot both hold a tree
+still for an outside reader and fix what a reader found, and of the two the fix
+is worth more. It re-establishes on whichever commit the reviewer accepts.
+`decisions.codeFreeze` in the deployment record carries the date, the reason, the
+baseline commit and what has moved since, so the state of it is readable next to
+the addresses it governs rather than asserted here.
 
 ## Status against those criteria
 
@@ -74,7 +73,7 @@ asserted here.
 | D3 SEP-24 interactive deposit and withdrawal end to end | **met 2026-10-30** | both flows reached `completed` on testnet: deposit `ae2734cc`, withdrawal `57eaf7e1`. `scripts/e2e-anchor.sh` |
 | D3 cash to USDC to agUSD and the reverse | **met 2026-10-30** | 5 USD of cash to 4.5 USDC to 4.5 agUSD, back through the FIFO queue, out as 4.1 USD. Every leg is a transaction in `docs/evidence/anchor-roundtrip-2026-10-30.log` |
 | D3 sustained multi-day campaign | **met** | `campaign-report.sh`, **853 submissions, none failed, 23 consecutive calendar days** as of 2026-10-31, and the dedicated reporter key has signed nothing else |
-| D3 the elided clause, the codebase held still and handed over | **a decision, deliberately not met yet** | Lifted 2026-10-30 to answer this review and re-established on whichever commit the reviewer accepts. `decisions.codeFreeze` in `deployments/testnet.json`. `git diff --name-only bbeae11..HEAD -- contracts/ adapters/` is the command that says what moved since the baseline: **eight files today**, the Etherfuse adapter and its tests, the private credit adapter and its tests, the Engine's tests, and the Vault with its tests and its fuzzer. It is meant to report something until the baseline is moved deliberately |
+| D3 the codebase frozen and handed over | **a decision, deliberately not met yet** | Lifted 2026-10-30 to answer this review and re-established on whichever commit the reviewer accepts. `decisions.codeFreeze` in `deployments/testnet.json`. `git diff --name-only bbeae11..HEAD -- contracts/ adapters/` is the command that says what moved since the baseline: **eight files today**, the Etherfuse adapter and its tests, the private credit adapter and its tests, the Engine's tests, and the Vault with its tests and its fuzzer. It is meant to report something until the baseline is moved deliberately |
 
 Nothing in that table is softened. Two rows are not "met": the peg feed is
 built, unit tested and demonstrated on chain but not on the live Vault, and the
@@ -141,7 +140,9 @@ not this criterion, and it is kept for demos.
 
 ## Deliverable 3, MoneyGram fiat ramp and hardening
 
-The title is the award's. The first version of this section was called
+The title is the award's, shortened: the record calls this deliverable
+"MoneyGram fiat ramp, hardening and audit readiness" and the criterion itself is
+quoted whole in the section above. The first version of this section was called
 "Hardening", dropped the fiat ramp, and listed a Soroswap
 swap and SDEX path payments in its place. The reviewer was right to refuse that:
 the Soroswap swap is Tranche 1 Deliverable 2 scope and path payments are not in
@@ -156,7 +157,7 @@ evidence, of Deliverable 2 of the previous tranche, and they are cited there.
 | cash to USDC to agUSD and the reverse | `docs/evidence/anchor-roundtrip-2026-10-30.log` | **closed.** 5.0 USD of cash to 4.5 USDC to 4.5 agUSD minted one for one by the Vault, back out through the FIFO queue as claim 54, and out to 4.1 USD of cash. Every leg is a transaction in that log |
 | against the MoneyGram Access sandbox | `docs/evidence/moneygram-sandbox-2026-10-30.log` | **not run, and not a substitution.** Two facts, both checkable. First, the award names the cover itself: "with the SDF Stellar Test Anchor covering the same flows during MoneyGram onboarding", and that onboarding began on 2026-10-30, partner account under Agama Labs Inc., non-custodial on Stellar. Second, and found by trying rather than assumed: MoneyGram has moved new partners off this path. Their Stellar hub reads "Partners already on the Stellar whitelist integrate via SEP-10 and SEP-24, not the widget SDK", their legacy guide opens "New partners: use the Stellar widget hub instead", and the partner portal has no "Whitelist in TestNet" section at all, only the widget track. So the SEP path the award names is one the vendor has closed to new entrants since the award was written. The client is nonetheless complete against their anchor: SEP-1, SEP-10 with client domain attestation returning a JWT that carries `client_domain: agama.finance`, SEP-24 with their limits enforced and transaction `4ddb0b16-b40a-41f7-8ce6-6698f7c0dead` opened. Their widget then fails on two of their own calls, `transactions/prepare` and `reference-data/countries`, both HTTP 500, for a partner they have not allowlisted |
 | sustained multi-day testnet campaign without critical failures | `bash scripts/campaign-report.sh`, which needs no key, or the reporter account on [stellar.expert](https://stellar.expert/explorer/testnet/account/GASAXCP2Z4BSK5RGPFU257FA57K47JSPD6BJYYKH3RDQ2CKYXIYQOM4H) | **853 `submit_nav` transactions, none failed, every one of the 23 calendar days in the span covered**, read on 2026-10-31. That account has never signed anything else, which is why it is the one to count, and the report checks that too rather than filtering the rest away in silence: any operation on it that is not a `submit_nav` fails the run. Our own logs add the passes that submitted nothing because every feed was still fresh: **1098 keeper passes, 14 with a failed push**, each one the public RPC not answering with a ledger, so nothing was submitted and the next pass carried it; the market maker, **2371 quoting cycles, no error**. A third job extends the contracts' TTL every 72 hours, which is why every address in this file still answers |
-| the elided clause, the codebase held still and handed over | `git diff --name-only bbeae11..HEAD -- contracts/ adapters/` | **a decision, and deliberately not met yet.** The freeze was lifted on 30 October to answer this review, because you cannot both hold a tree still for an outside reader and fix what a reader found, and of the two the fix is worth more. It re-establishes on whichever commit the reviewer accepts. The command above reports **eight files** today, the Etherfuse adapter and the private credit adapter with their tests, the Engine's tests, and the Vault with its tests and its fuzzer, and it is meant to keep reporting them until the baseline is moved deliberately. Recorded under `decisions.codeFreeze` |
+| the codebase frozen and handed over | `git diff --name-only bbeae11..HEAD -- contracts/ adapters/` | **a decision, and deliberately not met yet.** The freeze was lifted on 30 October to answer this review, because you cannot both hold a tree still for an outside reader and fix what a reader found, and of the two the fix is worth more. It re-establishes on whichever commit the reviewer accepts. The command above reports **eight files** today, the Etherfuse adapter and the private credit adapter with their tests, the Engine's tests, and the Vault with its tests and its fuzzer, and it is meant to keep reporting them until the baseline is moved deliberately. Recorded under `decisions.codeFreeze` |
 
 ## A second review, on 27 October, and what it found
 
@@ -186,10 +187,26 @@ than one we hand them.
 
 One word about who ran these. The adversarial reviews this file and the
 README refer to are ours, run internally, not a third party engagement, and
-no outside party has reviewed this repository. The word "auditable" survives in
-six source comments, where it means checkable by a reader and nothing more, and
-three of those are `///` doc comments that `contractspecv0` embeds, so changing
-them would move a deployed bytecode hash for a word.
+no outside party has reviewed this repository. Which is also why Deliverable 3's
+last clause is quoted and then answered rather than claimed: the audit it names
+is not ours to schedule or to name a firm for, and what we control is the freeze
+and we say where that stands. Counted, because a claim about a word should be. In
+this file the word is the criterion quoted above, the record's own name for that
+deliverable, and this paragraph. In the code it is **six comments across five
+files**, "auditable" three times, "auditor" twice and "audit" once, every one of
+them meaning checkable by a reader and nothing more:
+
+```
+contracts/oracle-adapter/src/lib.rs      auditable, twice
+adapters/etherfuse/src/lib.rs            auditable
+contracts/agusd-core/src/lib.rs          auditor
+contracts/allocation-engine/src/test.rs  auditor
+contracts/vault/src/lib.rs               audit
+```
+
+The three in `oracle-adapter` and `etherfuse` are `///` doc comments, which
+`contractspecv0` embeds, so editing them would move a deployed bytecode hash for
+a word. Nowhere in this repository does it refer to an engagement.
 A reader who takes "adversarial review" for an outside report would be reading
 more into it than it says, so here it is said plainly.
 
