@@ -64,7 +64,7 @@ asserted here.
 | D1 cap and reserve floor breaches rejected on chain | **met** | four failed transactions, `e2e-allocation-guards.sh`, `e2e-concentration-caps.sh` |
 | D1 both adapters passing unit suites against mock pool contracts | **met 2026-10-30** | `contracts/mock-stablebond`, 12 cases; `adapters/etherfuse`, 26 cases; the adapter now subscribes and redeems rather than incrementing a counter |
 | D1 exposure map and reserve ratio readable | **met** | `get_exposures()`, `get_reserve_ratio()` |
-| D2 NAV flowing from all three feed types | **met** | all three registered with the record's parameters, all three fresh |
+| D2 NAV flowing from all three feed types | **met** | all three types registered with the record's parameters and all of them fresh. Four feeds, because private credit has two instances: `USDC_USD`, `PC_NAV`, `PC_NAV2`, `EF_BOND`, each at a quorum of two |
 | D2 the feeds sourced from Reflector and Etherfuse | **met 2026-10-30** | `keeper-reflector.sh` reads `lastprice(Other("USDC"))` off Reflector's SEP-40 oracle `CCYOZJCO...`; `keeper-etherfuse.sh` reads USTRY off `api.etherfuse.com` with a cross-source agreement check. Both refuse to submit when their own source has stalled, rather than pushing a stale number under a current timestamp |
 | D2 OracleStale and nav_rejected, each with a test case | **met** | `cargo test -p oracle-adapter`, 32 cases, including `out_of_bounds_deviation_emits_nav_rejected_on_submit_nav` and `stale_read_errors_with_oracle_stale` |
 | D2 yield distribution driven by oracle data | **met 2026-10-30** | `keeper-yield.sh` now prices each pool from the feed that pool names; the 26 October run applied the private credit move to all deployed capital |
@@ -76,8 +76,10 @@ asserted here.
 | D3 sustained multi-day campaign | **met** | `campaign-report.sh`, **853 submissions, none failed, 23 consecutive calendar days** as of 2026-10-31, and the dedicated reporter key has signed nothing else |
 | D3 the elided clause, the codebase held still and handed over | **a decision, deliberately not met yet** | Lifted 2026-10-30 to answer this review and re-established on whichever commit the reviewer accepts. `decisions.codeFreeze` in `deployments/testnet.json`. `git diff --name-only bbeae11..HEAD -- contracts/ adapters/` is the command that says what moved since the baseline: **eight files today**, the Etherfuse adapter and its tests, the private credit adapter and its tests, the Engine's tests, and the Vault with its tests and its fuzzer. It is meant to report something until the baseline is moved deliberately |
 
-Nothing in that table is softened. Three rows say the work is not finished and
-one says a built thing is not deployed.
+Nothing in that table is softened. Two rows are not "met": the peg feed is
+built, unit tested and demonstrated on chain but not on the live Vault, and the
+last clause of Deliverable 3 is a decision we have deliberately not taken yet
+and say why.
 
 ## Deliverable 1, Allocation Engine with on-chain risk caps
 
