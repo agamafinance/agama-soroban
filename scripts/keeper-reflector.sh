@@ -41,7 +41,21 @@ REFLECTOR=$(python3 -c "
 import json
 d=json.load(open('$DEP'))
 print((d.get('externalOracles') or {}).get('reflector',{}).get('address','CCYOZJCOPG34LLQQ7N24YXBM7LL62R7ONMZ3G6WZAAYPB5OYKOMJRN63'))")
-REPORTER2=$(stellar keys address "$REPORTER2_KEY")
+# The reporters are two dedicated keys and the admin is not one of them.
+#
+# It used to be, and that was the real hole under the reviewer's observation that
+# "the 26 Oct PC_NAV moves came from your own two reporter keys". The problem was
+# not that both keys were ours. It was that one of the two was the oracle admin,
+# so that single key could call set_quorum_threshold down to one, remove the
+# other reporter, and then post any NAV it liked. A two of two that one of the
+# two can dissolve is not a two of two.
+#
+# Now the vote and the rules are held by different keys: two dedicated reporters
+# can move a NAV but cannot touch a bound, and the admin can change a bound but
+# cannot vote. Both sets are ours, which is the point: the separation is ours to
+# run and needs no outside counterparty to hold anything.
+REPORTER1=$(stellar keys address agama-oracle-2)
+REPORTER2=$(stellar keys address agama-reporter-2)
 
 rd() { stellar contract invoke --id "$1" --source "$SRC" --network "$NET" --send=no -- "${@:2}" 2>&1 | tail -1; }
 
@@ -113,10 +127,10 @@ fi
 # TimestampInFuture, 509. A minute back is comfortably inside every staleness
 # window here and comfortably ahead of the last accepted point.
 TS=$(( $(date -u +%s) - 60 ))
-V1=$(stellar contract invoke --id "$ORACLE" --source "$SRC" --network "$NET" -- \
-       submit_nav --reporter "$ADMIN" --feed_id USDC_USD --nav "$NAV" --timestamp "$TS" 2>&1)
+V1=$(stellar contract invoke --id "$ORACLE" --source agama-oracle-2 --network "$NET" -- \
+       submit_nav --reporter "$REPORTER1" --feed_id USDC_USD --nav "$NAV" --timestamp "$TS" 2>&1)
 printf '   reporter 1  %s\n' "$(printf '%s' "$V1" | tail -1)"
-V2=$(stellar contract invoke --id "$ORACLE" --source "$REPORTER2_KEY" --network "$NET" -- \
+V2=$(stellar contract invoke --id "$ORACLE" --source agama-reporter-2 --network "$NET" -- \
        submit_nav --reporter "$REPORTER2" --feed_id USDC_USD --nav "$NAV" --timestamp "$TS" 2>&1)
 printf '   reporter 2  %s\n' "$(printf '%s' "$V2" | tail -1)"
 printf '%s' "$V2" | grep -oE "Event: Nav[A-Za-z]+" | head -2 | sed 's/^/   /'

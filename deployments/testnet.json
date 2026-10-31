@@ -824,15 +824,12 @@
     "supplyIsTracked": "A Stellar Asset Contract publishes no total supply, so the staking contract counts shares itself, moving the figure on every mint and burn. Two directions of drift, and they are not symmetric. Reading high is harmless: a supply too high prices every share too low, so the contract pays out less than it holds. A holder can cause that by calling burn on the SAC directly instead of unstaking, which the contract cannot observe. Reading low is the dangerous one, because it prices every share too high and a redemption then pays more than its share of the assets, diluting everybody else. Only one thing can cause it: units that existed before this contract became the SAC's admin, which it never counted. One did, from the payment that brought the classic asset into existence, and it was burned once the gap was measured. The reconciliation is now asserted on every run of scripts/e2e-generation3.sh, against Horizon's own figure for the classic asset, which is the only number that can contradict this one."
   },
   "oracleReporters": {
-    "keys": [
-      "agama-poc",
-      "agama-oracle-2"
+    "set": [
+      "GASAXCP2Z4BSK5RGPFU257FA57K47JSPD6BJYYKH3RDQ2CKYXIYQOM4H",
+      "GA47CX4UMUBAXKO35DURHPTNNFJTCHM3AYCJVUPYBOUTT4X7NWTF7WEI"
     ],
-    "addresses": [
-      "GBSX2ZFLIJVE75VFWJURAXPSS4TBOV4FZ34VCRLWM2D7GKI37AD3FFNV",
-      "GASAXCP2Z4BSK5RGPFU257FA57K47JSPD6BJYYKH3RDQ2CKYXIYQOM4H"
-    ],
-    "note": "The local key aliases the oracle keeper signs with, and the addresses they resolve to, which is also the Adapter's reporter set. Two rather than one so a quorum above 1 is something the deployment can actually satisfy: a threshold nobody can reach is a feed that stops answering, and a feed that stops answering takes the Vault's get_nav with it. The keeper submits the same value and the same timestamp from each key in one run, which is what makes them one round rather than two. Both keys sit on this machine, so this is not two independent operators and is not claimed to be: it is the mechanism proven on the deployment, and the second signer is what a real second operator would replace."
+    "admin": "GBSX2ZFLIJVE75VFWJURAXPSS4TBOV4FZ34VCRLWM2D7GKI37AD3FFNV",
+    "note": "The admin is deliberately not a reporter. Changed 2026-10-31, see decisions.thirdReporter."
   },
   "cctp": {
     "note": "Circle's own CCTP V2 contracts, not Agama's. They are in this record for the same reason every other address is: so there is one place an address is decided and one place a reviewer checks it. They were hardcoded in the application until October 2026, which meant the two most expensive facts here, which contract the Stellar leg calls and what mintRecipient must be, lived somewhere nothing verified.",
@@ -1017,9 +1014,9 @@
       "note": "CCTP into Stellar is a funded Tranche 1 Deliverable 2 integration and is a different thing from this adapter, which goes the other way and is named nowhere in the award."
     },
     "thirdReporter": {
-      "answer": "an originator holds the third key, at mainnet",
-      "why": "Quorum on PC_NAV is two and both reporters are keys this project holds, which bounds operator error and not operator intent. The right third signer is the counterparty whose book the NAV describes, signing its own servicing figure. Not another key of ours, and not a price oracle: Reflector does not price private credit.",
-      "blockedOn": "one of the signed issuers agreeing to hold a key"
+      "question": "the reviewer noted both PC_NAV reporter keys are ours, so the quorum of two is not independent",
+      "answer": "the keys stay ours, and no key both writes the rules and votes under them",
+      "note": "Recorded 2026-10-31. An earlier entry here said an originator would hold a third key, which was a misreading. Investigating it found the real hole: the oracle admin was itself one of the two reporters, so that one key could lower the quorum to one, remove the other reporter and post any NAV. Added a second dedicated reporter GA47CX4UMUBAXKO35DURHPTNNFJTCHM3AYCJVUPYBOUTT4X7NWTF7WEI and removed the admin from the reporter set. submit_nav from the admin is now refused with #503."
     },
     "pegGate": {
       "answer": "ships with the Tranche 3 mainnet deployment",

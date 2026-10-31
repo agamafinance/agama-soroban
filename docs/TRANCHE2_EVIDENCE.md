@@ -355,28 +355,48 @@ than a claim that the risk is already handled.
 It stays registered on testnet because unregistering it would hide it, and
 because the Engine's cap arithmetic is exercised by having a third pool.
 
-## Open, and decided: the third reporter
+## Closed: the reporter keys, and the hole that was actually under them
 
 The reviewer's other observation on Deliverable 2 was that "the 26 Oct PC_NAV
-moves came from your own two reporter keys". That is still true. The quorum on
-`PC_NAV` is two, there are exactly two reporters, and both are keys this project
-holds:
+moves came from your own two reporter keys". Both keys were ours, and they still
+are. What made that observation serious was not the ownership, and reading it as
+a request for an outside signer was a misreading: **one of the two reporters was
+the oracle admin.**
 
 ```
-  GASAXCP2Z4BSK5RGPFU257FA57K47JSPD6BJYYKH3RDQ2CKYXIYQOM4H   dedicated reporter
-  GBSX2ZFLIJVE75VFWJURAXPSS4TBOV4FZ34VCRLWM2D7GKI37AD3FFNV   deployment admin
+  before
+    GASAXCP2Z4BSK5RGPFU257FA57K47JSPD6BJYYKH3RDQ2CKYXIYQOM4H   dedicated reporter
+    GBSX2ZFLIJVE75VFWJURAXPSS4TBOV4FZ34VCRLWM2D7GKI37AD3FFNV   oracle admin, and a reporter
+
+  after
+    GASAXCP2Z4BSK5RGPFU257FA57K47JSPD6BJYYKH3RDQ2CKYXIYQOM4H   dedicated reporter
+    GA47CX4UMUBAXKO35DURHPTNNFJTCHM3AYCJVUPYBOUTT4X7NWTF7WEI   dedicated reporter
 ```
 
-A two-of-two among our own keys bounds operator error, not operator intent. It
-stops one fat-fingered push and stops nothing we decide to do deliberately.
+That admin key could call `set_quorum_threshold` down to one, `remove_reporter`
+on the other signer, and then post any NAV it liked, in three transactions from
+one keypair. So the quorum of two was not a quorum of two: it was a quorum of
+one with a second signature that one of the signers could discard. The bound it
+appeared to place on a NAV that sets the share price was not there.
 
-The decision, recorded here rather than left as a gap: **a third reporter held
-by an originator, at mainnet.** The right third signer is not another key of
-ours and not a price oracle, because Reflector does not price private credit.
-It is the counterparty whose book the NAV describes, signing its own servicing
-figure. That makes the quorum a reduction in trust instead of a reduction in
-typos, and it is a Tranche 3 commitment because it needs one of the signed
-issuers to agree to hold a key.
+The vote and the rules are held by different keys now. Two dedicated reporters
+can move a NAV and cannot touch a bound; the admin can change a bound and
+cannot vote. Both sets are ours, which is the point: the separation is ours to
+run and needs no outside counterparty to hold anything. A key that both writes
+the rule and votes under it is a problem whoever owns it, and a key held by an
+originator signing the NAV of its own book would have been the debtor rating its
+own debt.
+
+| what | how to check it | result |
+|---|---|---|
+| the admin is not a reporter | `submit_nav --reporter <admin>` | **`#503` NotAReporter**, refused on the ledger |
+| the quorum is still met by the two dedicated keys | `bash scripts/e2e-reconciliation.sh` | **10 passed, 0 failed**, `quorum_votes` 2, tape NAV `10377090` on chain |
+| neither reporter can change a bound | `add_reporter`, `remove_reporter`, `set_quorum_threshold` all take `admin` | and the admin is a third key |
+| what the keys can still do, bounded | `get_feed --feed_id PC_NAV` | 500 bps per move, exact since the fourth deployment, `min_nav` 5000000, `max_nav` 20000000, one point per hour |
+
+The three keepers and the reconciliation suite sign each vote with the key it
+names, `agama-oracle-2` and `agama-reporter-2`, and no path submits a NAV with
+the admin.
 
 ## Every suite, as of 2026-10-30
 

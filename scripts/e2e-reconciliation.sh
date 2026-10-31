@@ -37,7 +37,23 @@ ADMIN=$(j "['admin']")
 ORACLE=$(j "['contracts']['oracleAdapter']")
 STAKING=$(j "['contracts']['staking']")
 AGUSD=$(j "['contracts']['agusd']")
-REPORTER2=$(stellar keys address agama-oracle-2)
+ENGINE=$(j "['contracts']['allocationEngine']")
+PC=$(j "['poolAdapters']['privateCredit']")
+# The reporters are two dedicated keys and the admin is not one of them.
+#
+# It used to be, and that was the real hole under the reviewer's observation that
+# "the 26 Oct PC_NAV moves came from your own two reporter keys". The problem was
+# not that both keys were ours. It was that one of the two was the oracle admin,
+# so that single key could call set_quorum_threshold down to one, remove the
+# other reporter, and then post any NAV it liked. A two of two that one of the
+# two can dissolve is not a two of two.
+#
+# Now the vote and the rules are held by different keys: two dedicated reporters
+# can move a NAV but cannot touch a bound, and the admin can change a bound but
+# cannot vote. Both sets are ours, which is the point: the separation is ours to
+# run and needs no outside counterparty to hold anything.
+REPORTER1=$(stellar keys address agama-oracle-2)
+REPORTER2=$(stellar keys address agama-reporter-2)
 
 rd() { stellar contract invoke --id "$1" --source "$SRC" --network "$NET" --send=no -- "${@:2}" 2>&1 | tail -1 | tr -d '"'; }
 
@@ -104,8 +120,8 @@ if [ "$AGE" -lt "$MININT" ]; then
   eq "it was accepted, so it met the two reporter quorum" \
      "$(rd "$ORACLE" quorum_threshold --feed_id PC_NAV)" "2"
 else
-  V1=$(stellar contract invoke --id "$ORACLE" --source "$SRC" --network "$NET" -- \
-    submit_nav --reporter "$ADMIN" --feed_id PC_NAV --nav "$NAV" --timestamp "$NOW" 2>&1)
+  V1=$(stellar contract invoke --id "$ORACLE" --source agama-oracle-2 --network "$NET" -- \
+    submit_nav --reporter "$REPORTER1" --feed_id PC_NAV --nav "$NAV" --timestamp "$NOW" 2>&1)
   case "$(printf '%s' "$V1" | tail -1)" in
     *Pending*)  ok "the first reporter's vote is recorded and pending" ;;
     *Accepted*) ok "the first vote completed a quorum already in progress" ;;
@@ -113,7 +129,7 @@ else
   esac
   MID=$(rd "$ORACLE" get_nav --feed_id PC_NAV)
   eq "one vote alone does not move the stored NAV" "$MID" "$BEFORE"
-  V2=$(stellar contract invoke --id "$ORACLE" --source agama-oracle-2 --network "$NET" -- \
+  V2=$(stellar contract invoke --id "$ORACLE" --source agama-reporter-2 --network "$NET" -- \
     submit_nav --reporter "$REPORTER2" --feed_id PC_NAV --nav "$NAV" --timestamp "$NOW" 2>&1)
   printf '%s' "$V2" | grep -q "NavQuorumReached" \
     && ok "the second vote reached the quorum" "votes 2" \
@@ -154,12 +170,28 @@ if [ "${DUE:-0}" -gt 0 ]; then
     || bad "the distribution names the feed it came from"
 else
   printf '%s\n' "$PLAN" | sed 's/^/        /'
-  printf '        SKIP  this NAV has already been distributed, so there is nothing left\n'
-  printf '              to deliver and a second distribution would be a double payment.\n'
+  # Nothing due has two causes and they are not the same thing. Either this NAV
+  # was already distributed, in which case the keeper's recorded reading is this
+  # tape's NAV and asserting that is the honest substitute for the distribution;
+  # or there is no capital at this feed at all, in which case the keeper never
+  # ran against this reading and never recorded it, and asserting the recording
+  # would be asserting the result of work that correctly did not happen. That
+  # second case is what an unwound book looks like, and it is reachable: the
+  # Etherfuse suite ends by returning every stroop it borrowed.
+  PCEXP=$(rd "$ENGINE" get_exposure --pool_id "$PC")
+  printf '        SKIP  nothing is due. Private credit exposure is %s.\n' "$PCEXP"
   RECORDED=$(python3 -c "
 import json
 print(json.load(open('state/yield-nav.json'))['feeds'].get('PC_NAV','none'))")
-  eq "the recorded reading is the NAV this tape produced" "$RECORDED" "$NAV"
+  if [ "${PCEXP:-0}" -gt 0 ]; then
+    printf '              This NAV has already been distributed, and a second pass\n'
+    printf '              would be a double payment.\n'
+    eq "the recorded reading is the NAV this tape produced" "$RECORDED" "$NAV"
+  else
+    printf '              No capital sits at this feed, so the keeper has nothing to\n'
+    printf '              price and recorded nothing. Its last reading was %s.\n' "$RECORDED"
+    ok "the keeper declined to distribute against an empty book" "exposure $PCEXP"
+  fi
   eq "the keeper priced this pool from PC_NAV and nothing else" \
      "$(printf '%s' "$PLAN" | grep -c 'PC_NAV')" "1"
   printf '%s' "$PLAN" | grep -q "EF_BOND" \
