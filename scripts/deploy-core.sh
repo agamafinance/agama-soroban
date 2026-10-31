@@ -14,7 +14,16 @@
 #
 # Superseded by scripts/deploy-rewire.sh, which redeploys and rewires the whole
 # stack. Kept because the addresses it produced are still on the ledger and
-# still recorded in deployments/testnet.json.
+# still recorded in deployments/testnet.json. It cannot be run against the
+# current contracts in any case: every one of them replaced `initialize` with a
+# `__constructor`.
+#
+# One line below is kept only as the record of what was done and must not be
+# copied: `add_reporter --reporter "$ADMIN"` made the oracle admin a reporter,
+# and a key that both sets the quorum and votes under it can dissolve its own
+# quorum. The live instance was corrected on 2026-10-31 and the deployment
+# scripts that are still current seed the reporter set from
+# `oracleReporters.addresses` and refuse the admin outright.
 #
 # Usage: bash scripts/deploy-core.sh
 #

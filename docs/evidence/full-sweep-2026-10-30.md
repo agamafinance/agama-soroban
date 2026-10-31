@@ -5,6 +5,38 @@ run, 74 scripts inventoried, the deployment and migration ones excluded with
 their reasons, and the rest run. This is what came back, including the parts
 that came back red.
 
+## What changed on 31 October, after this sweep
+
+This file is the record of one day's run and the numbers below are left as they
+were measured. Three of its statements stopped being true the next day, so they
+are corrected here rather than edited in place.
+
+**`smoke-hardening.sh` no longer refuses.** It reads **62 passed, 0 failed**.
+Its credit-loss finding was not blocked by the book after all: the suite was
+casting its quorum and band votes as the admin key, and the admin stopped being
+a reporter when the reporter set was separated from it, so every vote came back
+`#503 NotAReporter` and the deviation band was never consulted. It votes as two
+dedicated reporters now. Its released-loss assertion also asked for an exact
+baseline, which `recover` cannot honour, because `write_down` leaves the adapter
+holding a surplus of the amount written down and a later `recover` legitimately
+returns the restoration plus that surplus. The assertion is a direction now.
+
+**The suite that refuses is two, not three**, `smoke-journey.sh` and
+`smoke-sagusd.sh`, both for the reason given below: they will not unwind sagUSD
+that belongs to somebody else.
+
+**The figures moved.** Measured serially on 31 October: `cargo test --workspace`
+**263 / 0** across twelve crates, `check-deployment-record.sh --wasm`
+**81 / 0** and **47 / 0** without it, the two new checks being the second
+private credit instance, whose bytecode the record declares rather than shares
+with the first, `check-doc-entry-points.sh` **10 / 0** over 187 signatures,
+`check-ttl.sh` **11 / 0**, `check-authorization.sh` **0 failures** over **81**
+state-changing entry points, `verify-tranche2.sh` **27 / 0** once it stopped
+typing the feed list and the pool count into itself, `e2e-etherfuse.sh` **25 / 0**,
+`e2e-reconciliation.sh` **13 / 0**, `smoke-mediums.sh` **61 / 0**, and two
+suites that did not exist when this sweep ran, `e2e-two-originators.sh`
+**13 / 0** and the second private credit pool it exercises.
+
 ## Where every suite ended up
 
 Nothing is red. Three suites refuse to run and say why, which is not the same

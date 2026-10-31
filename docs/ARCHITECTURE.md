@@ -443,6 +443,24 @@ The band and the interval exist because a deviation bound is relative and cannot
 
 Raising a feed's threshold defends against exactly one thing: a single reporter key being compromised or malfunctioning. It is not a defense against everything a NAV can get wrong. It does nothing against a colluding majority of that feed's reporter set, since collusion and honest agreement look identical to the contract. And it does nothing against reporters that are all honest and all wrong because they read the same bad upstream source, an incorrect servicer feed or a broken reconciliation job upstream of every reporter: three independent signatures on the same mistake are still a mistake, agreed upon. Quorum buys independence between reporters, not correctness of what they report.
 
+On this deployment every feed is set to **two**, not left at the default of one:
+`USDC_USD`, `PC_NAV`, `PC_NAV2` and `EF_BOND`, each against a reporter set of
+two, which `quorum_threshold` on each feed reads back.
+
+And it buys nothing at all from a key that is on both sides of it. The admin
+calls `set_quorum_threshold` and `remove_reporter`; a reporter votes under the
+threshold those two set. One key holding both can lower a quorum of two to one,
+remove the other reporter and then post any value on its own signature, so the
+threshold it is nominally subject to is a threshold it writes. This deployment
+had that shape until 2026-10-31: the oracle admin was one of the two `PC_NAV`
+reporters. The admin is out of the reporter set now, `is_reporter` on it reads
+`false`, and the deployment scripts seed reporters from
+`oracleReporters.addresses` and refuse the admin outright, so a redeployment
+cannot quietly restore it. What is still open and said here rather than left to
+be found: `set_quorum_threshold` has no floor above one, so the admin key can
+still lower a quorum. A threshold that only ratchets upward needs a new Oracle
+Adapter and ships with the mainnet deployment.
+
 **Pipeline**
 
 ```text
@@ -655,8 +673,13 @@ owed.
 It is not net assets because `record_writedown` lowers net assets with no cash moving anywhere, so a floor measured
 against them is a floor whose absolute size its own caller can lower at will. Allocating to the floor and then writing
 the position off, over and over, walked the whole of the reserves out of a Vault a slice at a time with every individual
-call inside the limit. `written_off` on the Engine and `recognised_losses` on the Vault never fall, so the base is
-invariant under a write-down exactly as it is under an allocation.
+call inside the limit. A write-down takes nothing out of `written_off` on the Engine or
+`recognised_losses` on the Vault, so the base is invariant under a write-down exactly as it is under an allocation. Note
+what that does and does not say: the two counters measure exposure written off **and not recovered**, and
+`record_recovery` does lower them, by exactly the cash that arrived in the Vault's own balance in the same transaction.
+The headroom that releases is headroom the Vault genuinely has, because the cash is in it. "Never fall" was the wording
+here and in the README until 2026-10-31, and the ledger disproves it: `written_off()` went from 100000000 to 99000000
+the moment a 1000000 write-off was recovered.
 
 And it is not the raw balance because `idle_reserves` reads the real token balance, so cash arriving without the books
 being told, a misdirected repayment, an over-payment, an adapter admin's own surplus sweep, a donation, raises the base

@@ -116,6 +116,22 @@ tx() {
   fi
 }
 
+# The same, signed by an identity other than $SRC.
+tx_as() {
+  local out
+  if out=$(stellar contract invoke --id "$2" --source "$1" --network $NET -- "${@:3}" 2>&1); then
+    echo "$out" | grep -oE '[0-9a-f]{64}' | head -1
+  else
+    echo "FAILED $(echo "$out" | tr '\n' ' ' | grep -oE '#[0-9]+|TxBadSeq|tx_[A-Z_]+' | head -1)"
+  fi
+}
+
+# The two oracle reporters, neither of them the admin.
+R1=${R1:-agama-oracle-2}
+R2=${R2:-agama-reporter-2}
+R1_ADDR=$(stellar keys address "$R1" 2>/dev/null || echo "")
+R2_ADDR=$(stellar keys address "$R2" 2>/dev/null || echo "")
+
 next_seq() {
   curl -s "$HORIZON/accounts/$ADMIN" \
     | python3 -c "import json,sys;print(int(json.load(sys.stdin)['sequence'])+1)"
@@ -393,12 +409,17 @@ push() {
     # one here would report the rate limit as the oracle failing to store what
     # it was given. Skipped with the reason rather than failed, and the run
     # carries on: the rest of this journey does not depend on the new value.
-    echo "  SKIP  $1 was reported ${elapsed}s ago and its minimum interval is 3600s,"
+    echo "  SKIP  $1 was reported ${elapsed}s ago and its minimum interval is ${FEED_INTERVAL}s,"
     echo "        so a push now is refused and the stored value stands"
     RATE_LIMITED=1
     return 0
   fi
-  echo "  push_nav $1 = $2  tx $(tx "$ORACLE" push_nav --reporter "$ADMIN" --feed_id "$1" --nav "$2" --timestamp "$TS")"
+  # Two reporter signatures. The quorum on every feed is two, so one vote
+  # returns Ok on a Pending round and moves nothing, and the admin stopped
+  # being a reporter on 2026-10-31 so a vote from it is #503.
+  stellar contract invoke --id "$ORACLE" --source "$R1" --network $NET -- submit_nav \
+    --reporter "$R1_ADDR" --feed_id "$1" --nav "$2" --timestamp "$TS" >/dev/null 2>&1
+  echo "  submit_nav $1 = $2  tx $(tx_as "$R2" "$ORACLE" submit_nav --reporter "$R2_ADDR" --feed_id "$1" --nav "$2" --timestamp "$TS")"
   assert_eq "get_nav($1) reads back what was pushed" "$(q "$ORACLE" get_nav --feed_id "$1")" "$2"
 }
 push USDC_USD 10000000

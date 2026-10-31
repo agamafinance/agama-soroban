@@ -120,7 +120,7 @@ Network: **Stellar Testnet** · RPC: `https://soroban-testnet.stellar.org`
 | Adapter | Originator | Jurisdiction | Address |
 |---|---|---|---|
 | Private Credit | QIRO | LU | [`CDNWXGSS...WLP3VE`](https://stellar.expert/explorer/testnet/contract/CDNWXGSSP3BOAIKIYTGDHST2BBSZNWIW6RMDQERM3HOQ24EO43WLP3VE) |
-| Private Credit | QIRO2 | IE | [`CBAO767N...XIBCVO`](https://stellar.expert/explorer/testnet/contract/CBAO767N6WXGQZHAKD3ONU7BJSIDYPPZZX453JRE2VDVI23KFIXIBCVO) | 2000 | A second originator from the same wasm, priced from `PC_NAV2`. The feed is a constructor parameter, so onboarding a counterparty is a deployment and not a build. |
+| Private Credit | QIRO2 | IE | [`CBAO767N...XIBCVO`](https://stellar.expert/explorer/testnet/contract/CBAO767N6WXGQZHAKD3ONU7BJSIDYPPZZX453JRE2VDVI23KFIXIBCVO) |
 | Etherfuse | ETHERFUS | MX | [`CCXSQEUM...DBNJKC`](https://stellar.expert/explorer/testnet/contract/CCXSQEUMW42BNEB7HUNBVAAYRPAJ5SAR5VUWVSCE735HDMG7M7DBNJKC) |
 | Cross chain | ABF | JE | [`CDSO4GJR...WUWFML`](https://stellar.expert/explorer/testnet/contract/CDSO4GJRY7BFVMQ4PYP3ISVOFPQLPA3C7ZFT5HQOUDM3VXTGOUWUWFML) |
 
@@ -133,9 +133,17 @@ two of Circle's fees, the amount that can ever come back is strictly less than t
 sent, which makes `write_down` the ordinary path for this pool rather than the distress
 path it is for the other two.
 
-All three adapters are registered with the Allocation Engine. `originator` and
+The second private credit row is the same wasm as the first, deployed again
+against a different counterparty and priced from `PC_NAV2`. The feed a pool
+reads is a constructor parameter rather than a compiled-in constant, so
+onboarding an originator is a deployment and not a build, and `set_oracle_feed`
+can move an existing one while it is empty and refuses with `#605` while it
+carries capital.
+
+All four pools are registered with the Allocation Engine. `originator` and
 `jurisdiction` are the buckets the concentration caps aggregate over, so two
-pools fronted by the same counterparty count as one position.
+pools fronted by the same counterparty count as one position, which is why
+QIRO2 is a distinct originator and not a second QIRO line.
 
 Everything above except USDC and the generation 1 agUSD was redeployed for the
 second review's Medium findings, and for once that was not a choice. All seven
@@ -259,7 +267,7 @@ replaced. None of them is deleted, and none of them is quietly reused.
 | Private credit adapter, fifth and sixth deployments | [`CDPFTGS6...TWQFYQ`](https://stellar.expert/explorer/testnet/contract/CDPFTGS62IZHPZEGK6ENVTBLUKMLOD4OEPD7UVMJG3FCNDWS65TWQFYQ) · [`CANRYN2H...ZQUIIQ`](https://stellar.expert/explorer/testnet/contract/CANRYN2HGYU6SBQOYKCL52LSNSXKOK54ECK2UFAZTMHNPK47VUZQUIIQ) | Each replaced with the Engine and the Vault it names, and each holding USDC from a written-down position that no entry point can move, which is finding M2 again. |
 
 Two events account for the last sixteen rows. The first seven of them are an
-adversarial security review of this repository, ahead of the external external review;
+adversarial security review of this repository;
 the findings and the fixes are in
 [The Security Review, On-Chain](#the-security-review-on-chain) below. The nine
 after them are a second review, run against the fixes the first one produced, on
@@ -367,26 +375,39 @@ executed and refused on testnet in the run below.
 The caps stay nested, pool under originator under jurisdiction, so the per-pool
 limit remains the tightest concentration constraint.
 
-Which means, said plainly: with the two pools registered today the originator
-and jurisdiction caps cannot bind either. Each pool has an originator and a
+Which means, said plainly: with the four pools registered today the originator
+and jurisdiction caps still cannot bind. Each pool has an originator and a
 jurisdiction of its own, and the 40% per-pool cap is strictly tighter than both,
-so neither aggregate limit can be the one that refuses an allocation until a
-second Qiro pool or a second Luxembourg pool is registered. That is the same
+so neither aggregate limit can be the one that refuses an allocation until two
+pools share a counterparty or a country. The second private credit pool was
+deliberately given its own, QIRO2 and IE, because a second pool fronted by the
+same counterparty is one position and the caps are what say so. That is the same
 critique that motivated moving the reserve floor, and it applies to two of the
 four limits. It is left as it is rather than papered over, because the aggregate
-caps exist for the book the protocol is being built towards rather than the two
-pools it has today, and a cap that binds only when a third pool arrives is
-honest as long as nobody claims otherwise.
+caps exist for the book the protocol is being built towards, and a cap that binds
+only when two pools share an originator is honest as long as nobody claims
+otherwise.
 
-The Oracle Adapter carries the three feeds documented below, each registered
+The Oracle Adapter carries the four feeds documented below, each registered
 with its own staleness window, deviation bound, absolute band and minimum
-interval, and the admin address as the sole authorized reporter. The Vault
-reads NAV from `PC_NAV`.
+interval. The Vault reads NAV from `PC_NAV`.
+
+Every feed takes a **quorum of two**, and the two reporter keys are
+`GASAXCP2...` and `GA47CX4U...`. Neither is the oracle admin, and that is the
+point: a key that can call `set_quorum_threshold` and `remove_reporter` and also
+vote can lower the quorum to one, drop the other reporter and post whatever it
+likes, so a quorum of two held by such a key is a quorum of one. The admin was
+one of the two until 2026-10-31. `is_reporter` on the admin address reads
+`false`, `submit_nav` from it is `#503 NotAReporter`, and the deployment scripts
+seed the reporter set out of `oracleReporters.addresses` and refuse the admin
+outright, so the separation survives the next deployment rather than living only
+on this instance.
 
 | Feed | Staleness | Deviation | Band | Interval |
 |---|---|---|---|---|
 | `USDC_USD` | 1 hour | 200 bps | 0.90 to 1.10 | 5 min |
 | `PC_NAV` | 7 days | 500 bps | 0.50 to 2.00 | 1 hour |
+| `PC_NAV2` | 7 days | 500 bps | 0.50 to 2.00 | 1 hour |
 | `EF_BOND` | 48 hours | none (deterministic) | 0.50 to 2.00 | 1 hour |
 
 The band and the interval are new. A deviation bound is a bound on a move, and
@@ -429,7 +450,7 @@ What re-proves each claim on the generation actually deployed:
 
 ### The Security Review, On-Chain
 
-An adversarial security review of this repository, ahead of the external external review,
+An adversarial security review of this repository, run internally,
 found three critical issues, two high, and four medium. Every one of them is
 fixed, every fix has a test that fails without it, and the fixes are proven
 against the live deployment by `scripts/smoke-hardening.sh`, which asserts
@@ -971,7 +992,7 @@ Yield-bearing staked agUSD. Share-based vault accounting: yield accrues by incre
 
 `share_price()` is kept as an alias of `exchange_rate()`, returning the same number from the same computation. It has a live on-chain caller: the generation 1 agUSD prices its positions in the six credit vaults through `share_price`, and those vaults are instances of this contract. Dropping the name would break a caller for no gain, since nothing looking for `exchange_rate` cares that a second name also answers. The yield entry point was a hard rename instead, because it has no on-chain caller anywhere in this workspace and two ways to move real money into a contract is one more than an reader should have to check.
 
-One correction, recorded because the claim is checkable and this repository is going to external review. DeFindex's own vault publishes neither `distribute_yield` nor `exchange_rate`. Its interface is multi-asset (`fetch_total_managed_funds`, `get_asset_amounts_per_shares`, `distribute_fees`, and strategy-level `harvest`), it exposes no scalar price-per-share getter at all, and it has no vault-level yield distribution entry point. Those two names are a convention Agama adopted on its own side, matching DeFindex's economics: shares are never rebased, nothing is pushed to holders, and a position appreciates because the assets behind each share grow.
+One correction, recorded because the claim is checkable and somebody will check it. DeFindex's own vault publishes neither `distribute_yield` nor `exchange_rate`. Its interface is multi-asset (`fetch_total_managed_funds`, `get_asset_amounts_per_shares`, `distribute_fees`, and strategy-level `harvest`), it exposes no scalar price-per-share getter at all, and it has no vault-level yield distribution entry point. Those two names are a convention Agama adopted on its own side, matching DeFindex's economics: shares are never rebased, nothing is pushed to holders, and a position appreciates because the assets behind each share grow.
 
 Call compatibility is a separate thing, and this contract has it as well, which was not true when the paragraph above was first written. `get_asset_amounts_per_shares(e, vault_shares) -> Result<Vec<i128>, _>` is implemented under DeFindex's own signature, and `fetch_total_managed_funds` is implemented under its name and model structs. One difference worth stating precisely rather than glossing: DeFindex declares the second as `Result<Vec<CurrentAssetInvestmentAllocation>, ContractError>` and this contract declares it as the bare `Vec<...>`. A successful call encodes identically either way, so a caller that decodes a DeFindex vault decodes this one, but the declared signatures are not identical and it would be wrong to say they are. The criterion itself names the assets-per-share interface, and that one does match exactly.
 
@@ -1234,7 +1255,7 @@ current source.
 |---|---|---|---|
 | Tranche 1, MVP | Vault, agUSD, sagUSD | November 2026 | Live on testnet, deposit, stake, yield and withdrawal all proven on-chain |
 | Tranche 2, Testnet | Allocation Engine, Etherfuse and private credit adapters, Oracle Adapter | December 2026 | Live on testnet, delivered early, allocation and both guards proven on-chain |
-| Tranche 3, Mainnet | All contracts, external review remediation | February 2027 | Pending |
+| Tranche 3, Mainnet | All contracts, plus the two changes deferred out of Tranche 2: the peg gate on the live Vault and a quorum threshold that only ratchets upward | February 2027 | Pending |
 
 ## SCF #45, Tranche 1 Deliverable 1
 
@@ -1286,10 +1307,10 @@ Engine that carries this had `total_allocated` of zero until these runs.
 | The floor cannot be lowered by recognising a loss | The floor is a share of `floor_base`, net assets plus everything ever written off. `cargo test -p vault` and `cargo test -p allocation-engine` cover it; the finding that forced it is M1 under The Medium Findings |
 | Etherfuse adapter | `CCXSQEUM...`. Registered on the Engine, cap 4000 bps, originator ETHERFUS, jurisdiction MX. Subscribes the capital it is given into a Stablebond pool and holds bond units, rather than incrementing an exposure counter as `CCXO2ZIM...` did. `get_exposure()` is the cost basis the caps are measured on, `oracle_value()` is the position at the EF_BOND feed, `price_drift_bps()` is the gap between the feed and the pool's own quote. Answers `settlement_window() → (0, 0)`, redemption being on-chain |
 | Private credit adapter | `CDNWXGSS...`. Registered on the Engine, cap 4000 bps, originator QIRO, jurisdiction LU. Answers `settlement_window() → (15, 90)` |
-| Private credit adapter, second originator | `CBAO767N...`. Registered on the Engine, cap 2000 bps, originator QIRO2, jurisdiction IE, priced from `PC_NAV2`. Same wasm as the first: the feed used to be `pub const ORACLE_FEED` and is now passed to the constructor and stored, because a second originator needed a second build and a protocol that needs a compiler to take on a counterparty will not take one on. `set_oracle_feed(admin, feed)` moves it, refused with `#605` while the instance holds exposure, since repointing funded capital would reprice it against a different book with nothing reverting. Proved by `scripts/e2e-two-originators.sh`, 15 passed 0 failed. |
+| Private credit adapter, second originator | `CBAO767N...`. Registered on the Engine, cap 2000 bps, originator QIRO2, jurisdiction IE, priced from `PC_NAV2`. Same source crate as the first and not the same bytecode, because the first instance predates the change: the feed used to be `pub const ORACLE_FEED` and is now passed to the constructor and stored, since a second originator needed a second build and a protocol that needs a compiler to take on a counterparty will not take one on. `CDNWXGSS` therefore answers 17 entry points and this one answers 18, which is a one command comparison and is declared under `treeAheadOfLedger` rather than left to be noticed. `set_oracle_feed(admin, feed)` moves the feed, refused with `#605` while the instance holds exposure, since repointing funded capital would reprice it against a different book with nothing reverting. Proved by `scripts/e2e-two-originators.sh`, 13 passed 0 failed. |
 | An adapter cannot be registered against the wrong Engine or Vault | `register_pool` refuses an adapter that does not name this Engine and this Engine's Vault, and `allocate`, `deallocate` and `recover` re-run that check rather than resting on registration. Covered in `cargo test -p allocation-engine` |
-| Oracle Adapter with live feeds | `CAUOHPPN...`, three feeds answering: `USDC_USD`, `PC_NAV` which the Vault reads, and `EF_BOND`. `bash scripts/check-ttl.sh` catches the deployment archiving; the keeper at `scripts/keeper-oracle.sh` runs every ten minutes under launchd and resubmits each feed's existing value once half its staleness window is gone |
-| A NAV cannot be moved by one key | `bash scripts/e2e-oracle-quorum.sh`, 11 assertions. Every feed runs at a quorum of two against a reporter set of two: one submission returns `Pending` and moves nothing, a repeat from the same reporter is refused `#518 AlreadyVoted`, and a second distinct reporter on the same value and timestamp commits it |
+| Oracle Adapter with live feeds | `CAUOHPPN...`, four feeds answering: `USDC_USD`, `PC_NAV` which the Vault reads, `PC_NAV2` for the second originator, and `EF_BOND`. `bash scripts/check-ttl.sh` catches the deployment archiving; the keeper at `scripts/keeper-oracle.sh` runs every ten minutes under launchd and resubmits each feed's existing value once half its staleness window is gone |
+| A NAV cannot be moved by one key | `bash scripts/e2e-oracle-quorum.sh`, 12 assertions. Every feed runs at a quorum of two against a reporter set of two: one submission returns `Pending` and moves nothing, a repeat from the same reporter is refused `#518 AlreadyVoted`, and a second distinct reporter on the same value and timestamp commits it |
 | Per-push NAV guards | A deviation bound per feed, an absolute band that also covers a feed's first report, and a minimum interval in ledger time. `cargo test -p oracle-adapter`, 32 tests |
 
 Two things stated rather than glossed. The quorum is two reporters and both

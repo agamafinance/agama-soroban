@@ -176,7 +176,15 @@ echo ""
 echo "==> oracle-adapter, redeployed because its initialize became a constructor"
 ORACLE=$(deploy "$WASM/oracle_adapter.wasm" --admin "$ADMIN")
 echo "    oracle-adapter    = $ORACLE"
-echo "    add_reporter      tx $(tx "$ORACLE" add_reporter --admin "$ADMIN" --reporter "$ADMIN")"
+# The reporter set is the two dedicated reporter keys, and deliberately not the
+# admin. An admin that is also a reporter can lower the quorum to one, remove
+# the other reporter and then post any NAV on its own signature, so a quorum of
+# two held by such a key is a quorum of one. The live instance was corrected on
+# 2026-10-31; this line is what stops the next deployment undoing it.
+for R in $(j "' '.join(d['oracleReporters']['addresses'])"); do
+  [ "$R" = "$ADMIN" ] && { echo "    refusing to make the admin a reporter"; exit 1; }
+  echo "    add_reporter ${R:0:8}  tx $(tx "$ORACLE" add_reporter --admin "$ADMIN" --reporter "$R")"
+done
 for feed in USDC_USD PC_NAV EF_BOND; do
   echo "    register $feed tx $(tx "$ORACLE" register_feed --admin "$ADMIN" --feed_id "$feed" \
     --staleness_secs "$(f "$feed" stalenessSecs)" --deviation_bps "$(f "$feed" deviationBps)" \

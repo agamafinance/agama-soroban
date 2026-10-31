@@ -103,6 +103,17 @@ tx() {
     echo "FAILED $(echo "$out" | tr '\n' ' ' | grep -oE '#[0-9]+|TxBadSeq|tx_[A-Z_]+' | head -1)"
   fi
 }
+
+# The same, signed by an identity other than $SRC. Needed since the oracle
+# admin stopped being a reporter: a NAV now has to be signed by a reporter key.
+tx_as() {
+  local out
+  if out=$(stellar contract invoke --id "$2" --source "$1" --network $NET -- "${@:3}" 2>&1); then
+    echo "$out" | grep -oE '[0-9a-f]{64}' | head -1
+  else
+    echo "FAILED $(echo "$out" | tr '\n' ' ' | grep -oE '#[0-9]+|TxBadSeq|tx_[A-Z_]+' | head -1)"
+  fi
+}
 # State changing, signed by the unprivileged identity.
 tx_other() { stellar contract invoke --id "$1" --source $OTHER --network $NET -- "${@:2}" 2>&1 \
          | grep -oE '[0-9a-f]{64}' | head -1; }
@@ -498,8 +509,15 @@ TS=$(( $(date +%s) - 120 ))
 PC_INTERVAL=$(j "d['oracleFeeds']['PC_NAV']['minIntervalSecs']")
 LAST_AT=$(q "$ORACLE" last_update --feed_id PC_NAV 2>/dev/null \
   | python3 -c 'import json,sys;print(json.load(sys.stdin)["recorded_at"])' 2>/dev/null || echo 0)
-if [ $(( $(date +%s) - LAST_AT )) -ge "$PC_INTERVAL" ]; then
-  echo "  push_nav PC_NAV 1.0    tx $(tx "$ORACLE" push_nav --reporter "$ADMIN" --feed_id PC_NAV --nav 10000000 --timestamp "$TS")"
+if [ $(( $(date +%s) - LAST_AT )) -ge "$PC_INTERVAL" ] && [ -n "$R1_ADDR" ] && [ -n "$R2_ADDR" ]; then
+  # Two votes, because the quorum on this feed is two. This line used to push
+  # once as $ADMIN, which only committed while the admin was a reporter and
+  # would now return #503 the first time the interval had actually elapsed.
+  # It had not elapsed on any run since, so the branch was never taken and the
+  # breakage stayed invisible.
+  stellar contract invoke --id "$ORACLE" --source "$R1" --network $NET -- submit_nav \
+    --reporter "$R1_ADDR" --feed_id PC_NAV --nav 10000000 --timestamp "$TS" >/dev/null 2>&1
+  echo "  submit_nav PC_NAV 1.0  tx $(tx_as "$R2" "$ORACLE" submit_nav --reporter "$R2_ADDR" --feed_id PC_NAV --nav 10000000 --timestamp "$TS")"
 else
   # A re-run inside the hour hits the feed's own rate limit, which is the guard
   # under test doing exactly what it is for. The last accepted value stands.

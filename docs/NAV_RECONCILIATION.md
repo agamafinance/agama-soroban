@@ -48,11 +48,19 @@ exposure unchanged, the NAV it is multiplied by changed, and the share price
 moving for a reason no event explains.
 
 Proved on testnet rather than argued. `bash scripts/e2e-two-originators.sh`,
-**15 passed, 0 failed**: one wasm, two instances answering `PC_NAV` and
-`PC_NAV2`, two originators and two jurisdictions on the Engine, both feeds
-bounded and at quorum two, the keeper showing three feed groups with the new
-exposure under its own, and a funded instance refusing to be repointed with
-`#605`.
+**13 passed, 0 failed**: two instances answering `PC_NAV` and `PC_NAV2`, two
+originators and two jurisdictions on the Engine, both feeds bounded and at
+quorum two, the keeper showing three feed groups with the new exposure under its
+own, and a funded instance refusing to be repointed with `#605`.
+
+One honest detail about "one wasm". The first instance, `CDNWXGSS`, was
+deployed before the feed became a constructor parameter, so it carries the
+compiled constant and answers 17 entry points where the second answers 18. They
+are the same crate and not the same bytecode, which is a one command comparison
+and is declared under `treeAheadOfLedger` in the deployment record rather than
+left to be found. What is true from here on is the part that matters: a third
+originator is a deployment of the current wasm with a different `--feed` and no
+rebuild.
 
 ## Who does what, and who touches nothing
 
@@ -142,7 +150,7 @@ the script's own header and repeated here:
    raise the NAV for as long as it stayed unresolved.
 
 The tape's `sha256` travels with the result. A NAV that cannot be tied to a
-specific file is a NAV nobody can external review.
+specific file is a NAV nobody can check.
 
 ### 3 and 4. On chain
 

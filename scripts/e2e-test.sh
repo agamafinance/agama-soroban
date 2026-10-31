@@ -61,7 +61,12 @@ send() {
   SENT_ERR=""
   out=$(stellar contract invoke --id "$1" --source $SRC --network $NET -- "${@:2}" 2>&1)
   if printf '%s' "$out" | grep -qE "error:|Error\(Contract"; then
-    SENT_ERR=$(printf '%s' "$out" | grep -oE "Error\(Contract, #[0-9]+\)|error: [^\n]{0,80}" | head -1)
+    # `.` and not `[^\n]`: a backslash inside an ERE bracket expression is a
+    # literal, so `[^\n]` reads as "not a backslash and not the letter n" and
+    # truncated every diagnostic at its first n. "error: transaction simulation
+    # failed" came out as "error: tra", which reads like a corrupted message
+    # rather than a readable one.
+    SENT_ERR=$(printf '%s' "$out" | grep -oE "Error\(Contract, #[0-9]+\)|error: .{0,80}" | head -1)
     return 1
   fi
   printf '%s' "$out" | tail -1

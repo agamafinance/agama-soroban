@@ -66,7 +66,7 @@
         "jurisdiction": "IE",
         "capBps": 2000,
         "address": "CBAO767N6WXGQZHAKD3ONU7BJSIDYPPZZX453JRE2VDVI23KFIXIBCVO",
-        "note": "Deployed 2026-10-31 from the same wasm as private-credit, with the feed passed to the constructor rather than compiled in. A second originator is a second instance, not a second build. Its feed is PC_NAV2, registered with the same bounds as PC_NAV and the same quorum of two."
+        "note": "Deployed 2026-10-31 from the same source crate as private-credit, with the feed passed to the constructor rather than compiled in. Not the same bytecode: CDNWXGSS predates the change and answers 17 entry points where this one answers 18, and that drift is declared under treeAheadOfLedger rather than left to be noticed. A second originator is a second instance, not a second build. Its feed is PC_NAV2, registered with the same bounds as PC_NAV and the same quorum of two."
       }
     },
     "floorMeasuredAgainst": "floor_base, which is free reserves plus deployed capital plus everything ever written off, and not net assets. record_writedown lowers deployed capital with no cash moving, so a floor that is a share of net assets is a floor whose absolute size the admin lowers every time a loss is recognised: allocating to the floor and writing the position off, over and over, moved 999.9999999 of 1000 USDC out of a Vault holding a 25 percent floor with every individual call inside the limit. Recognised losses stay in the base for good, so a write-down buys nothing. It is also the more correct base, because agUSD redeems one for one and a default does not reduce what the Vault owes.",
@@ -86,6 +86,14 @@
       "minNav": 5000000,
       "maxNav": 20000000,
       "minIntervalSecs": 3600
+    },
+    "PC_NAV2": {
+      "stalenessSecs": 604800,
+      "deviationBps": 500,
+      "minNav": 5000000,
+      "maxNav": 20000000,
+      "minIntervalSecs": 3600,
+      "note": "The second originator feed, registered 2026-10-31 with the same bounds as PC_NAV. It was live and absent from this block until 2026-10-31, so any script reading its interval out of here would have raised a KeyError. private-credit-2 names it through its constructor."
     },
     "EF_BOND": {
       "stalenessSecs": 172800,
@@ -1005,7 +1013,8 @@
       "originator": "QIRO2",
       "jurisdiction": "IE",
       "capBps": 2000,
-      "note": "Deployed 2026-10-31 from the same private-credit wasm as CDNWXGSS, with the feed passed to the constructor instead of compiled in. Proves a second originator needs a deployment and not a build. The Engine holds four pools now and keeper-yield groups exposure into three feeds."
+      "note": "Deployed 2026-10-31 from the same private-credit crate as CDNWXGSS, with the feed passed to the constructor instead of compiled in. Not the same bytecode: CDNWXGSS predates the change and does not answer set_oracle_feed, which treeAheadOfLedger declares. Every originator after this one is a deployment of the current wasm with a different --feed and no rebuild at all. Proves a second originator needs a deployment and not a build. The Engine holds four pools now and keeper-yield groups exposure into three feeds.",
+      "result": "13 passed, 0 failed"
     }
   },
   "treeAheadOfLedger": [

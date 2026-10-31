@@ -2104,8 +2104,11 @@ pub struct WriteDownRecorded {
     pub amount: i128,
     /// Capital still out at the pools after the write-down.
     pub deployed: i128,
-    /// Everything written off since deployment, after this one. It never falls,
-    /// and it stays in the denominator of the reserve floor, so the event
+    /// Everything written off and not yet recovered, after this one. A
+    /// write-down never takes anything out of it, which is the property the
+    /// reserve floor needs; `record_recovery` does lower it, by exactly the
+    /// cash that arrived, and the `RecoveryRecorded` event below says so. It
+    /// stays in the denominator of the reserve floor either way, so the event
     /// carries the number that says how much of the floor's base is a memory of
     /// capital rather than capital.
     pub recognised_losses: i128,

@@ -88,6 +88,24 @@ tx() {
   fi
 }
 
+# The same, signed by an identity other than $SRC.
+tx_as() {
+  local out
+  if out=$(stellar contract invoke --id "$2" --source "$1" --network $NET -- "${@:3}" 2>&1); then
+    echo "$out" | grep -oE '[0-9a-f]{64}' | head -1
+  else
+    echo "FAILED $(echo "$out" | tr '\n' ' ' | grep -oE '#[0-9]+|TxBadSeq|tx_[A-Z_]+' | head -1)"
+  fi
+}
+
+# The two oracle reporters. Neither is the admin: a key that both sets the
+# quorum and votes under it can dissolve its own quorum, which is what the
+# review's observation about the reporter keys was actually resting on.
+R1=${R1:-agama-oracle-2}
+R2=${R2:-agama-reporter-2}
+R1_ADDR=$(stellar keys address "$R1" 2>/dev/null || echo "")
+R2_ADDR=$(stellar keys address "$R2" 2>/dev/null || echo "")
+
 echo "== deployment under test =="
 echo "  vault             $VAULT (the Vault the Engine points at)"
 echo "  allocation-engine $ENGINE"
@@ -123,13 +141,20 @@ push() {
     # This used to end the whole run. The rest of the suite does not depend on
     # the new value, so ending it meant an hour's wait to check anything at
     # all, which is what stopped these suites being run one after another.
-    echo "  SKIP  $1 was reported ${elapsed}s ago and its minimum interval is 3600s,"
+    echo "  SKIP  $1 was reported ${elapsed}s ago and its minimum interval is ${FEED_INTERVAL}s,"
     echo "        so a push now is refused and the stored value stands"
     RATE_LIMITED=1
     return 0
   fi
-  hash=$(tx "$ORACLE" push_nav --reporter "$ADMIN" --feed_id "$1" --nav "$2" --timestamp "$TS")
-  echo "  push_nav $1 = $2  tx $hash"
+  # Two reporter signatures, because the quorum on every feed here is two and
+  # the oracle admin is no longer a reporter. A single vote returns Ok on a
+  # Pending round and moves nothing, and a vote from $ADMIN returns #503. This
+  # line was one push as $ADMIN until 2026-10-31; the feeds' own hour long
+  # interval meant the branch had not run since, so neither showed up.
+  stellar contract invoke --id "$ORACLE" --source "$R1" --network $NET -- submit_nav \
+    --reporter "$R1_ADDR" --feed_id "$1" --nav "$2" --timestamp "$TS" >/dev/null 2>&1
+  hash=$(tx_as "$R2" "$ORACLE" submit_nav --reporter "$R2_ADDR" --feed_id "$1" --nav "$2" --timestamp "$TS")
+  echo "  submit_nav $1 = $2  tx $hash"
   assert_eq "get_nav($1) reads back what was pushed" "$(q "$ORACLE" get_nav --feed_id "$1")" "$2"
 }
 push USDC_USD 10000000

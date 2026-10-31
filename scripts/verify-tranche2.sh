@@ -9,7 +9,7 @@
 #
 # So this one needs nothing. It makes its own account, funds it from friendbot,
 # and then checks the submission against the ledger: the caps and the floor as
-# the Engine holds them, the three adapters and their exposures, the two books
+# the Engine holds them, every registered pool and its exposure, the two books
 # agreeing with each other, the Vault pricing its book from the oracle, each
 # feed inside its own window, the quorum thresholds, and the share price
 # against the supply it is a price of.
@@ -171,8 +171,12 @@ echo "== the Vault prices its book from the oracle, not from itself"
 ok "Vault get_nav = Oracle PC_NAV" "$(num "$VAULT" get_nav)" "$(num "$ORACLE" get_nav --feed_id PC_NAV)"
 
 echo "== every feed inside its own window"
+# The list comes out of the record rather than being typed here, because a feed
+# that is live and not in this loop is a feed nobody checks: PC_NAV2 was exactly
+# that between its registration and 2026-10-31.
 NOW=$(date +%s)
-for f in USDC_USD PC_NAV EF_BOND; do
+FEEDS=$(python3 -c "import json;print(' '.join(json.load(open('$DEP'))['oracleFeeds'].keys()))")
+for f in $FEEDS; do
   W=$(j "['oracleFeeds']['$f']['stalenessSecs']")
   LU=$(call "$ORACLE" last_update --feed_id "$f" | python3 -c "import sys,json;print(json.load(sys.stdin)['timestamp'])" 2>/dev/null)
   AGE=$(( NOW - ${LU:-0} ))
@@ -184,16 +188,33 @@ for f in USDC_USD PC_NAV EF_BOND; do
 done
 
 echo "== a NAV takes more than one key"
-for f in USDC_USD PC_NAV EF_BOND; do
+for f in $FEEDS; do
   atleast "$f quorum threshold" "$(num "$ORACLE" quorum_threshold --feed_id "$f")" 2
 done
 atleast "reporters registered" "$(call "$ORACLE" reporters | python3 -c "import sys,json;print(len(json.load(sys.stdin)))")" 2
+# A reporter set that holds the admin is a quorum of one wearing a quorum of
+# two: the same key sets the threshold, removes the other reporter and then
+# votes. The admin was one of the two until 2026-10-31.
+ok "the oracle admin is not one of the reporters" \
+   "$(num "$ORACLE" is_reporter --addr "$(num "$ORACLE" admin)")" "false"
 
 echo "== the share price is a price of the supply it is quoted on"
-NAV=$(num "$STAKING" nav)
-SUP=$(num "$STAKING" total_shares)
-RATE=$(num "$STAKING" exchange_rate)
-ok "exchange_rate = nav / shares" "$RATE" "$(python3 -c "print($NAV * 10**7 // $SUP if $SUP else 0)")"
+# Three reads of one ratio, and anything that stakes or distributes between
+# them moves two of the three. A keeper doing its job is enough, so a single
+# disagreement is retried once before it is called a failure: a ratio that
+# disagrees twice in a row is a broken invariant, one that disagrees once is a
+# transaction that landed mid read. This reported a 0.47% mismatch exactly
+# once, with yield being distributed underneath it, and the numbers agreed to
+# the stroop a minute later.
+for attempt in 1 2; do
+  NAV=$(num "$STAKING" nav)
+  SUP=$(num "$STAKING" total_shares)
+  RATE=$(num "$STAKING" exchange_rate)
+  WANT=$(python3 -c "print($NAV * 10**7 // $SUP if $SUP else 0)")
+  [ "$RATE" = "$WANT" ] && break
+  [ "$attempt" = 1 ] && printf '        the three reads disagreed, re-reading once\n'
+done
+ok "exchange_rate = nav / shares" "$RATE" "$WANT"
 ok "DeFindex reads the same rate" \
    "$(call "$STAKING" get_asset_amounts_per_shares --vault_shares 10000000 | python3 -c "
 import sys, json

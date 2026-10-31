@@ -64,7 +64,11 @@ echo "== 2. allocate: the Vault releases capital and the adapter subscribes"
 OUT=$(stellar contract invoke --id "$ENGINE" --source "$SRC" --network "$NET" -- \
         allocate --admin "$ADMIN" --pool_id "$EF" --amount "$AMOUNT" 2>&1)
 printf '%s' "$OUT" | grep -q "Error(Contract" && { echo "$OUT" | tail -3; echo "allocate refused, stopping"; exit 1; }
-printf '%s\n' "$OUT" | grep -oE "Event: (Subscribed|Allocated)[^\n]*" | head -2 | sed 's/^/        /'
+# `.*` and not `[^\n]*`: a backslash inside an ERE bracket expression is a
+# literal, so `[^\n]*` reads as "not a backslash and not the letter n" and cut
+# every match short at its first n. grep is line based, so `.` cannot cross a
+# newline anyway.
+printf '%s\n' "$OUT" | grep -oE "Event: (Subscribed|Allocated).*" | head -2 | sed 's/^/        /'
 
 eq "the Engine booked the cost basis"        "$(rd "$ENGINE" get_exposure --pool_id "$EF")" "$((EXP0 + AMOUNT))"
 eq "the adapter booked the same cost basis"  "$(rd "$EF" get_exposure)" "$((EXP0 + AMOUNT))"
@@ -108,9 +112,16 @@ else
 # reporters say the same thing at the same timestamp. That is the mechanism the
 # reviewer is right to call out as ours on both sides, and it is declared in
 # docs/TRANCHE2_EVIDENCE.md rather than hidden here.
-inv "$ORACLE" submit_nav --reporter "$ADMIN" --feed_id EF_BOND --nav "$NEW_NAV" --timestamp "$NOW"
+#
+# Both signatures are reporter keys. The first used to be $ADMIN, which stopped
+# being a reporter on 2026-10-31, so it would have returned #503 and left the
+# round one vote short of its quorum. The feed takes one point an hour, so this
+# branch had not run since, and the breakage would have surfaced on whichever
+# run first arrived an hour after the last.
 SIGNER=agama-oracle-2 inv "$ORACLE" submit_nav \
   --reporter "$(stellar keys address agama-oracle-2)" --feed_id EF_BOND --nav "$NEW_NAV" --timestamp "$NOW"
+SIGNER=agama-reporter-2 inv "$ORACLE" submit_nav \
+  --reporter "$(stellar keys address agama-reporter-2)" --feed_id EF_BOND --nav "$NEW_NAV" --timestamp "$NOW"
 eq "the feed moved"                          "$(rd "$ORACLE" get_nav --feed_id EF_BOND)" "$NEW_NAV"
 eq "no unit was minted by the accrual"       "$(rd "$EF" units)" "$UNITS_BEFORE"
 gt "the position is worth more"              "$(rd "$EF" oracle_value)" "$VAL_BEFORE"
@@ -157,7 +168,7 @@ HALF=$(( AMOUNT / 2 ))
 OUT=$(stellar contract invoke --id "$ENGINE" --source "$SRC" --network "$NET" -- \
         deallocate --pool_id "$EF" --amount "$HALF" 2>&1)
 printf '%s' "$OUT" | grep -q "Error(Contract" && { echo "$OUT" | tail -3; bad "deallocate"; }
-printf '%s\n' "$OUT" | grep -oE "Event: Redeemed[^\n]*" | head -1 | sed 's/^/        /'
+printf '%s\n' "$OUT" | grep -oE "Event: Redeemed.*" | head -1 | sed 's/^/        /'
 eq "the Vault was repaid in full"            "$(bal "$VAULT")" "$((VAULT_MID + HALF))"
 eq "the cost basis fell by the repayment"    "$(rd "$EF" get_exposure)" "$((EXP0 + AMOUNT - HALF))"
 [ "$(rd "$EF" units)" -lt "$UNITS_MID" ] && ok "units were sold to raise the cash" "$(rd "$EF" units)" \
