@@ -21,7 +21,7 @@
 # That last one is why this is a full redeployment rather than a rewiring.
 # `initialize` is gone from seven contracts, so every deployed contract in the
 # stack differs from the source it is supposed to be, and a deployment whose
-# bytecode does not match the repository is not one an auditor can use.
+# bytecode does not match the repository is not one a reader can check.
 #
 # What is reused, and why
 #
@@ -310,7 +310,7 @@ REASONS = {
     'oracleAdapter': COMMON + (
         'Nothing else about this Oracle Adapter changed, and it would have been '
         'reused as it was in the previous two deployments, but a contract whose '
-        'deployed bytecode no longer matches the repository is not one an audit '
+        'deployed bytecode no longer matches the repository is not one a reader '
         'can be run against. Its three feeds are registered again on the '
         'replacement with the same guards.'
     ),

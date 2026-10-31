@@ -278,7 +278,7 @@
       "label": "Oracle Adapter, second deployment",
       "address": "CCIABPQMPGS4HSDQYN46M67LV6B5LCYO6X2XLCI27JSOMKUMN3N4DWJG",
       "supersededBy": "oracleAdapter",
-      "reason": "Replaced by scripts/deploy-mediums.sh, which closes the Medium findings of the second adversarial review. Every contract in this generation wires itself through an initialize() that runs in its own transaction after the deploy, which is a public window in which the same call naming a different admin can land first, and which took its counterparties on trust while the setters that repair those same pointers interrogated them. A __constructor replaces it in all seven contracts, so the bytecode of every one of them differs from the source and none of them could be reused. Nothing else about this Oracle Adapter changed, and it would have been reused as it was in the previous two deployments, but a contract whose deployed bytecode no longer matches the repository is not one an audit can be run against. Its three feeds are registered again on the replacement with the same guards."
+      "reason": "Replaced by scripts/deploy-mediums.sh, which closes the Medium findings of the second adversarial review. Every contract in this generation wires itself through an initialize() that runs in its own transaction after the deploy, which is a public window in which the same call naming a different admin can land first, and which took its counterparties on trust while the setters that repair those same pointers interrogated them. A __constructor replaces it in all seven contracts, so the bytecode of every one of them differs from the source and none of them could be reused. Nothing else about this Oracle Adapter changed, and it would have been reused as it was in the previous two deployments, but a contract whose deployed bytecode no longer matches the repository is not one an external review can be run against. Its three feeds are registered again on the replacement with the same guards."
     },
     {
       "contract": "oracleAdapter",
@@ -1027,7 +1027,7 @@
     },
     "codeFreeze": {
       "answer": "after the reviewer confirms Tranche 2, not before",
-      "why": "The freeze was lifted on 2026-10-30 to answer the review, because you cannot both freeze for an audit and fix what a reviewer found. Re-freezing now risks a third thaw mid-audit if anything else comes back. The current tree is a first version and is not what goes to the auditor."
+      "why": "The freeze was lifted on 2026-10-30 to answer the review, because you cannot both freeze for an external review and fix what a reviewer found. Re-freezing now risks a third thaw mid-external review if anything else comes back. The current tree is a first version and is not what goes to the external reviewor."
     },
     "moneygram": {
       "answer": "onboarding not started as of 2026-10-30, and it is the only thing missing",

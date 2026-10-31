@@ -74,7 +74,7 @@ the script's own header and repeated here:
    raise the NAV for as long as it stayed unresolved.
 
 The tape's `sha256` travels with the result. A NAV that cannot be tied to a
-specific file is a NAV nobody can audit.
+specific file is a NAV nobody can external review.
 
 ### 3 and 4. On chain
 

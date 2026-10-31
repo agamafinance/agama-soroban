@@ -486,7 +486,7 @@ Originator (servicing data)
 | `get_nav(feed_id) → i128` | The validated NAV. Reverts with `OracleStale` rather than returning an old number. |
 | `last_update(feed_id) → NavPoint` | The raw stored point, staleness included. Monitoring has to be able to see how stale a feed is, which `get_nav` deliberately refuses to say. |
 | `get_feed(feed_id) → FeedConfig` | A feed's guards, as registered. Also how the Vault's `set_oracle` interrogates a candidate oracle for the pair it is about to trust. |
-| `add_reporter(admin, reporter)` / `remove_reporter(admin, reporter)` | Reporter set membership. Both emit, so rotations are auditable off-chain without replaying the ledger. |
+| `add_reporter(admin, reporter)` / `remove_reporter(admin, reporter)` | Reporter set membership. Both emit, so rotations are checkable off-chain without replaying the ledger. |
 | `is_reporter(addr) → bool` / `reporters() → Vec<Address>` | The set, readable by anyone. |
 | `set_quorum_threshold(admin, feed_id, n)` / `quorum_threshold(feed_id) → u32` | A feed's threshold, 1 until raised. Per-feed and reversible, an operating parameter rather than a write-once guard. |
 | `quorum_votes(feed_id, timestamp, nav) → u32` | Votes so far for one value in one round. Zero whether the round never started or nobody cast that value. |
