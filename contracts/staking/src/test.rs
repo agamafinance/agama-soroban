@@ -2,6 +2,7 @@
 use super::*;
 use agusd::{AgUsd, AgUsdClient};
 use mock_usdc::{MockUsdc, MockUsdcClient};
+use soroban_sdk::testutils::storage::Instance as _;
 use soroban_sdk::testutils::storage::Persistent as _;
 use soroban_sdk::testutils::Events as _;
 use soroban_sdk::{
@@ -170,17 +171,17 @@ fn the_agusd_pointer_moves_before_the_first_stake_and_never_after() {
 }
 
 #[test]
-fn delivered_yield_closes_the_agusd_pointer_even_with_no_stakers() {
-    // distribute_yield takes custody without touching the stake counter. A
-    // contract holding yield and no shares would otherwise still look
-    // untouched, and the first staker after a repoint would be issued shares
-    // against a NAV denominated in a token the contract does not hold.
+fn a_stake_closes_the_agusd_pointer() {
+    // The pointer decides what every future share is a claim on, so it is fixed
+    // the moment this contract holds somebody's money. The test that stood here
+    // reached that state with `distribute_yield` into an empty pool, which this
+    // contract now refuses, so it reaches it the only way left: a stake.
     let f = setup();
-    fund_agusd(&f, &f.admin, 1_000 * ONE);
-    f.vault.distribute_yield(&(1_000 * ONE));
-    assert_eq!(f.vault.stakes(), 0);
-    assert_eq!(f.vault.total_shares(), 0);
-    assert_eq!(f.vault.nav(), 1_000 * ONE);
+    let alice = Address::generate(&f.e);
+    fund_agusd(&f, &alice, MIN_FIRST_STAKE);
+    f.vault.stake(&alice, &MIN_FIRST_STAKE);
+    assert_eq!(f.vault.stakes(), 1);
+    assert_eq!(f.vault.nav(), MIN_FIRST_STAKE);
 
     let replacement = f.e.register(MockUsdc, ());
     MockUsdcClient::new(&f.e, &replacement).initialize(
@@ -194,6 +195,46 @@ fn delivered_yield_closes_the_agusd_pointer_even_with_no_stakers() {
         Err(Ok(StakingError::CustodyTaken))
     );
     assert_eq!(f.vault.agusd(), f.ag.address);
+}
+
+#[test]
+fn a_stranger_cannot_wedge_the_repoint_with_one_stroop() {
+    // This read used to refuse the repoint on any balance at all, which handed
+    // anybody a permanent veto over it for the price of a transaction: one
+    // stroop of the current agUSD sent to this address by somebody with no
+    // interest in the contract, and the pointer could never move again.
+    //
+    // With no stake and no distribution nothing is owed, so a balance here has
+    // no claimant. It is swept to the admin and the repoint goes through.
+    let f = setup();
+    let stranger = Address::generate(&f.e);
+    fund_agusd(&f, &stranger, 1);
+    f.ag.transfer(&stranger, &f.vault.address, &1);
+    assert_eq!(f.ag.balance(&f.vault.address), 1);
+    assert_eq!(f.vault.stakes(), 0);
+    assert_eq!(f.vault.nav(), 0);
+
+    let replacement = f.e.register(MockUsdc, ());
+    MockUsdcClient::new(&f.e, &replacement).initialize(
+        &f.admin,
+        &7u32,
+        &String::from_str(&f.e, "Agama USD"),
+        &String::from_str(&f.e, "agUSD"),
+    );
+    let admin_before = f.ag.balance(&f.admin);
+    f.vault.set_agusd(&f.admin, &replacement);
+
+    assert_eq!(f.vault.agusd(), replacement, "the repoint went through");
+    assert_eq!(
+        f.ag.balance(&f.vault.address),
+        0,
+        "and the donation is not stranded on a token nothing points at"
+    );
+    assert_eq!(
+        f.ag.balance(&f.admin),
+        admin_before + 1,
+        "it went to the admin, who signed for the repoint"
+    );
 }
 
 /// Where yield delivered with no shares outstanding ends up.
@@ -226,28 +267,31 @@ fn the_defindex_reading_is_what_unstaking_actually_pays() {
     // A share count and a NAV that do not divide, so a rounded scalar rate and
     // the real quotient disagree. 3 shares against 10 agUSD is the shape: the
     // rate truncates and multiplying it back out loses stroops.
-    fund_agusd(&f, &alice, 3);
-    f.vault.stake(&alice, &3);
-    fund_agusd(&f, &f.admin, 7);
-    f.vault.distribute_yield(&7);
-    assert_eq!(f.vault.total_shares(), 3);
-    assert_eq!(f.vault.nav(), 10);
+    // Scaled to clear MIN_FIRST_STAKE while keeping the shape: three parts of
+    // share against ten of NAV still does not divide.
+    fund_agusd(&f, &alice, 3 * ONE);
+    f.vault.stake(&alice, &(3 * ONE));
+    fund_agusd(&f, &f.admin, 7 * ONE);
+    f.vault.distribute_yield(&(7 * ONE));
+    assert_eq!(f.vault.total_shares(), 3 * ONE);
+    assert_eq!(f.vault.nav(), 10 * ONE);
 
-    let read = f.vault.get_asset_amounts_per_shares(&3);
+    let read = f.vault.get_asset_amounts_per_shares(&(3 * ONE));
     assert_eq!(read.len(), 1);
     let quoted = read.get(0).unwrap();
     // Taken before the unstake: it empties the vault, and the rate of an empty
     // vault is 1.0 by definition, which would make this comparison vacuous.
-    let via_rate = 3 * f.vault.exchange_rate() / ONE;
+    let via_rate = 3 * ONE * f.vault.exchange_rate() / ONE;
 
     // What the contract pays for exactly those shares.
-    f.vault.request_unstake(&alice, &3);
+    f.vault.request_unstake(&alice, &(3 * ONE));
     assert_eq!(f.vault.pending(&alice).assets, quoted);
 
     // And the scalar route would have been short here, which is why this entry
-    // point does not take it: 10 * ONE / 3 truncates, and 3 of those is 9.
-    assert_eq!(quoted, 10);
-    assert_eq!(via_rate, 9);
+    // point does not take it: 10 * ONE * ONE / (3 * ONE) truncates, and three
+    // ONE of those is a stroop short of what the quotient pays.
+    assert_eq!(quoted, 10 * ONE);
+    assert_eq!(via_rate, 10 * ONE - 1);
 }
 
 #[test]
@@ -305,41 +349,99 @@ fn the_managed_funds_reading_is_one_asset_and_all_of_it_idle() {
 }
 
 #[test]
-fn yield_with_no_shares_goes_to_whoever_stakes_next() {
+fn yield_into_an_empty_pool_is_refused_rather_than_held_for_whoever_arrives() {
     let f = setup();
     let orphaned = 1_000 * ONE;
     fund_agusd(&f, &f.admin, orphaned);
-    f.vault.distribute_yield(&orphaned);
-    assert_eq!(f.vault.total_shares(), 0);
-    assert_eq!(f.vault.nav(), orphaned);
+    let admin_before = f.ag.balance(&f.admin);
 
-    // Nobody can reach it directly: there is no share to price against.
-    let alice = Address::generate(&f.e);
+    // This used to be accepted, and the test that stood here asserted where the
+    // money went: the NAV rose over an empty supply, so the opening share price
+    // became the whole distribution, and the next staker to show up took all
+    // thousand of it for one stroop. That is not a distribution, it is a prize.
     assert_eq!(
-        f.vault.try_request_unstake(&alice, &1),
+        f.vault.try_distribute_yield(&orphaned),
         Err(Ok(StakingError::NoSupply))
     );
-
-    // And the rate says one, because a rate per share needs a share.
+    assert_eq!(f.vault.nav(), 0, "and the NAV did not move");
+    assert_eq!(
+        f.ag.balance(&f.admin),
+        admin_before,
+        "refused before the transfer, so the admin still holds it"
+    );
     assert_eq!(f.vault.exchange_rate(), ONE);
 
-    // One stroop in, and the pool is theirs.
-    fund_agusd(&f, &alice, 1);
-    let shares = f.vault.stake(&alice, &1);
-    assert_eq!(shares, 1, "a stake with no supply mints at par");
-    assert_eq!(f.vault.total_shares(), 1);
-    assert_eq!(f.vault.nav(), orphaned + 1);
-
-    // Which the rate now reports honestly, all of it against one share.
-    assert_eq!(f.vault.exchange_rate(), (orphaned + 1) * ONE);
-
-    let owed = f.vault.request_unstake(&alice, &1);
+    // Once a share exists, the same distribution lands and is a distribution.
+    let alice = Address::generate(&f.e);
+    fund_agusd(&f, &alice, MIN_FIRST_STAKE);
+    f.vault.stake(&alice, &MIN_FIRST_STAKE);
+    f.vault.distribute_yield(&orphaned);
+    assert_eq!(f.vault.nav(), MIN_FIRST_STAKE + orphaned);
     assert_eq!(
-        owed,
-        orphaned + 1,
-        "the first staker after an orphaned distribution collects it entirely"
+        f.vault.request_unstake(&alice, &MIN_FIRST_STAKE),
+        MIN_FIRST_STAKE + orphaned,
+        "the only shareholder is owed the whole of it, which is the same number \
+         as before and now has a holder behind it"
     );
-    assert_eq!(f.vault.nav(), 0, "and nothing is left stranded behind them");
+}
+
+#[test]
+fn the_first_stake_cannot_be_one_stroop() {
+    // One stroop in sets the share price at one stroop, and every price after it
+    // is measured from there. A distribution of a thousand agUSD into that
+    // supply raises the price to a thousand agUSD a share: a later stake under
+    // the new price rounds to no shares and is refused, and one over it loses
+    // the truncation to the incumbent. The capital at risk for the attacker is
+    // one stroop.
+    let f = setup();
+    let attacker = Address::generate(&f.e);
+    fund_agusd(&f, &attacker, MIN_FIRST_STAKE);
+    let held = f.ag.balance(&attacker);
+
+    assert_eq!(
+        f.vault.try_stake(&attacker, &1),
+        Err(Ok(StakingError::FirstStakeTooSmall))
+    );
+    assert_eq!(
+        f.vault.try_stake(&attacker, &(MIN_FIRST_STAKE - 1)),
+        Err(Ok(StakingError::FirstStakeTooSmall))
+    );
+    assert_eq!(
+        f.ag.balance(&attacker),
+        held,
+        "refused before the transfer, so a rejected opening stake costs nothing"
+    );
+    assert_eq!(f.vault.total_shares(), 0);
+
+    // At the minimum it goes through, at par.
+    assert_eq!(f.vault.stake(&attacker, &MIN_FIRST_STAKE), MIN_FIRST_STAKE);
+    assert_eq!(f.vault.exchange_rate(), ONE);
+
+    // And the minimum is only ever the opening price. With a supply standing,
+    // a one stroop stake is an ordinary small stake and is taken.
+    let bob = Address::generate(&f.e);
+    fund_agusd(&f, &bob, 1);
+    assert_eq!(f.vault.stake(&bob, &1), 1);
+}
+
+#[test]
+fn the_minimum_applies_again_if_everybody_leaves() {
+    // Supply back to zero is a fresh opening price, so the guard has to be on
+    // the supply and not on whether the contract has ever been used.
+    let f = setup();
+    let alice = Address::generate(&f.e);
+    fund_agusd(&f, &alice, MIN_FIRST_STAKE);
+    f.vault.stake(&alice, &MIN_FIRST_STAKE);
+    f.vault.request_unstake(&alice, &MIN_FIRST_STAKE);
+    assert_eq!(f.vault.total_shares(), 0);
+    assert!(f.vault.stakes() > 0, "it has been used");
+
+    let attacker = Address::generate(&f.e);
+    fund_agusd(&f, &attacker, 1);
+    assert_eq!(
+        f.vault.try_stake(&attacker, &1),
+        Err(Ok(StakingError::FirstStakeTooSmall))
+    );
 }
 
 #[test]
@@ -948,4 +1050,52 @@ fn tracked_supply_matches_the_share_token_through_a_round_trip() {
     f.vault.request_unstake(&alice, &(100 * ONE));
     assert_eq!(f.vault.total_supply(), shares.total_supply());
     assert_eq!(f.vault.balance(&alice), 0);
+}
+
+/// The Vault extends its instance TTL on every one of its user paths. This
+/// contract extended it on none of them, so a deployment nobody reconfigured
+/// could archive itself out from under people who were still staking in it, and
+/// the only thing keeping it alive was an operator remembering to run
+/// `extend-ttl.sh`. Four paths here move value and all four bump.
+#[test]
+fn every_path_that_moves_value_extends_the_instance_ttl() {
+    let f = setup();
+    let v = f.vault.address.clone();
+    let ttl = |f: &Fix| f.e.as_contract(&v, || f.e.storage().instance().get_ttl());
+
+    let alice = Address::generate(&f.e);
+    fund_agusd(&f, &alice, 4 * MIN_FIRST_STAKE);
+    fund_agusd(&f, &f.admin, MIN_FIRST_STAKE);
+
+    // `extend_ttl(lifetime, bump)` is a no-op while the remaining TTL is still
+    // above the lifetime threshold, so burning a thousand ledgers proves
+    // nothing: the TTL has to be pushed under the threshold before a bump is
+    // observable at all. Two days of ledgers does it, the threshold being the
+    // bump less one day.
+    let burn = |f: &Fix| {
+        let seq = f.e.ledger().sequence();
+        f.e.ledger().set_sequence_number(seq + 2 * 17_280);
+    };
+
+    f.vault.stake(&alice, &MIN_FIRST_STAKE);
+    let after_stake = ttl(&f);
+    burn(&f);
+    assert!(ttl(&f) < after_stake, "the clock moved");
+
+    f.vault.stake(&alice, &MIN_FIRST_STAKE);
+    assert_eq!(ttl(&f), after_stake, "stake bumped it back");
+
+    burn(&f);
+    f.vault.distribute_yield(&MIN_FIRST_STAKE);
+    assert_eq!(ttl(&f), after_stake, "distribute_yield bumped it back");
+
+    burn(&f);
+    f.vault.request_unstake(&alice, &MIN_FIRST_STAKE);
+    assert_eq!(ttl(&f), after_stake, "request_unstake bumped it back");
+
+    burn(&f);
+    f.e.ledger()
+        .set_timestamp(f.e.ledger().timestamp() + COOLDOWN + 1);
+    f.vault.claim(&alice);
+    assert_eq!(ttl(&f), after_stake, "claim bumped it back");
 }

@@ -91,6 +91,19 @@ const NAV_LIFETIME: u32 = NAV_BUMP - DAY_LEDGERS;
 // to forget, since it never moved state to begin with. The TTL is generous
 // anyway so a quorum that is still trickling in is not silently reset while
 // it waits on the last vote.
+/// How long a reduction of a feed's quorum threshold waits before it can be
+/// applied, 72 hours.
+///
+/// Raising a threshold is safe and immediate. Lowering one is the direction that
+/// weakens the control, and the admin key could do it in a single transaction
+/// with nothing to see beforehand: drop a quorum of two to one, post alone, put
+/// it back. A pure upward ratchet was the other option and it is worse, because
+/// a threshold that can only rise turns one lost reporter key into a feed
+/// nobody can ever price again. So a reduction is announced, waits, and is
+/// applied by a second call, which gives anybody watching the chain three days
+/// to see a quorum being weakened before it is.
+pub const QUORUM_REDUCTION_DELAY_SECS: u64 = 72 * 60 * 60;
+
 const ROUND_BUMP: u32 = 30 * DAY_LEDGERS;
 const ROUND_LIFETIME: u32 = ROUND_BUMP - DAY_LEDGERS;
 
@@ -175,6 +188,10 @@ pub enum OracleError {
     /// This reporter already voted in this feed's current round. One vote per
     /// reporter per round, regardless of what value it voted for.
     AlreadyVoted = 518,
+    /// A reduction of a feed's quorum threshold was asked for again before its
+    /// delay had run out. The announcement stands; repeat the call once
+    /// `pending_quorum_reduction` says it is ready.
+    QuorumReductionNotReady = 519,
 }
 
 /// Per feed validation guards, fixed at registration time.
@@ -240,6 +257,10 @@ enum Cfg {
     /// Per feed quorum threshold. A feed with no entry here defaults to 1,
     /// which is single reporter behaviour: the first vote is quorum.
     QuorumThresholds,
+    /// Announced reductions of a feed's quorum threshold, as the value asked
+    /// for and the ledger time it can be applied at. Raising needs no entry
+    /// here: it takes effect in the call that asks for it.
+    PendingQuorum,
 }
 
 /// Persistent storage: the latest NAV of a feed. It is replaced on every
@@ -252,14 +273,40 @@ enum Cfg {
 #[contracttype]
 enum Store {
     Nav(Symbol),
-    /// Reporters that have already voted in a feed's round, keyed by the feed
-    /// and the timestamp the round is reporting for. One vote per reporter
-    /// per round, regardless of which value it voted for, so this is checked
-    /// before a vote is added to any tally.
+    /// What each reporter has voted for in a feed's round, keyed by the feed and
+    /// the timestamp the round is reporting for. One vote per reporter per
+    /// round, regardless of which value it is on, so this is checked before a
+    /// vote is added to any tally.
+    ///
+    /// It stores the value and not a flag, because a flag made a disagreement
+    /// permanent: two reporters splitting a round one and one could neither
+    /// reach quorum nor change their minds, so the round was dead, and a
+    /// reporter that disagreed on every round stopped the feed for good. The
+    /// value is what lets a vote be moved instead of added.
     RoundVoters(Symbol, u64),
     /// Votes so far for one specific value within a round. Quorum is reached
     /// when this count meets the feed's threshold.
     RoundTally(Symbol, u64, i128),
+}
+
+/// Emitted when a reporter moves its vote from one value to another inside the
+/// same round.
+///
+/// In the stream because a moved vote changes which value a round is converging
+/// on, and that is a thing an operator watching a feed needs to be able to see
+/// without replaying storage. It is also the signal that two reporters disagreed
+/// and one of them gave way, which is worth noticing even when the round then
+/// commits cleanly.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VoteMoved {
+    #[topic]
+    pub feed_id: Symbol,
+    #[topic]
+    pub reporter: Address,
+    pub timestamp: u64,
+    pub from: i128,
+    pub to: i128,
 }
 
 /// Emitted when the reporter set changes, so rotations are auditable off-chain
@@ -299,6 +346,22 @@ pub struct NavUpdated {
     pub reporter: Address,
     pub nav: i128,
     pub timestamp: u64,
+}
+
+/// Emitted when a reduction of a feed's quorum threshold is announced.
+///
+/// The point of the delay is that somebody can see it coming, and an event is
+/// how they see it: a quorum being weakened is the one configuration change on
+/// this contract that a reporter key cannot compensate for, so it is announced
+/// with the value, where it is coming from, and when it can be applied.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QuorumReductionAnnounced {
+    #[topic]
+    pub feed_id: Symbol,
+    pub from: u32,
+    pub to: u32,
+    pub ready_at: u64,
 }
 
 /// Emitted when a feed's admin-set quorum threshold changes.
@@ -489,6 +552,16 @@ impl OracleAdapter {
     /// in the architecture document, and it can be raised or lowered again
     /// later; it is an operating parameter, not a write once guard like a
     /// feed's staleness or deviation bound.
+    /// Lowering one is a different thing from raising it, and this entry point
+    /// treats it as one. See `QUORUM_REDUCTION_DELAY_SECS`: a raise takes effect
+    /// in the call that asks for it, a reduction is announced by the first call
+    /// and applied by a second one, with the same value, after the delay.
+    /// `pending_quorum_reduction` reads what is in flight.
+    ///
+    /// The acceptance is a repeat of the same call rather than a second named
+    /// entry point, because the thing that has to match is the value, and asking
+    /// for it twice is a clearer statement of intent than a bare `accept` that
+    /// applies whatever was last proposed.
     pub fn set_quorum_threshold(
         e: Env,
         admin: Address,
@@ -502,14 +575,72 @@ impl OracleAdapter {
         if threshold == 0 {
             return Err(OracleError::InvalidQuorumThreshold);
         }
+        let current = Self::threshold_for(&e, &feed_id);
+        let mut pending: Map<Symbol, (u32, u64)> = e
+            .storage()
+            .instance()
+            .get(&Cfg::PendingQuorum)
+            .unwrap_or(Map::new(&e));
+
+        if threshold < current {
+            let now = e.ledger().timestamp();
+            match pending.get(feed_id.clone()) {
+                // The same reduction, announced and matured: apply it.
+                Some((asked, ready_at)) if asked == threshold && now >= ready_at => {
+                    pending.remove(feed_id.clone());
+                }
+                // The same reduction, announced and not matured yet.
+                Some((asked, ready_at)) if asked == threshold => {
+                    e.storage().instance().set(&Cfg::PendingQuorum, &pending);
+                    Self::bump_instance(&e);
+                    return Err(OracleError::QuorumReductionNotReady);
+                }
+                // A different reduction replaces whatever was in flight, and
+                // starts its own wait rather than inheriting the old one.
+                _ => {
+                    let ready_at = now.saturating_add(QUORUM_REDUCTION_DELAY_SECS);
+                    pending.set(feed_id.clone(), (threshold, ready_at));
+                    e.storage().instance().set(&Cfg::PendingQuorum, &pending);
+                    Self::bump_instance(&e);
+                    QuorumReductionAnnounced {
+                        feed_id,
+                        from: current,
+                        to: threshold,
+                        ready_at,
+                    }
+                    .publish(&e);
+                    return Ok(());
+                }
+            }
+        } else {
+            // Raising clears anything in flight: an announced reduction that is
+            // then overtaken by a raise was not what the admin wanted, and
+            // leaving it standing would let a later repeat of the old value
+            // apply against a threshold nobody meant it for.
+            pending.remove(feed_id.clone());
+            e.storage().instance().set(&Cfg::PendingQuorum, &pending);
+        }
+
         let mut thresholds = Self::quorum_map(&e);
         thresholds.set(feed_id.clone(), threshold);
         e.storage()
             .instance()
             .set(&Cfg::QuorumThresholds, &thresholds);
+        e.storage().instance().set(&Cfg::PendingQuorum, &pending);
         Self::bump_instance(&e);
         QuorumThresholdSet { feed_id, threshold }.publish(&e);
         Ok(())
+    }
+
+    /// The reduction in flight for a feed, as the threshold asked for and the
+    /// ledger time it can be applied at, or `None` when nothing is announced.
+    pub fn pending_quorum_reduction(e: Env, feed_id: Symbol) -> Option<(u32, u64)> {
+        let pending: Map<Symbol, (u32, u64)> = e
+            .storage()
+            .instance()
+            .get(&Cfg::PendingQuorum)
+            .unwrap_or(Map::new(&e));
+        pending.get(feed_id)
     }
 
     /// Report a new NAV for a feed, failing the transaction if anything is
@@ -827,15 +958,52 @@ impl OracleAdapter {
         timestamp: u64,
     ) -> Result<u32, OracleError> {
         let voters_key = Store::RoundVoters(feed_id.clone(), timestamp);
-        let mut voters: Map<Address, bool> = e
+        let mut voters: Map<Address, i128> = e
             .storage()
             .temporary()
             .get(&voters_key)
             .unwrap_or(Map::new(e));
-        if voters.get(reporter.clone()).unwrap_or(false) {
-            return Err(OracleError::AlreadyVoted);
+        // A reporter may move its vote within a round. It may not add one.
+        //
+        // The round is keyed on (feed, timestamp) and the tally on the value,
+        // so two reporters who disagreed at one timestamp split it one and one,
+        // reached no quorum, and could not revote: that round was dead, and a
+        // reporter that disagreed on every round stopped the feed permanently.
+        // A feed that any single reporter can switch off is not a feed with a
+        // quorum of two, it is a feed with a veto.
+        //
+        // Moving a vote cannot manufacture a quorum, which is the property the
+        // one-vote rule exists for: the sum of a round's tallies never counts a
+        // reporter twice, because the old value is decremented in the same call
+        // that increments the new one. A lone reporter holds exactly one vote
+        // however many times it changes its mind, so it still cannot carry a
+        // threshold of two on its own, including after a refused round, which is
+        // the case the voter record is deliberately kept for.
+        match voters.get(reporter.clone()) {
+            Some(previous) if previous == nav => return Err(OracleError::AlreadyVoted),
+            Some(previous) => {
+                let old_key = Store::RoundTally(feed_id.clone(), timestamp, previous);
+                let had: u32 = e.storage().temporary().get(&old_key).unwrap_or(0);
+                if had <= 1 {
+                    e.storage().temporary().remove(&old_key);
+                } else {
+                    e.storage().temporary().set(&old_key, &(had - 1));
+                    e.storage()
+                        .temporary()
+                        .extend_ttl(&old_key, ROUND_LIFETIME, ROUND_BUMP);
+                }
+                VoteMoved {
+                    feed_id: feed_id.clone(),
+                    reporter: reporter.clone(),
+                    timestamp,
+                    from: previous,
+                    to: nav,
+                }
+                .publish(e);
+            }
+            None => {}
         }
-        voters.set(reporter.clone(), true);
+        voters.set(reporter.clone(), nav);
         e.storage().temporary().set(&voters_key, &voters);
         e.storage()
             .temporary()

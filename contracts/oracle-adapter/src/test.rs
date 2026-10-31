@@ -801,7 +801,7 @@ fn quorum_of_two_commits_only_once_two_reporters_agree() {
 /// everything and would let a double vote through even if the contract
 /// checked nothing at all.
 #[test]
-fn a_reporter_cannot_vote_twice_in_the_same_round() {
+fn a_reporter_gets_one_vote_per_round_and_may_move_it() {
     let f = setup();
     let r2 = Address::generate(&f.e);
     f.e.mock_all_auths();
@@ -809,71 +809,119 @@ fn a_reporter_cannot_vote_twice_in_the_same_round() {
     f.oracle.set_quorum_threshold(&f.admin, &FEED_PC_NAV, &2u32);
 
     let nav = ONE;
-    mock_reporter_auth(
-        &f.e,
-        &f.oracle.address,
-        &f.reporter,
-        "submit_nav",
-        &FEED_PC_NAV,
-        nav,
-        T0,
-    );
+    let other = ONE * 101 / 100;
+    let vote = |who: &Address, v: i128| {
+        mock_reporter_auth(&f.e, &f.oracle.address, who, "submit_nav", &FEED_PC_NAV, v, T0);
+    };
+
+    vote(&f.reporter, nav);
     assert_eq!(
         f.oracle.submit_nav(&f.reporter, &FEED_PC_NAV, &nav, &T0),
         PushOutcome::Pending
     );
+    assert_eq!(f.oracle.quorum_votes(&FEED_PC_NAV, &T0, &nav), 1);
 
-    // The same reporter, the same round, the same value: still a second vote
-    // from one signer, and it is refused.
-    mock_reporter_auth(
-        &f.e,
-        &f.oracle.address,
-        &f.reporter,
-        "submit_nav",
-        &FEED_PC_NAV,
-        nav,
-        T0,
-    );
+    // The same value again is a second vote from one signer and is refused.
+    vote(&f.reporter, nav);
     assert_eq!(
         f.oracle
             .try_submit_nav(&f.reporter, &FEED_PC_NAV, &nav, &T0),
         Err(Ok(OracleError::AlreadyVoted))
     );
 
-    // Nor does casting a different value in the same round buy it a second
-    // vote: the round is keyed by the reporter and the timestamp, not by
-    // what was voted for.
-    let other = ONE * 101 / 100;
-    mock_reporter_auth(
-        &f.e,
-        &f.oracle.address,
-        &f.reporter,
-        "submit_nav",
-        &FEED_PC_NAV,
-        other,
-        T0,
+    // A different value in the same round moves the vote rather than adding
+    // one. This used to be refused, and refusing it was the deadlock: two
+    // reporters who disagreed at one timestamp could neither converge nor
+    // change their minds, so the round was dead and a reporter that disagreed
+    // on every round switched the feed off.
+    vote(&f.reporter, other);
+    assert_eq!(
+        f.oracle.submit_nav(&f.reporter, &FEED_PC_NAV, &other, &T0),
+        PushOutcome::Pending
     );
     assert_eq!(
-        f.oracle
-            .try_submit_nav(&f.reporter, &FEED_PC_NAV, &other, &T0),
-        Err(Ok(OracleError::AlreadyVoted))
+        f.oracle.quorum_votes(&FEED_PC_NAV, &T0, &nav),
+        0,
+        "the value it left is no longer carrying its vote"
+    );
+    assert_eq!(f.oracle.quorum_votes(&FEED_PC_NAV, &T0, &other), 1);
+
+    // Which is the property the one-vote rule is for: however many times a lone
+    // reporter changes its mind, the round holds exactly one of its votes, so a
+    // threshold of two is still out of its reach alone.
+    vote(&f.reporter, nav);
+    f.oracle.submit_nav(&f.reporter, &FEED_PC_NAV, &nav, &T0);
+    vote(&f.reporter, other);
+    f.oracle.submit_nav(&f.reporter, &FEED_PC_NAV, &other, &T0);
+    assert_eq!(
+        f.oracle.quorum_votes(&FEED_PC_NAV, &T0, &nav)
+            + f.oracle.quorum_votes(&FEED_PC_NAV, &T0, &other),
+        1,
+        "four submissions from one key, one vote in the round"
+    );
+    assert_eq!(
+        f.oracle.try_get_nav(&FEED_PC_NAV),
+        Err(Ok(OracleError::NoNavReported)),
+        "and nothing committed, so the feed still has no value at all"
     );
 
-    // A genuinely distinct reporter still reaches quorum normally.
-    mock_reporter_auth(
-        &f.e,
-        &f.oracle.address,
-        &r2,
-        "submit_nav",
-        &FEED_PC_NAV,
-        nav,
-        T0,
-    );
+    // A genuinely distinct reporter reaches quorum normally.
+    vote(&r2, other);
     assert_eq!(
-        f.oracle.submit_nav(&r2, &FEED_PC_NAV, &nav, &T0),
+        f.oracle.submit_nav(&r2, &FEED_PC_NAV, &other, &T0),
         PushOutcome::Accepted
     );
-    assert_eq!(f.oracle.get_nav(&FEED_PC_NAV), nav);
+    assert_eq!(f.oracle.get_nav(&FEED_PC_NAV), other);
+}
+
+/// The deadlock itself, before and after.
+///
+/// Raised by an outside reader of this repository on 27 October: a round is
+/// keyed on (feed, timestamp) and the tally on the value, so two reporters who
+/// disagree split it one and one and neither can revote. The round is dead, and
+/// a reporter that disagrees on every round stops the feed for good. A feed any
+/// single reporter can switch off does not have a quorum of two, it has a veto.
+#[test]
+fn two_reporters_who_disagree_can_still_resolve_the_round() {
+    let f = setup();
+    let r2 = Address::generate(&f.e);
+    f.e.mock_all_auths();
+    f.oracle.add_reporter(&f.admin, &r2);
+    f.oracle.set_quorum_threshold(&f.admin, &FEED_PC_NAV, &2u32);
+
+    let mine = ONE * 101 / 100;
+    let theirs = ONE * 102 / 100;
+    let vote = |who: &Address, v: i128| {
+        mock_reporter_auth(&f.e, &f.oracle.address, who, "submit_nav", &FEED_PC_NAV, v, T0);
+    };
+
+    vote(&f.reporter, mine);
+    f.oracle.submit_nav(&f.reporter, &FEED_PC_NAV, &mine, &T0);
+    vote(&r2, theirs);
+    f.oracle.submit_nav(&r2, &FEED_PC_NAV, &theirs, &T0);
+
+    // Split one and one, and nothing committed.
+    assert_eq!(f.oracle.quorum_votes(&FEED_PC_NAV, &T0, &mine), 1);
+    assert_eq!(f.oracle.quorum_votes(&FEED_PC_NAV, &T0, &theirs), 1);
+    assert_eq!(
+        f.oracle.try_get_nav(&FEED_PC_NAV),
+        Err(Ok(OracleError::NoNavReported)),
+        "the split round committed nothing"
+    );
+
+    // One of them gives way, at the same timestamp, without waiting an hour for
+    // a fresh round the rate limit would refuse anyway.
+    vote(&f.reporter, theirs);
+    assert_eq!(
+        f.oracle.submit_nav(&f.reporter, &FEED_PC_NAV, &theirs, &T0),
+        PushOutcome::Accepted
+    );
+    assert_eq!(f.oracle.get_nav(&FEED_PC_NAV), theirs);
+    assert_eq!(
+        f.oracle.quorum_votes(&FEED_PC_NAV, &T0, &mine),
+        0,
+        "the abandoned value kept none of its vote"
+    );
 }
 
 /// An address outside the reporter set cannot contribute a vote toward
@@ -1099,4 +1147,98 @@ fn a_refused_round_keeps_the_record_of_who_voted_in_it() {
         "one reporter reached a quorum of two on its own"
     );
     assert_eq!(f.oracle.get_nav(&FEED_PC_NAV), ONE);
+}
+
+/// Raising a quorum is immediate. Lowering one waits, in the open.
+///
+/// The admin key could otherwise drop a quorum of two to one, post a NAV on its
+/// own signature and put the threshold back, in three transactions with nothing
+/// visible in advance. A quorum that one key can switch off at will is not a
+/// quorum, it is a setting. The upward ratchet the finding suggested is worse:
+/// a threshold that can only rise turns one lost reporter key into a feed that
+/// can never be priced again.
+#[test]
+fn a_quorum_rises_at_once_and_falls_only_after_a_delay() {
+    let f = setup();
+    f.e.mock_all_auths();
+
+    // Up, immediately.
+    f.oracle.set_quorum_threshold(&f.admin, &FEED_PC_NAV, &3u32);
+    assert_eq!(f.oracle.quorum_threshold(&FEED_PC_NAV), 3);
+    assert_eq!(f.oracle.pending_quorum_reduction(&FEED_PC_NAV), None);
+
+    // Down: announced, not applied.
+    f.oracle.set_quorum_threshold(&f.admin, &FEED_PC_NAV, &1u32);
+    assert_eq!(
+        f.oracle.quorum_threshold(&FEED_PC_NAV),
+        3,
+        "the threshold has not moved"
+    );
+    let (asked, ready_at) = f.oracle.pending_quorum_reduction(&FEED_PC_NAV).unwrap();
+    assert_eq!(asked, 1);
+    assert_eq!(ready_at, f.e.ledger().timestamp() + QUORUM_REDUCTION_DELAY_SECS);
+
+    // Asking again before it matures does not shorten the wait.
+    assert_eq!(
+        f.oracle
+            .try_set_quorum_threshold(&f.admin, &FEED_PC_NAV, &1u32),
+        Err(Ok(OracleError::QuorumReductionNotReady))
+    );
+    assert_eq!(f.oracle.quorum_threshold(&FEED_PC_NAV), 3);
+
+    // One second short is still short.
+    f.e.ledger()
+        .set_timestamp(ready_at - 1);
+    assert_eq!(
+        f.oracle
+            .try_set_quorum_threshold(&f.admin, &FEED_PC_NAV, &1u32),
+        Err(Ok(OracleError::QuorumReductionNotReady))
+    );
+
+    // Matured, and the second call applies it.
+    f.e.ledger().set_timestamp(ready_at);
+    f.oracle.set_quorum_threshold(&f.admin, &FEED_PC_NAV, &1u32);
+    assert_eq!(f.oracle.quorum_threshold(&FEED_PC_NAV), 1);
+    assert_eq!(
+        f.oracle.pending_quorum_reduction(&FEED_PC_NAV),
+        None,
+        "and the announcement is spent, so it cannot be replayed"
+    );
+}
+
+#[test]
+fn a_raise_cancels_an_announced_reduction() {
+    // An announcement left standing after a raise is a stale permission: repeat
+    // the old value later and it applies against a threshold nobody meant it
+    // for.
+    let f = setup();
+    f.e.mock_all_auths();
+    f.oracle.set_quorum_threshold(&f.admin, &FEED_PC_NAV, &2u32);
+    f.oracle.set_quorum_threshold(&f.admin, &FEED_PC_NAV, &1u32);
+    assert!(f.oracle.pending_quorum_reduction(&FEED_PC_NAV).is_some());
+
+    f.oracle.set_quorum_threshold(&f.admin, &FEED_PC_NAV, &3u32);
+    assert_eq!(f.oracle.quorum_threshold(&FEED_PC_NAV), 3);
+    assert_eq!(f.oracle.pending_quorum_reduction(&FEED_PC_NAV), None);
+
+    // So the wait starts again from here.
+    f.oracle.set_quorum_threshold(&f.admin, &FEED_PC_NAV, &1u32);
+    let (_, ready_at) = f.oracle.pending_quorum_reduction(&FEED_PC_NAV).unwrap();
+    assert_eq!(ready_at, f.e.ledger().timestamp() + QUORUM_REDUCTION_DELAY_SECS);
+}
+
+#[test]
+fn a_different_reduction_restarts_the_wait_rather_than_inheriting_it() {
+    let f = setup();
+    f.e.mock_all_auths();
+    f.oracle.set_quorum_threshold(&f.admin, &FEED_PC_NAV, &3u32);
+    f.oracle.set_quorum_threshold(&f.admin, &FEED_PC_NAV, &1u32);
+    let (_, first) = f.oracle.pending_quorum_reduction(&FEED_PC_NAV).unwrap();
+
+    f.e.ledger().set_timestamp(f.e.ledger().timestamp() + 60 * 60);
+    f.oracle.set_quorum_threshold(&f.admin, &FEED_PC_NAV, &2u32);
+    let (asked, second) = f.oracle.pending_quorum_reduction(&FEED_PC_NAV).unwrap();
+    assert_eq!(asked, 2);
+    assert!(second > first, "the new value waits its own full delay");
+    assert_eq!(f.oracle.quorum_threshold(&FEED_PC_NAV), 3);
 }

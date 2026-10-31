@@ -156,6 +156,26 @@ const PENDING_LIFETIME: u32 = PENDING_BUMP - DAY_LEDGERS;
 
 const ONE: i128 = 10_000_000; // 1.0 at 7 decimals, the share-price scale
 
+/// The smallest first stake this contract will take, one agUSD.
+///
+/// With an empty supply the first staker is issued shares one for one, so a
+/// first stake of one stroop sets the share price at one stroop and every price
+/// after it is measured from there. A distribution into that supply then raises
+/// the price by the whole distributed amount: a later stake under the new price
+/// rounds to no shares and is refused by `ZeroShares`, and one over it loses the
+/// truncation to the incumbent. One stroop of capital buying the right to price
+/// everybody else out is the defect, and the minimum is what removes it.
+///
+/// A minimum rather than the virtual offset an ERC-4626 vault uses, and the
+/// reason is arithmetic that is already load bearing here: `exchange_rate` is
+/// `nav * ONE / supply` and the Vault, `get_asset_amounts_per_shares` and three
+/// on-chain suites compare against exactly that. An offset makes the reported
+/// rate stop being that ratio. The minimum leaves the ratio alone and reaches
+/// the same place: at a first stake of one agUSD, pricing a 1000 agUSD stake
+/// down to zero shares needs the price raised past 1e10, which means donating
+/// ten billion agUSD to a pool holding one.
+pub const MIN_FIRST_STAKE: i128 = ONE;
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u32)]
@@ -194,6 +214,12 @@ pub enum StakingError {
     SharesMismatch = 812,
     /// A stake or an unstake before `set_shares` named the token to issue.
     SharesNotSet = 813,
+    /// The first stake into an empty supply was under `MIN_FIRST_STAKE`. See
+    /// that constant for why one stroop is not an acceptable opening price.
+    FirstStakeTooSmall = 814,
+    /// `set_agusd` found agUSD on this contract that nothing accounts for, and
+    /// could not move it to the admin to clear the way for the repoint.
+    StrayBalanceStuck = 815,
 }
 
 /// The sagUSD share token, as seen from here.
@@ -213,6 +239,22 @@ pub trait ShareToken {
     /// because a contract that points at a token which does not name it back
     /// is a contract whose `stake` cannot issue a share.
     fn admin(e: Env) -> Address;
+}
+
+/// Emitted when `set_agusd` finds agUSD on this contract that nothing accounts
+/// for and moves it to the admin to clear the way for the repoint.
+///
+/// It is in the stream because a sweep moves somebody's money, even if that
+/// somebody sent it here with no claim on it: a donation with no claimant is
+/// still a transfer out of this contract, and the one thing worse than an
+/// unexplained balance is an unexplained balance that quietly left.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StrayBalanceSwept {
+    #[topic]
+    pub token: Address,
+    pub amount: i128,
+    pub to: Address,
 }
 
 /// Emitted when the staked asset is repointed. It can only happen before the
@@ -472,8 +514,38 @@ impl Staking {
             .instance()
             .get(&Cfg::AgUsd)
             .ok_or(StakingError::NotInitialized)?;
-        if TokenClient::new(&e, &current).balance(&e.current_contract_address()) != 0 {
-            return Err(StakingError::CustodyTaken);
+        // A stray balance is swept, not treated as custody.
+        //
+        // This read used to refuse the repoint outright, which handed anybody a
+        // permanent veto over it: one stroop of the current agUSD sent to this
+        // address, by a stranger, for the cost of a transaction, and the pointer
+        // that decides what every future share is a claim on could never move
+        // again. The two checks above already establish that nothing is owed,
+        // `stakes` at zero meaning nothing was ever staked and `nav` at zero
+        // meaning nothing was ever distributed, and with no stake there can be
+        // no pending unstake either. So a balance here is a donation with no
+        // claimant, and the right thing is to move it out of the way rather than
+        // to let it wedge the contract.
+        //
+        // It goes to the admin, who is authorizing this call and is the only
+        // address this contract knows. If it cannot be moved, the repoint is
+        // refused with a code that says which of the two it was, instead of
+        // reporting a grief as custody.
+        let stray = TokenClient::new(&e, &current).balance(&e.current_contract_address());
+        if stray > 0 {
+            match TokenClient::new(&e, &current).try_transfer(
+                &e.current_contract_address(),
+                &admin,
+                &stray,
+            ) {
+                Ok(Ok(())) => StrayBalanceSwept {
+                    token: current.clone(),
+                    amount: stray,
+                    to: admin.clone(),
+                }
+                .publish(&e),
+                _ => return Err(StakingError::StrayBalanceStuck),
+            }
         }
         // And it has to count stroops the way sagUSD does.
         //
@@ -510,6 +582,16 @@ impl Staking {
         if amount <= 0 {
             return Err(StakingError::InvalidAmount);
         }
+        // Read before the transfer, and refuse before it. Both numbers come out
+        // of instance storage rather than off a balance, so reading them here
+        // is the same read it was below; what changes is that an opening stake
+        // this contract will not accept is now refused before it has taken the
+        // money, instead of after.
+        let nav = Self::nav(e.clone());
+        let supply = Self::total_supply(e.clone());
+        if supply == 0 && amount < MIN_FIRST_STAKE {
+            return Err(StakingError::FirstStakeTooSmall);
+        }
         let agusd: Address = e
             .storage()
             .instance()
@@ -517,8 +599,6 @@ impl Staking {
             .ok_or(StakingError::NotInitialized)?;
         TokenClient::new(&e, &agusd).transfer(&from, &e.current_contract_address(), &amount);
 
-        let nav = Self::nav(e.clone());
-        let supply = Self::total_supply(e.clone());
         let shares = if supply == 0 || nav == 0 {
             amount
         } else {
@@ -534,6 +614,11 @@ impl Staking {
         e.storage()
             .instance()
             .set(&Cfg::Stakes, &(Self::stakes(e.clone()) + 1));
+        // The Vault extends its instance TTL on every one of its user paths and
+        // this contract extended it on none of them, so a contract nobody
+        // configured for ninety days could archive itself while people were
+        // still staking in it. Four paths move value here and all four bump now.
+        tok::bump_instance(&e);
         Staked {
             staker: from,
             assets: amount,
@@ -573,6 +658,7 @@ impl Staking {
         p.assets += assets;
         p.claimable_at = e.ledger().timestamp() + cooldown;
         Self::write_pending(&e, &from, &p);
+        tok::bump_instance(&e);
         UnstakeRequested {
             staker: from,
             shares,
@@ -637,6 +723,7 @@ impl Staking {
             .ok_or(StakingError::NotInitialized)?;
         TokenClient::new(&e, &agusd).transfer(&e.current_contract_address(), &from, &p.assets);
         e.storage().persistent().remove(&key);
+        tok::bump_instance(&e);
         UnstakeClaimed {
             staker: from,
             assets: p.assets,
@@ -658,6 +745,15 @@ impl Staking {
         if amount <= 0 {
             return Err(StakingError::InvalidAmount);
         }
+        // Nothing to distribute to. Raising the NAV over an empty supply does
+        // not make anybody richer: it sets the opening share price to the whole
+        // distributed amount, and the next staker to arrive takes all of it for
+        // whatever they put in. The yield has to wait for somebody to own a
+        // share of it, and refusing is how it waits. Checked before the
+        // transfer, so a refused distribution has not moved the admin's money.
+        if Self::total_supply(e.clone()) == 0 {
+            return Err(StakingError::NoSupply);
+        }
         let agusd: Address = e
             .storage()
             .instance()
@@ -666,6 +762,7 @@ impl Staking {
         TokenClient::new(&e, &agusd).transfer(&admin, &e.current_contract_address(), &amount);
         let nav = Self::nav(e.clone());
         e.storage().instance().set(&Cfg::Nav, &(nav + amount));
+        tok::bump_instance(&e);
         YieldDistributed {
             amount,
             nav: nav + amount,

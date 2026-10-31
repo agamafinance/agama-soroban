@@ -341,7 +341,7 @@ proptest! {
 /// covers this. It does not. This test does, by construction, and the fuzz
 /// suite covers the properties that a random interleaving does reach.
 #[test]
-fn a_reporter_cannot_carry_a_round_alone_by_voting_into_it_twice() {
+fn a_reporter_cannot_carry_a_round_alone_however_often_it_changes_its_mind() {
     let mut state = setup();
     // A reference value, so the deviation bound has something to measure from.
     apply(&mut state, &Op::Submit { who: 0, nav: ONE, at: 0 });
@@ -364,9 +364,11 @@ fn a_reporter_cannot_carry_a_round_alone_by_voting_into_it_twice() {
         "the refused round moved the feed"
     );
 
-    // The second vote from the seeder is refused, so the round cannot be
-    // carried by one key.
     let when = state.slot_time(1);
+
+    // The same value again from the seeder is a second vote and is refused. The
+    // voter record surviving a refused round is what makes that true, and it is
+    // why the record is deliberately not cleared on refusal.
     assert_eq!(
         state
             .oracle
@@ -375,19 +377,40 @@ fn a_reporter_cannot_carry_a_round_alone_by_voting_into_it_twice() {
     );
     assert_eq!(state.oracle.get_nav(&FEED_PC_NAV), ONE);
 
-    // And a genuine second reporter still carries it, so this is a check on
-    // distinctness rather than a wall across the round. Reporter 0 is the one
-    // that has not spoken in this round: 2 and 3 already have, and they get the
-    // same refusal for the same reason, which is the guard rather than a quirk
-    // of who went first.
-    assert_eq!(
-        state
+    // Changing its mind does not buy it a second vote either. A reporter may
+    // move a vote, which is what stops a disagreement killing the round, and
+    // moving is not adding: whatever it does, the round holds one of its votes.
+    let wander = [ONE * 101 / 100, ONE * 103 / 100, theirs, ONE * 104 / 100];
+    for v in wander.iter() {
+        let _ = state
             .oracle
-            .try_submit_nav(&state.addr(2), &FEED_PC_NAV, &theirs, &when),
-        Err(Ok(OracleError::AlreadyVoted))
+            .try_submit_nav(&state.addr(1), &FEED_PC_NAV, v, &when);
+    }
+    let held: u32 = wander
+        .iter()
+        .chain([ONE * 150 / 100].iter())
+        .map(|v| state.oracle.quorum_votes(&FEED_PC_NAV, &when, v))
+        .sum();
+    assert!(
+        held <= 3,
+        "one vote from reporter 1 plus the two reporters 2 and 3 already cast, \
+         and reporter 1 cast five submissions to get there"
     );
+    assert_eq!(
+        state.oracle.get_nav(&FEED_PC_NAV),
+        ONE,
+        "and nothing it did on its own committed"
+    );
+
+    // A genuine second reporter still carries it, so this is a check on
+    // distinctness rather than a wall across the round. Reporter 2 moves off
+    // the value the bound refused and onto the seeder's, and the round commits
+    // on two distinct signatures, which is what a quorum of two means.
     state
         .oracle
-        .submit_nav(&state.addr(0), &FEED_PC_NAV, &theirs, &when);
+        .submit_nav(&state.addr(1), &FEED_PC_NAV, &theirs, &when);
+    state
+        .oracle
+        .submit_nav(&state.addr(2), &FEED_PC_NAV, &theirs, &when);
     assert_eq!(state.oracle.get_nav(&FEED_PC_NAV), theirs);
 }

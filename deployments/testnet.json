@@ -1041,6 +1041,22 @@
       "contract": "allocationEngine",
       "entryPointsNotDeployed": [],
       "note": "No entry point changed. The Engine lists private-credit as a regular dependency and not only a dev one, so changing the adapter changed the Engine's bytecode without changing its interface. Declared rather than redeployed: a new Engine means migrating the pool registry, four pools with their originators, jurisdictions, caps, exposures and the written-off charge, for a dependency hash and no behaviour. It goes with the next deployment that has a reason of its own."
+    },
+    {
+      "contract": "staking",
+      "address": "CBOHG5YGAE7ORFDE5GIUN6MYYSXMHYWGLZTH3Y563HZCBBWFVQ4CACV3",
+      "entryPointsNotDeployed": [],
+      "provenBy": "cargo test -p staking",
+      "note": "The tree is ahead of the ledger by four fixes and no entry point, so the interface is identical and the bytecode is not. (1) stake refuses a first stake under MIN_FIRST_STAKE, one agUSD: a one stroop opening stake sets the share price at one stroop, and a distribution into that supply prices every later staker out or taxes them the truncation. (2) distribute_yield refuses an empty supply instead of making the next staker a present of the whole amount. (3) all four paths that move value extend the instance TTL, which none of them did. (4) set_agusd sweeps an unaccounted stray balance to the admin instead of refusing the repoint on it, which handed anybody a permanent veto over the pointer for one stroop. Not deployed because staking cannot be replaced on its own: agusd-core::set_minter freezes after the first mint, so the Vault and agUSD move with it, which is the generation migration in scripts/deploy-vault-generation.sh and retires the generation Tranche 2 is proven on. Of the four, only (1) and (2) are reachable on this instance and both need a supply of zero, which it does not have."
+    },
+    {
+      "contract": "oracleAdapter",
+      "address": "CAUOHPPNHUIYQI3KIVPLP75CGWKFBGSXK3RW75UO52PKY3YKQRTWIQUS",
+      "entryPointsNotDeployed": [
+        "pending_quorum_reduction"
+      ],
+      "provenBy": "cargo test -p oracle-adapter",
+      "note": "The tree is ahead of the ledger by two fixes, one of which adds the entry point above. (1) A reporter may move its vote inside a round instead of being locked to its first value: the round is keyed on (feed, timestamp) and the tally on the value, so two reporters who disagreed split it one and one, neither could revote, the round was dead, and a reporter that disagreed on every round stopped the feed for good. Moving cannot manufacture a quorum, because the value a vote leaves is decremented in the call that increments the one it joins. (2) Raising a quorum threshold is still immediate; lowering one is announced, waits QUORUM_REDUCTION_DELAY_SECS of 72 hours and is applied by a second call with the same value. The admin key could otherwise drop a quorum of two to one, post alone and put it back, with nothing visible in advance. A pure upward ratchet was the alternative and is worse: it turns one lost reporter key into a feed that can never be priced again. Not deployed because a replacement means re-registering four feeds with their bounds, re-adding the reporter set and carrying a value across for each, which is scripts/redeploy-oracle-quorum.sh and a decision rather than a step. The deadlock is the reason it goes to mainnet rather than waiting: on this instance it needs a reporter key to trigger and both are ours."
     }
   ],
   "decisions": {
