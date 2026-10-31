@@ -228,6 +228,7 @@ the code did are corrected above.
 | `bash scripts/keeper-reflector.sh` | `USDC_USD` from Reflector, checked against its own clock |
 | `bash scripts/keeper-etherfuse.sh` | `EF_BOND` from Etherfuse's USTRY, five sources agreeing around their median |
 | `bash scripts/keeper-oracle.sh` | dispatches the two above, reports PC_NAV's window |
+| `DRY=1 bash scripts/keeper-yield.sh` | the plan, per feed, and the guard that refuses a shape the grouping cannot fix: **`PC_NAV` is read by ABF and QIRO**, because the cross chain adapter is registered under ABF/JE with a compiled `PC_NAV`. Its exposure is zero, so the run reports the shape and continues; with capital behind that feed it exits rather than pricing one originator's capital off another's book, which is the defect of 26 October. The fix is the feed as a constructor parameter, a redeployment that `unregister_pool` blocks while the pool carries a write-off charge, so it ships with mainnet |
 
 Every figure above was measured in one serial pass, the last of them on
 2026-10-31. Serially and not in parallel, because the suites take an exclusive

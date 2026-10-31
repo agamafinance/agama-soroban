@@ -31,6 +31,27 @@ Nothing is averaged. An originator's NAV is a statement about its own book, and
 blending two books into one number would price capital at a figure no originator
 reported, while throwing away the only thing a concentration cap can act on.
 
+### One feed, one originator, and the pool that breaks it
+
+Grouping by feed only fixes the defect of 26 October while each feed belongs to
+one counterparty. Two pools with different originators reading the same feed puts
+it straight back, so `keeper-yield.sh` now refuses to distribute in that shape
+rather than paying, and names the feed and the originators sharing it.
+
+It has a live case to name. The cross chain adapter is registered on the Engine
+under **ABF / JE** and its `oracle_feed()` is a compiled `PC_NAV`, which is
+**QIRO**'s Luxembourg book. The adapter's own comment argues that a crossing is
+transport and the far book is the same one; the concentration caps contradict it
+by treating ABF as its own counterparty, and both cannot be right. Its exposure
+is zero, so nothing is mispriced today, and the guard is what keeps that true:
+with capital behind that feed the keeper exits rather than distributing.
+
+The fix is the one the private credit adapter already has, the feed as a
+constructor parameter. That is a redeployment of the cross chain adapter, and
+`unregister_pool` refuses while the pool carries a write-off charge, which this
+one does. So it goes with the mainnet deployment, and until then the keeper
+refuses instead of the documentation promising.
+
 ### What this cost, and what it was
 
 The feed used to be compiled into the adapter:

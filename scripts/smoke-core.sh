@@ -141,7 +141,7 @@ push() {
     # This used to end the whole run. The rest of the suite does not depend on
     # the new value, so ending it meant an hour's wait to check anything at
     # all, which is what stopped these suites being run one after another.
-    echo "  SKIP  $1 was reported ${elapsed}s ago and its minimum interval is ${FEED_INTERVAL}s,"
+    echo "  SKIP  $1 was reported ${elapsed}s ago and its minimum interval is $(feed_interval "$ORACLE" "$1" "$SRC" "$NET")s,"
     echo "        so a push now is refused and the stored value stands"
     RATE_LIMITED=1
     return 0

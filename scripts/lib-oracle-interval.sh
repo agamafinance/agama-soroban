@@ -36,10 +36,12 @@ feed_is_rate_limited() {
                || echo "")
     case "${INTERVAL:-}" in (""|*[!0-9]*) INTERVAL=3600;; esac
   fi
-  # Published so a caller can name the real number in its own message. Two
-  # suites printed "its minimum interval is 3600s" for every feed, which was
-  # wrong for USDC_USD on each of them.
-  FEED_INTERVAL=$INTERVAL
+  # Not exported to the caller. Every caller invokes this inside a command
+  # substitution to capture the elapsed seconds, and a command substitution is a
+  # subshell, so an assignment here would be set and then thrown away. Callers
+  # that want the number call feed_interval below. Trying it the other way cost
+  # a run: "FEED_INTERVAL: unbound variable" under set -u, in the one branch
+  # that only runs when a feed is rate limited.
   last=$(stellar contract invoke --id "$ORACLE" --source "$SRC" --network "$NET" --send=no \
            -- last_update --feed_id "$FEED" 2>/dev/null \
          | python3 -c "import sys,json;print(json.load(sys.stdin).get('recorded_at',0))" 2>/dev/null || echo 0)
@@ -49,4 +51,16 @@ feed_is_rate_limited() {
     return 0
   fi
   return 1
+}
+
+# The feed's own minimum interval, for a caller that wants to print it.
+#
+#   feed_interval <oracle_id> <feed_id> <source> <network>
+feed_interval() {
+  local v
+  v=$(stellar contract invoke --id "$1" --source "$3" --network "$4" --send=no \
+        -- get_feed --feed_id "$2" 2>/dev/null \
+      | python3 -c "import sys,json;print(json.load(sys.stdin)['min_interval_secs'])" 2>/dev/null \
+      || echo "")
+  case "${v:-}" in (""|*[!0-9]*) echo 3600;; (*) echo "$v";; esac
 }

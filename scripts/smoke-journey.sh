@@ -409,7 +409,7 @@ push() {
     # one here would report the rate limit as the oracle failing to store what
     # it was given. Skipped with the reason rather than failed, and the run
     # carries on: the rest of this journey does not depend on the new value.
-    echo "  SKIP  $1 was reported ${elapsed}s ago and its minimum interval is ${FEED_INTERVAL}s,"
+    echo "  SKIP  $1 was reported ${elapsed}s ago and its minimum interval is $(feed_interval "$ORACLE" "$1" "$SRC" "$NET")s,"
     echo "        so a push now is refused and the stored value stands"
     RATE_LIMITED=1
     return 0

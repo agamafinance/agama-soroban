@@ -81,13 +81,70 @@ if [ -z "$POOLS" ]; then echo "no pool is registered on the Engine, nothing to d
 
 declare -a FEEDS=()
 BREAKDOWN=""
+OWNERS=""
 while read -r pool exposure; do
   [ -z "$pool" ] && continue
   feed=$(num "$pool" oracle_feed)
   case "$feed" in (""|*[!A-Za-z0-9_]*) echo "pool $pool would not name its feed: $feed"; exit 1;; esac
+  orig=$(rd "$ENGINE" get_pool --pool_id "$pool" \
+         | python3 -c "import json,sys;print(json.load(sys.stdin)['originator'])" 2>/dev/null || echo "")
+  case "$orig" in (""|*[!A-Za-z0-9_]*) echo "the Engine would not name $pool's originator: $orig"; exit 1;; esac
   BREAKDOWN="$BREAKDOWN$pool $feed $exposure"$'\n'
+  OWNERS="$OWNERS$feed $orig $exposure"$'\n'
   FEEDS+=("$feed")
 done <<< "$POOLS"
+
+# One feed, one originator. The defect of 26 October was one originator's NAV
+# applied to capital in a different originator's book, and grouping by feed only
+# fixes it while each feed belongs to one counterparty. Two pools with different
+# originators reading the same feed puts it straight back, so this refuses rather
+# than paying: a distribution that prices ABF's capital off QIRO's book is wrong
+# in the direction nobody notices, because the money leaves and the share price
+# moves for a reason no event explains.
+#
+# The cross chain adapter is the live case. It is registered under ABF/JE and its
+# oracle_feed is a compiled PC_NAV, on the argument that a crossing is transport
+# and the far book is the same one, which the concentration caps contradict by
+# treating ABF as its own counterparty. Its exposure is zero, so nothing is
+# mispriced today and this guard is what keeps that true. The fix is the one
+# private-credit already had: the feed as a constructor parameter. That is a
+# redeployment of the adapter, and unregister_pool refuses while the pool carries
+# a write-off charge, so it goes with the mainnet deployment.
+CLASH=$(printf '%s' "$OWNERS" | python3 -c "
+import sys, collections
+by = collections.defaultdict(set)
+live = collections.defaultdict(int)
+for line in sys.stdin:
+    p = line.split()
+    if len(p) < 3:
+        continue
+    feed, orig, exposure = p[0], p[1], int(p[2])
+    by[feed].add(orig)
+    live[feed] += exposure
+out = []
+for feed, origs in sorted(by.items()):
+    if len(origs) > 1:
+        out.append(feed + ' is read by ' + ', '.join(sorted(origs)) + ' (exposure ' + str(live[feed]) + ')')
+print('; '.join(out))
+")
+if [ -n "$CLASH" ]; then
+  echo "  one feed is shared by two originators: $CLASH"
+  LIVE=$(printf '%s' "$OWNERS" | python3 -c "
+import sys, collections
+by = collections.defaultdict(set); live = collections.defaultdict(int)
+for line in sys.stdin:
+    p = line.split()
+    if len(p) < 3: continue
+    by[p[0]].add(p[1]); live[p[0]] += int(p[2])
+print(sum(v for f, v in live.items() if len(by[f]) > 1))
+")
+  if [ "${LIVE:-0}" -gt 0 ]; then
+    echo "  and ${LIVE} stroops of capital sit behind it, so nothing is distributed."
+    echo "  Pricing one originator's capital off another's book is the defect of 26 October."
+    exit 1
+  fi
+  echo "  no capital sits behind it, so this run continues and the shape is reported."
+fi
 
 # One read per distinct feed, through the Adapter that enforces staleness.
 NAVS=""
