@@ -198,13 +198,13 @@ the code did are corrected above.
 
 ## What backs every number above
 
-| Check | Command | Result |
+| Command | Result |
 |---|---|
 | `cargo test --workspace` | **263 passed**, 0 failed, 12 suites |
 | `bash scripts/verify-tranche2.sh` | **27 passed**, 0 failed, run by an account it makes itself |
 | `bash scripts/check-deployment-record.sh --wasm` | **81 passed**, 0 failed, deployed bytecode compared against the tree |
 | `bash scripts/check-doc-entry-points.sh` | **10 passed**, 0 failed, 187 signatures agreeing with the ledger |
-| `bash scripts/check-authorization.sh` | **0 failures**, 80 entries |
+| `bash scripts/check-authorization.sh` | **0 failures** over **81** state-changing entry points, 5 of them deliberately permissionless and each with its reason printed |
 | `bash scripts/check-refusals.sh` | **4 passed**, 0 failed, four permanent refusals read back off the ledger |
 | `bash scripts/check-advisories.sh` | **2 passed**, 0 failed |
 | `bash scripts/check-ttl.sh` | **11 passed**, 0 failed |
