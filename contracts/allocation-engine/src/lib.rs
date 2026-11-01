@@ -454,6 +454,30 @@ pub struct PoolUnregistered {
     pub jurisdiction: Symbol,
 }
 
+/// Emitted when the operator puts its own capital against a recognised loss.
+///
+/// Separate from `Recovered` on purpose, and the purpose is a mislabel this
+/// repository published. On 2026-11-01 ten USDC were booked through
+/// `book_recovery` to clear a cross chain write-off charge, and two of them were
+/// a real recovery while eight were fresh operator capital. The ledger said
+/// `Recovered` for all ten, which overstates what the borrower returned, and
+/// nothing in the contracts could say otherwise because there was no other call
+/// to make. Covering a loss and recovering one are different events with
+/// different meanings for anybody reading the book, and they have different
+/// names now.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CapitalInjected {
+    #[topic]
+    pub pool: Address,
+    /// USDC the operator put into the Vault out of its own balance.
+    pub amount: i128,
+    /// How much of that was applied against this pool's written-off charge.
+    pub released: i128,
+    /// The charge left across every pool afterwards.
+    pub written_off: i128,
+}
+
 /// Emitted when stranded capital is brought back from an adapter. It is the
 /// mirror of `WrittenDown` and belongs in the stream for the same reason: an
 /// exposure book that moves without an allocation or a repayment should never
@@ -1337,6 +1361,60 @@ impl AllocationEngine {
         Self::bump_instance(&e);
 
         Recovered {
+            pool: pool_id,
+            amount,
+            released,
+            written_off: total - applied,
+        }
+        .publish(&e);
+        Ok(())
+    }
+
+    /// Book operator capital against a recognised loss.
+    ///
+    /// Mechanically `book_recovery`: the same Vault call, the same two counters
+    /// reduced by the same rule, so a loss covered this way and a loss recovered
+    /// through an adapter leave the Engine in states that cannot be told apart.
+    /// That is deliberate, because economically they are the same to a
+    /// depositor: the hole is filled either way.
+    ///
+    /// What differs is the event, and that is the whole reason this exists. A
+    /// `Recovered` for capital the operator supplied says the borrower paid,
+    /// which is a claim about the credit book rather than about the Vault's
+    /// balance. This says what happened instead. The two are not
+    /// interchangeable for anybody trying to work out whether the loans are
+    /// performing from the stream alone.
+    pub fn record_injection(
+        e: Env,
+        admin: Address,
+        pool_id: Address,
+        amount: i128,
+    ) -> Result<(), EngineError> {
+        Self::require_admin(&e, &admin)?;
+        if amount <= 0 {
+            return Err(EngineError::InvalidAmount);
+        }
+        if !Self::pool_map(&e).contains_key(pool_id.clone()) {
+            return Err(EngineError::PoolNotRegistered);
+        }
+        let vault_address = Self::vault(e.clone())?;
+        let vault = VaultClient::new(&e, &vault_address);
+        if vault.admin() != admin {
+            return Err(EngineError::AdminMismatch);
+        }
+
+        vault.record_recovery(&admin, &amount);
+
+        let charged = Self::written_off_pool(e.clone(), pool_id.clone());
+        let released = if amount < charged { amount } else { charged };
+        Self::write_written_off_pool(&e, &pool_id, charged - released);
+
+        let total = Self::written_off(e.clone());
+        let applied = if amount < total { amount } else { total };
+        Self::write_written_off(&e, total - applied);
+        Self::bump_instance(&e);
+
+        CapitalInjected {
             pool: pool_id,
             amount,
             released,

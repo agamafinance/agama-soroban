@@ -2555,3 +2555,75 @@ fn pool_registry_cost_with_one_originator_and_jurisdiction_per_pool() {
     }
 }
 
+
+#[test]
+fn record_injection_clears_a_charge_and_says_it_was_not_a_recovery() {
+    let f = setup();
+    let vault = MockVaultClient::new(&f.e, &f.vault_id);
+    f.engine.allocate(&f.admin, &f.pool_a, &(300 * USDC));
+    f.engine
+        .write_down(&f.admin, &f.pool_a, &(300 * USDC), &symbol_short!("DEFAULT"));
+    assert_eq!(f.engine.written_off_pool(&f.pool_a), 300 * USDC);
+
+    // The operator covers the loss out of its own balance. Mechanically this is
+    // book_recovery: the Vault is made whole and the charge is released, which
+    // is what a depositor cares about either way.
+    f.engine
+        .record_injection(&f.admin, &f.pool_a, &(300 * USDC));
+    assert_eq!(vault.recovered(), 300 * USDC);
+    assert_eq!(f.engine.written_off_pool(&f.pool_a), 0);
+    assert_eq!(f.engine.written_off(), 0);
+    // And the cap is released with the charge, same as a real recovery.
+    f.engine.allocate(&f.admin, &f.pool_a, &(300 * USDC));
+    assert_eq!(f.engine.get_exposure(&f.pool_a), 300 * USDC);
+
+}
+
+/// The designed property: covering a loss and recovering one leave the Engine
+/// in states that cannot be told apart.
+///
+/// That is deliberate, because to a depositor the hole is filled either way.
+/// The difference lives in the event, `CapitalInjected` against `Recovered`,
+/// which is a claim about the credit book rather than about the Vault's
+/// balance. If these two ever stop agreeing on state, one of them is wrong.
+#[test]
+fn an_injection_and_a_recovery_leave_the_same_state() {
+    let after = |inject: bool| {
+        let f = setup();
+        f.engine.allocate(&f.admin, &f.pool_a, &(300 * USDC));
+        f.engine
+            .write_down(&f.admin, &f.pool_a, &(300 * USDC), &symbol_short!("DEFAULT"));
+        if inject {
+            f.engine
+                .record_injection(&f.admin, &f.pool_a, &(300 * USDC));
+        } else {
+            f.engine.book_recovery(&f.admin, &f.pool_a, &(300 * USDC));
+        }
+        (
+            f.engine.written_off_pool(&f.pool_a),
+            f.engine.written_off(),
+            MockVaultClient::new(&f.e, &f.vault_id).recovered(),
+            f.engine.total_allocated(),
+        )
+    };
+    assert_eq!(after(true), after(false));
+}
+
+#[test]
+fn record_injection_refuses_what_book_recovery_refuses() {
+    let f = setup();
+    let stranger = Address::generate(&f.e);
+    assert_eq!(
+        f.engine.try_record_injection(&stranger, &f.pool_a, &(1 * USDC)),
+        Err(Ok(EngineError::NotAdmin))
+    );
+    assert_eq!(
+        f.engine.try_record_injection(&f.admin, &f.pool_a, &0),
+        Err(Ok(EngineError::InvalidAmount))
+    );
+    let unknown = Address::generate(&f.e);
+    assert_eq!(
+        f.engine.try_record_injection(&f.admin, &unknown, &(1 * USDC)),
+        Err(Ok(EngineError::PoolNotRegistered))
+    );
+}

@@ -220,6 +220,26 @@ pub enum StakingError {
     /// `set_agusd` found agUSD on this contract that nothing accounts for, and
     /// could not move it to the admin to clear the way for the repoint.
     StrayBalanceStuck = 815,
+    /// `migrate_to` was called with nothing to carry. A handover of an empty
+    /// book is a handover of the share token alone, which is the one thing this
+    /// call must never be usable for.
+    NothingToCarry = 816,
+    /// The successor names a different agUSD, so the position it would adopt is
+    /// denominated in something other than what backs it.
+    SuccessorTokenMismatch = 817,
+    /// `adopt` was called on a contract that has already taken a stake, or that
+    /// already carries a supply. Adopting on top of either would mix two books
+    /// into one share price.
+    NotAdoptable = 818,
+    /// `adopt` ran before the share token's admin was handed over, so the
+    /// adopting contract could not mint or burn for the holders it just took on.
+    AdoptBeforeHandover = 819,
+    /// The backing transferred with an adoption is less than the NAV it claims,
+    /// so the position would be short from its first ledger.
+    AdoptUnderfunded = 820,
+    /// This generation handed its book to a successor. It holds nothing, issues
+    /// nothing, and the holders it used to serve are served there.
+    AlreadyMigrated = 821,
 }
 
 /// The sagUSD share token, as seen from here.
@@ -239,6 +259,47 @@ pub trait ShareToken {
     /// because a contract that points at a token which does not name it back
     /// is a contract whose `stake` cannot issue a share.
     fn admin(e: Env) -> Address;
+    /// Hand the mint authority on. A Stellar Asset Contract takes this from its
+    /// current admin, which is this contract, and that is what makes a
+    /// generation handover possible at all: the holders keep the same asset and
+    /// a different contract starts honouring it.
+    fn set_admin(e: Env, new_admin: Address);
+}
+
+/// A successor staking generation, as seen from the one handing over.
+#[contractclient(name = "SuccessorClient")]
+pub trait Successor {
+    fn agusd(e: Env) -> Address;
+    fn adopt(e: Env, predecessor: Address, shares_token: Address, supply: i128, nav: i128);
+}
+
+/// Emitted when a generation hands its share token and position to a successor.
+///
+/// Carries the backing as well as the NAV, because the two are not the same
+/// number and the difference is the stray surplus that moved with the book.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BookMigrated {
+    pub successor: Address,
+    pub shares: Address,
+    pub supply: i128,
+    pub nav: i128,
+    pub backing: i128,
+}
+
+/// Emitted by the successor, from inside the same transaction.
+///
+/// Both sides publish, so a reader reconciling the handover has the predecessor's
+/// account of what it sent and the successor's account of what it found, rather
+/// than one contract's word for both.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BookAdopted {
+    pub predecessor: Address,
+    pub shares: Address,
+    pub supply: i128,
+    pub nav: i128,
+    pub backing: i128,
 }
 
 /// Emitted when an exit inside the cooldown was priced at the rate the position
@@ -302,6 +363,20 @@ enum Cfg {
     Stakes,
     /// Half finished admin handover: proposed, not yet accepted.
     PendingAdmin,
+    /// The sum of every unclaimed `Pending`, kept because the individual
+    /// records are per address and nothing could add them up.
+    ///
+    /// `request_unstake` takes its assets out of the NAV immediately and leaves
+    /// the agUSD here to pay the claim with, so the balance held is the NAV plus
+    /// this. Without the aggregate a handover would carry the whole balance to a
+    /// successor, including money that is already somebody else's, and every
+    /// pending claim here would become unpayable.
+    PendingTotal,
+    /// Set once this generation has handed its book to a successor. Nothing
+    /// after that point may stake, unstake or distribute here: the share token
+    /// answers to the successor, so a mint from here would fail and a burn
+    /// would destroy somebody's balance without paying for it.
+    Migrated,
 }
 
 #[derive(Clone)]
@@ -478,6 +553,7 @@ impl Staking {
     /// balance in a token this contract no longer burns.
     pub fn set_shares(e: Env, admin: Address, shares_token: Address) -> Result<(), StakingError> {
         Self::require_admin(&e, &admin)?;
+        Self::require_live(&e)?;
         if Self::stakes(e.clone()) > 0 {
             return Err(StakingError::CustodyTaken);
         }
@@ -539,6 +615,7 @@ impl Staking {
     /// longer holds.
     pub fn set_agusd(e: Env, admin: Address, agusd: Address) -> Result<(), StakingError> {
         Self::require_admin(&e, &admin)?;
+        Self::require_live(&e)?;
         if Self::stakes(e.clone()) > 0 || Self::nav(e.clone()) != 0 {
             return Err(StakingError::CustodyTaken);
         }
@@ -609,9 +686,176 @@ impl Staking {
         Ok(())
     }
 
+    /// Hand this generation's share token and its whole position to a successor.
+    ///
+    /// This exists because of a finding, and the finding was that there was no
+    /// way out. A replacement generation starts its supply at zero, nothing in
+    /// here lets an admin seed one, and a holder redeeming against a supply of
+    /// zero divides by it. So retiring a generation meant every holder
+    /// unstaking first, and any holder who stopped answering pinned every
+    /// future fix behind them indefinitely. Three accounts holding 8.19 sagUSD
+    /// did exactly that and cost a generation that had to be deployed beside
+    /// the old one rather than in place of it.
+    ///
+    /// The handover is the whole position and nothing less: the agUSD backing
+    /// moves first, then the share token's mint authority, and only then does
+    /// the successor book what it now owns. A holder does nothing and notices
+    /// nothing. Their sagUSD is the same asset, with the same issuer, and a
+    /// different contract honours it.
+    ///
+    /// The order matters and it is not interchangeable. Backing before
+    /// authority, because a contract that can mint a share it cannot pay for is
+    /// worse than one that can pay for shares it cannot mint. Authority before
+    /// `adopt`, because `adopt` refuses to book a position on a token that does
+    /// not already name it. And this generation closes last, so a failure
+    /// anywhere above leaves it still able to serve its holders.
+    pub fn migrate_to(e: Env, admin: Address, successor: Address) -> Result<(), StakingError> {
+        Self::require_admin(&e, &admin)?;
+        Self::require_live(&e)?;
+        let supply = Self::total_supply(e.clone());
+        let nav = Self::nav(e.clone());
+        // An empty book has no position to carry, and a handover of nothing is
+        // a handover of the share token alone. That is the one use this call
+        // must not have: it would let an admin move the mint authority for an
+        // asset holders are still holding, with no obligation following it.
+        if supply <= 0 || nav <= 0 {
+            return Err(StakingError::NothingToCarry);
+        }
+        let shares = Self::shares(e.clone())?;
+        let agusd: Address = e
+            .storage()
+            .instance()
+            .get(&Cfg::AgUsd)
+            .ok_or(StakingError::NotInitialized)?;
+        // The successor has to be denominated in the same token. Asked of the
+        // successor rather than assumed, because a position carried into a
+        // contract that prices in something else is a position whose share
+        // price is wrong from its first ledger and right in nobody's books.
+        let succ = SuccessorClient::new(&e, &successor);
+        match succ.try_agusd() {
+            Ok(Ok(a)) if a == agusd => {}
+            _ => return Err(StakingError::SuccessorTokenMismatch),
+        }
+        // Everything held, not just the NAV. A stray surplus belongs with the
+        // position it accumulated against, and leaving it here would strand it
+        // in a contract that can no longer pay anybody.
+        // Everything except what is already owed to somebody who asked to
+        // leave before this was called. Their claim was priced and their shares
+        // burned at request time, so the agUSD behind it is theirs and not part
+        // of the book being carried. Carrying it would leave them with a claim
+        // against a contract holding nothing.
+        let owed: i128 = e
+            .storage()
+            .instance()
+            .get(&Cfg::PendingTotal)
+            .unwrap_or(0i128);
+        let held = TokenClient::new(&e, &agusd).balance(&e.current_contract_address());
+        let carry = held - owed;
+        if carry < nav {
+            return Err(StakingError::AdoptUnderfunded);
+        }
+        TokenClient::new(&e, &agusd).transfer(&e.current_contract_address(), &successor, &carry);
+        SharesClient::new(&e, &shares).set_admin(&successor);
+        succ.adopt(&e.current_contract_address(), &shares, &supply, &nav);
+        e.storage().instance().set(&Cfg::Migrated, &true);
+        e.storage().instance().set(&Cfg::Supply, &0i128);
+        e.storage().instance().set(&Cfg::Nav, &0i128);
+        tok::bump_instance(&e);
+        BookMigrated {
+            successor,
+            shares,
+            supply,
+            nav,
+            backing: carry,
+        }
+        .publish(&e);
+        Ok(())
+    }
+
+    /// Take on a predecessor's share token and position.
+    ///
+    /// Called by the predecessor inside `migrate_to`, never by a person, and it
+    /// checks the two things the predecessor cannot be trusted to have done:
+    /// that the share token already names this contract as its admin, and that
+    /// the backing arrived before the claim on it was booked.
+    pub fn adopt(
+        e: Env,
+        predecessor: Address,
+        shares_token: Address,
+        supply: i128,
+        nav: i128,
+    ) -> Result<(), StakingError> {
+        predecessor.require_auth();
+        Self::require_live(&e)?;
+        // A fresh generation only. Adopting onto a contract that already has a
+        // book would merge two share prices into one, and every holder on both
+        // sides would be repriced without having done anything.
+        if Self::stakes(e.clone()) > 0 || Self::total_supply(e.clone()) != 0 {
+            return Err(StakingError::NotAdoptable);
+        }
+        if supply <= 0 || nav <= 0 {
+            return Err(StakingError::NothingToCarry);
+        }
+        let shares = SharesClient::new(&e, &shares_token);
+        match shares.try_admin() {
+            Ok(Ok(a)) if a == e.current_contract_address() => {}
+            _ => return Err(StakingError::AdoptBeforeHandover),
+        }
+        let agusd: Address = e
+            .storage()
+            .instance()
+            .get(&Cfg::AgUsd)
+            .ok_or(StakingError::NotInitialized)?;
+        match TokenClient::new(&e, &agusd).try_decimals() {
+            Ok(Ok(d)) => match shares.try_decimals() {
+                Ok(Ok(sd)) if sd == d => {}
+                _ => return Err(StakingError::DecimalMismatch),
+            },
+            _ => return Err(StakingError::DecimalMismatch),
+        }
+        // The claim is only booked against backing that is already here. Read
+        // from the token rather than taken on the predecessor's word, which is
+        // the difference between an adoption and an assertion.
+        let held = TokenClient::new(&e, &agusd).balance(&e.current_contract_address());
+        if held < nav {
+            return Err(StakingError::AdoptUnderfunded);
+        }
+        e.storage().instance().set(&Cfg::Shares, &shares_token);
+        e.storage().instance().set(&Cfg::Supply, &supply);
+        e.storage().instance().set(&Cfg::Nav, &nav);
+        tok::bump_instance(&e);
+        BookAdopted {
+            predecessor,
+            shares: shares_token,
+            supply,
+            nav,
+            backing: held,
+        }
+        .publish(&e);
+        Ok(())
+    }
+
+    /// The agUSD held here that is already owed to pending claims.
+    ///
+    /// Held balance less this is what backs the share price, and it is what a
+    /// handover carries. Readable because a depositor comparing the contract's
+    /// balance to its NAV would otherwise find a surplus that is not one.
+    pub fn pending_total(e: Env) -> i128 {
+        e.storage()
+            .instance()
+            .get(&Cfg::PendingTotal)
+            .unwrap_or(0i128)
+    }
+
+    /// Whether this generation has handed its book on.
+    pub fn migrated(e: Env) -> bool {
+        e.storage().instance().get(&Cfg::Migrated).unwrap_or(false)
+    }
+
     /// Stake agUSD, mint sagUSD shares at the current share price.
     pub fn stake(e: Env, from: Address, amount: i128) -> Result<i128, StakingError> {
         from.require_auth();
+        Self::require_live(&e)?;
         if amount <= 0 {
             return Err(StakingError::InvalidAmount);
         }
@@ -680,6 +924,7 @@ impl Staking {
     /// behind the cooldown. Claimable via `claim` after the cooldown elapses.
     pub fn request_unstake(e: Env, from: Address, shares: i128) -> Result<i128, StakingError> {
         from.require_auth();
+        Self::require_live(&e)?;
         if shares <= 0 {
             return Err(StakingError::InvalidAmount);
         }
@@ -747,6 +992,12 @@ impl Staking {
         SharesClient::new(&e, &shares_token).burn(&from, &shares);
         e.storage().instance().set(&Cfg::Supply, &(supply - shares));
         e.storage().instance().set(&Cfg::Nav, &(nav - assets));
+        let owed: i128 = e
+            .storage()
+            .instance()
+            .get(&Cfg::PendingTotal)
+            .unwrap_or(0i128);
+        e.storage().instance().set(&Cfg::PendingTotal, &(owed + assets));
 
         let cooldown: u64 = e.storage().instance().get(&Cfg::Cooldown).unwrap();
         let key = Store::Pending(from.clone());
@@ -822,6 +1073,21 @@ impl Staking {
             .get(&Cfg::AgUsd)
             .ok_or(StakingError::NotInitialized)?;
         TokenClient::new(&e, &agusd).transfer(&e.current_contract_address(), &from, &p.assets);
+        // The claim is paid, so it stops being owed. Decremented here and
+        // nowhere else: `bump_pending` moves a horizon and pays nobody, and an
+        // earlier version of this counter was decremented there instead, which
+        // reported the contract as holding a surplus it did not have.
+        let owed: i128 = e
+            .storage()
+            .instance()
+            .get(&Cfg::PendingTotal)
+            .unwrap_or(0i128);
+        // Floored, because a contract deployed before this counter existed
+        // starts it at zero with claims already in flight, and going negative
+        // would be worse than undercounting.
+        e.storage()
+            .instance()
+            .set(&Cfg::PendingTotal, &(owed - p.assets).max(0));
         e.storage().persistent().remove(&key);
         tok::bump_instance(&e);
         UnstakeClaimed {
@@ -840,6 +1106,7 @@ impl Staking {
     /// stored admin and authorizes the call itself, so the agUSD comes out of
     /// an account that signed for it: this cannot mint value, only move it in.
     pub fn distribute_yield(e: Env, amount: i128) -> Result<(), StakingError> {
+        Self::require_live(&e)?;
         let admin: Address = e.storage().instance().get(&Cfg::Admin).unwrap();
         admin.require_auth();
         if amount <= 0 {
@@ -1118,6 +1385,22 @@ impl Staking {
         e.storage()
             .persistent()
             .extend_ttl(&key, PENDING_LIFETIME, PENDING_BUMP);
+    }
+
+    /// Refuse anything that mints, burns or reprices after a handover.
+    ///
+    /// The share token answers to the successor from that moment, so a mint
+    /// here fails and, worse, a burn here would destroy a holder's balance
+    /// without this contract having anything to pay them with.
+    fn require_live(e: &Env) -> Result<(), StakingError> {
+        if e.storage()
+            .instance()
+            .get(&Cfg::Migrated)
+            .unwrap_or(false)
+        {
+            return Err(StakingError::AlreadyMigrated);
+        }
+        Ok(())
     }
 
     fn require_admin(e: &Env, admin: &Address) -> Result<(), StakingError> {

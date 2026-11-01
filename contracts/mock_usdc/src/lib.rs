@@ -44,6 +44,18 @@ impl MockUsdc {
         e.storage().instance().get(&Cfg::Admin).unwrap()
     }
 
+    /// Hand the mint authority on, the way a Stellar Asset Contract does.
+    ///
+    /// Here so that a MockUsdc can stand in for the sagUSD share token in a
+    /// generation handover fixture: `Staking::migrate_to` calls this on the
+    /// share token, and a stand-in that cannot do it cannot test the one step
+    /// that makes the handover work.
+    pub fn set_admin(e: Env, new_admin: Address) {
+        let admin: Address = e.storage().instance().get(&Cfg::Admin).unwrap();
+        admin.require_auth();
+        e.storage().instance().set(&Cfg::Admin, &new_admin);
+    }
+
     /// Lets a MockUsdc stand in for agUSD in Vault fixtures, where the minter is the Vault.
     pub fn minter(e: Env) -> Address {
         e.storage().instance().get(&Cfg::Admin).unwrap()

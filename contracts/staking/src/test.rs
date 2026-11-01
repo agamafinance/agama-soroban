@@ -1219,3 +1219,220 @@ fn a_position_that_predates_the_cap_is_not_reached_by_it() {
     let owed = f.vault.request_unstake(&alice, &shares);
     assert_eq!(owed, 1_100 * ONE, "priced at the current rate, uncapped");
 }
+
+/// A successor generation, wired the way a real one is: same agUSD, its own
+/// contract, no share token of its own because it is about to be handed one.
+fn successor(f: &Fix) -> StakingClient<'static> {
+    let id = f.e.register(
+        Staking,
+        (f.admin.clone(), f.ag.address.clone(), COOLDOWN),
+    );
+    StakingClient::new(&f.e, &id)
+}
+
+#[test]
+fn migrate_to_carries_the_whole_position() {
+    let f = setup();
+    let alice = Address::generate(&f.e);
+    fund_agusd(&f, &alice, 100_0000000);
+    f.vault.stake(&alice, &100_0000000);
+    fund_agusd(&f, &f.admin, 10_0000000);
+    f.vault.distribute_yield(&10_0000000);
+
+    let supply_before = f.vault.total_supply();
+    let nav_before = f.vault.nav();
+    let rate_before = f.vault.exchange_rate();
+    let shares_token = f.vault.shares();
+    let alice_shares = MockUsdcClient::new(&f.e, &shares_token).balance(&alice);
+
+    let next = successor(&f);
+    f.vault.migrate_to(&f.admin, &next.address);
+
+    // The successor holds the book, at the same price, in the same token.
+    assert_eq!(next.total_supply(), supply_before);
+    assert_eq!(next.nav(), nav_before);
+    assert_eq!(next.exchange_rate(), rate_before);
+    assert_eq!(next.shares(), shares_token);
+    assert_eq!(f.ag.balance(&next.address), nav_before);
+    // The share token answers to it, which is what lets it pay anybody.
+    assert_eq!(MockUsdcClient::new(&f.e, &shares_token).admin(), next.address);
+    // Alice did nothing and holds exactly what she held.
+    assert_eq!(
+        MockUsdcClient::new(&f.e, &shares_token).balance(&alice),
+        alice_shares
+    );
+    // And the predecessor is closed rather than merely empty.
+    assert!(f.vault.migrated());
+    assert_eq!(f.vault.total_supply(), 0);
+    assert_eq!(f.ag.balance(&f.vault.address), 0);
+}
+
+#[test]
+fn a_holder_can_exit_the_successor_at_the_carried_price() {
+    let f = setup();
+    let alice = Address::generate(&f.e);
+    fund_agusd(&f, &alice, 100_0000000);
+    f.vault.stake(&alice, &100_0000000);
+    fund_agusd(&f, &f.admin, 10_0000000);
+    f.vault.distribute_yield(&10_0000000);
+    hold_past_cooldown(&f);
+
+    let shares_token = f.vault.shares();
+    let alice_shares = MockUsdcClient::new(&f.e, &shares_token).balance(&alice);
+    let next = successor(&f);
+    f.vault.migrate_to(&f.admin, &next.address);
+
+    // The point of the whole exercise: she never touched the predecessor and
+    // can leave through the successor at the price she accrued.
+    let owed = next.request_unstake(&alice, &alice_shares);
+    assert_eq!(owed, 110_0000000);
+    f.e.ledger()
+        .set_timestamp(f.e.ledger().timestamp() + COOLDOWN + 1);
+    assert_eq!(next.claim(&alice), 110_0000000);
+    assert_eq!(f.ag.balance(&alice), 110_0000000);
+    assert_eq!(next.total_supply(), 0);
+}
+
+#[test]
+fn a_claim_requested_before_the_handover_is_still_paid_by_the_predecessor() {
+    let f = setup();
+    let alice = Address::generate(&f.e);
+    let bob = Address::generate(&f.e);
+    fund_agusd(&f, &alice, 100_0000000);
+    fund_agusd(&f, &bob, 100_0000000);
+    f.vault.stake(&alice, &100_0000000);
+    f.vault.stake(&bob, &100_0000000);
+    hold_past_cooldown(&f);
+
+    // Alice asks to leave first. Her shares burn now and her agUSD stays here
+    // to pay her with, which is the money a handover must not carry away.
+    let shares_token = f.vault.shares();
+    let alice_shares = MockUsdcClient::new(&f.e, &shares_token).balance(&alice);
+    let owed = f.vault.request_unstake(&alice, &alice_shares);
+    assert_eq!(f.vault.pending_total(), owed);
+
+    let next = successor(&f);
+    f.vault.migrate_to(&f.admin, &next.address);
+
+    // Her backing stayed behind, to the stroop, and nothing else did.
+    assert_eq!(f.ag.balance(&f.vault.address), owed);
+    assert_eq!(f.ag.balance(&next.address), next.nav());
+
+    // And she collects it here, after the handover, from a contract that can no
+    // longer stake anybody but still owes her.
+    f.e.ledger()
+        .set_timestamp(f.e.ledger().timestamp() + COOLDOWN + 1);
+    assert_eq!(f.vault.claim(&alice), owed);
+    assert_eq!(f.ag.balance(&alice), owed);
+    assert_eq!(f.vault.pending_total(), 0);
+}
+
+#[test]
+fn a_migrated_generation_takes_nothing_more() {
+    let f = setup();
+    let alice = Address::generate(&f.e);
+    fund_agusd(&f, &alice, 100_0000000);
+    f.vault.stake(&alice, &100_0000000);
+    let next = successor(&f);
+    f.vault.migrate_to(&f.admin, &next.address);
+
+    fund_agusd(&f, &alice, 10_0000000);
+    assert_eq!(
+        f.vault.try_stake(&alice, &10_0000000),
+        Err(Ok(StakingError::AlreadyMigrated))
+    );
+    assert_eq!(
+        f.vault.try_distribute_yield(&1_0000000),
+        Err(Ok(StakingError::AlreadyMigrated))
+    );
+    assert_eq!(
+        f.vault.try_migrate_to(&f.admin, &next.address),
+        Err(Ok(StakingError::AlreadyMigrated))
+    );
+}
+
+#[test]
+fn an_empty_book_cannot_be_handed_over() {
+    let f = setup();
+    let next = successor(&f);
+    // Nothing staked, so there is no position to carry and this would be a
+    // transfer of the share token's mint authority on its own.
+    assert_eq!(
+        f.vault.try_migrate_to(&f.admin, &next.address),
+        Err(Ok(StakingError::NothingToCarry))
+    );
+}
+
+#[test]
+fn a_successor_in_a_different_token_is_refused() {
+    let f = setup();
+    let alice = Address::generate(&f.e);
+    fund_agusd(&f, &alice, 100_0000000);
+    f.vault.stake(&alice, &100_0000000);
+
+    // A successor denominated in something else. Its share price would be
+    // computed against a token that does not back it.
+    let other = f.e.register(MockUsdc, ());
+    MockUsdcClient::new(&f.e, &other).initialize(
+        &f.admin,
+        &7u32,
+        &String::from_str(&f.e, "Other"),
+        &String::from_str(&f.e, "OTHER"),
+    );
+    let id = f
+        .e
+        .register(Staking, (f.admin.clone(), other.clone(), COOLDOWN));
+    assert_eq!(
+        f.vault.try_migrate_to(&f.admin, &id),
+        Err(Ok(StakingError::SuccessorTokenMismatch))
+    );
+}
+
+#[test]
+fn adopt_refuses_before_the_share_token_is_handed_over() {
+    let f = setup();
+    let alice = Address::generate(&f.e);
+    fund_agusd(&f, &alice, 100_0000000);
+    f.vault.stake(&alice, &100_0000000);
+    let next = successor(&f);
+    // Called directly, as a predecessor that moved nothing would. The token
+    // still names the old contract, so the successor would be booking a
+    // position it cannot mint or burn against.
+    assert_eq!(
+        next.try_adopt(
+            &f.vault.address,
+            &f.vault.shares(),
+            &f.vault.total_supply(),
+            &f.vault.nav()
+        ),
+        Err(Ok(StakingError::AdoptBeforeHandover))
+    );
+}
+
+#[test]
+fn adopt_refuses_onto_a_book_that_already_exists() {
+    let f = setup();
+    let alice = Address::generate(&f.e);
+    let bob = Address::generate(&f.e);
+    fund_agusd(&f, &alice, 100_0000000);
+    f.vault.stake(&alice, &100_0000000);
+
+    // A successor that has taken a stake of its own. Adopting onto it would
+    // merge two share prices and reprice both sides' holders.
+    let next = successor(&f);
+    let sh = f.e.register(MockUsdc, ());
+    MockUsdcClient::new(&f.e, &sh).initialize(
+        &next.address,
+        &7u32,
+        &String::from_str(&f.e, "Staked agUSD"),
+        &String::from_str(&f.e, "sagUSD"),
+    );
+    next.set_shares(&f.admin, &sh);
+    fund_agusd(&f, &bob, 50_0000000);
+    next.stake(&bob, &50_0000000);
+
+    assert_eq!(
+        f.vault.try_migrate_to(&f.admin, &next.address),
+        Err(Ok(StakingError::NotAdoptable))
+    );
+}
