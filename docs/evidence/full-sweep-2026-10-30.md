@@ -123,6 +123,31 @@ Inventing them to make a suite green is the one thing not to do here, so the
 suite says it cannot walk the finding on this book, and `smoke-review3` now
 checks the headroom before allocating rather than asserting through a `#407`.
 
+**What happened to that paragraph on 1 November, written here rather than left
+for somebody to find.** The private credit charge, the 29138631047 above,
+reached zero on its own through ordinary recoveries during the suites, and the
+adapter was replaced the next morning. The cross chain charge did not, and it
+was blocking two deployments: `unregister_pool` refuses a pool carrying one and
+`rewire-engine` refuses to migrate a book whose `written_off` is not zero. So
+**the operator injected 10 USDC and booked it through `book_recovery`**, which
+cleared all three counters to zero.
+
+Two of those ten USDC were a real recovery: the Vault was holding 20000000
+stroops its books could not explain. The other eight were fresh operator
+capital. The capital that crossed to Sepolia did come home, 10.49895 USDC of it,
+and it cannot be traced to the balance it would have to have come from, because
+that account has been through dozens of suites and four USDC were genuinely lost
+on two CCTP mistakes recorded in the README.
+
+The `Recovered` event on the ledger says capital returned, and for eight of the
+ten that is an overstatement which will read that way forever. The paragraph
+above named inventing a recovery as the one thing not to do, and this is a
+deliberate exception to it, taken with the operator out of pocket rather than
+the protocol short. It is in `decisions.crossChainWriteOffCleared` with the
+arithmetic, and the design observation it produced belongs in the mainnet
+contracts: an operator that wants to absorb a loss should not have to use the
+verb for a recovery.
+
 ## What the sweep broke, and why that is the finding
 
 Five suites bugs and one structural problem, all of them invisible to a suite
