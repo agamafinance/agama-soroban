@@ -177,15 +177,27 @@ Adapter, `CBJ3OZ4W...`, replacing `CAUOHPPN...`: the round deadlock, the quorum
 floor and the staleness check. The remaining eight are declared under
 `treeAheadOfLedger` with what each changes and why it is not deployed.
 
-A fourth contract was replaced on 2026-11-01 and it is deliberately not counted
-here, because it closes a declaration rather than a finding. The QIRO private
-credit adapter predated the feed becoming a constructor parameter, so it answered
-17 entry points to the source's 18; the fix itself was already live on the QIRO2
-instance. It was replaced by `CDYSHPCK...` the morning its write-off charge
-reached zero, since `unregister_pool` refuses a pool carrying one and that charge
-only falls when capital actually comes back. Four of the five declarations that
-stood yesterday are gone; `treeAheadOfLedger` lists the Vault, the Engine,
-staking and the cross chain adapter. The reason
+Two further contracts were replaced on 2026-11-01 and neither is counted here,
+because they close declarations rather than findings. The QIRO private credit
+adapter predated the feed becoming a constructor parameter, so it answered 17
+entry points to the source's 18; the fix itself was already live on the QIRO2
+instance. And the Allocation Engine had no interface change at all: it lists the
+pool adapters as regular dependencies rather than dev ones, so editing an adapter
+moved its bytecode while every entry point stayed identical.
+
+Both were blocked by the same thing and both were unblocked by it falling.
+`unregister_pool` refuses a pool carrying a write-off charge and the Engine
+migration refuses a book whose `written_off` is not zero. The private credit
+charge reached zero on its own through recoveries during the suites; the cross
+chain charge did not, and `decisions.crossChainWriteOffCleared` says exactly what
+clearing it was, including the part that was not a recovery.
+
+**`treeAheadOfLedger` was five entries yesterday and is three now**: the Vault,
+staking and the cross chain adapter. The first two hold seven of the eight
+undeployed fixes and are blocked on 8.19 sagUSD in two accounts nobody here can
+sign for. The third was built, tested and ready, and stopped on `max_fee_bps`
+being stored by the live contract and exposed by nothing, so the value could not
+be carried across. The reason
 is the same in every case and it is not a scheduling excuse: no contract in this
 repository has an `upgrade` entry point, by design, so a fix means a
 redeployment, which is exactly what the Oracle Adapter just had and why its three
