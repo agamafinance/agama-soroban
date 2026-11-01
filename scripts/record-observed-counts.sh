@@ -14,7 +14,8 @@ SRC_FILE=${1:-}
 OUT=docs/evidence/observed-counts.tsv
 TODAY=$(date -u +%Y-%m-%d)
 python3 - "$SRC_FILE" "$OUT" "$TODAY" <<'PY'
-import re, sys, collections
+import os, re, sys, collections
+SELF = {'check-doc-figures.sh'}
 src, out, today = sys.argv[1:]
 seen = collections.OrderedDict()
 for line in open(src):
@@ -25,7 +26,19 @@ for line in open(src):
     if int(c.group(2)) != 0:
         print('  skipped %s: %s failed, so its count is how far it got' % (m.group(1), c.group(2)))
         continue
-    seen[m.group(1) + '.sh'] = c.group(1)
+    name = m.group(1) + '.sh'
+    # Only scripts that exist, because a sweep's labels are not all script
+    # names: "cargo-test" and "findings-arithmetic" are a cargo invocation and a
+    # python file, and recording them invented two entries the envelope could
+    # never have. And not this check's own count, which would be circular: it
+    # would be asserting its own total against an envelope it reads itself.
+    if not os.path.exists(os.path.join('scripts', name)):
+        print('  skipped %s: no such script, so the envelope cannot cover it' % name)
+        continue
+    if name in SELF:
+        print('  skipped %s: it reads this file, so measuring it here is circular' % name)
+        continue
+    seen[name] = c.group(1)
 head, rows = [], {}
 for line in open(out):
     if line.startswith('#'):

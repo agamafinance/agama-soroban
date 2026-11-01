@@ -30,7 +30,7 @@ e2e-oracle-quorum.sh	12	2026-11-01
 e2e-peg-gate.sh	11	2026-11-01
 e2e-reconciliation.sh	13	2026-11-01
 e2e-round-deadlock.sh	2	2026-11-01
-e2e-test.sh	24	2026-11-01
+e2e-test.sh	25	2026-11-01
 e2e-two-originators.sh	13	2026-11-01
 smoke-agusd-core.sh	32	2026-11-01
 smoke-core.sh	12	2026-11-01
