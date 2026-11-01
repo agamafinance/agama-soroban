@@ -53,3 +53,9 @@ jobs:
       # prints, and eleven of them had drifted by 2026-11-01.
       - name: documented figures
         run: bash scripts/check-doc-figures.sh
+
+      # The paragraph above the findings table counts them and the table marks
+      # them one by one. The two drifted within an hour of each other being
+      # written.
+      - name: findings arithmetic
+        run: python3 scripts/check-findings-arithmetic.py
