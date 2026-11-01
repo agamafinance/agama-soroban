@@ -2,7 +2,10 @@
 
 Every claim below is a command anyone can run or a transaction anyone can open.
 
-Generated 2026-10-19. Network: Stellar testnet.
+Generated 2026-10-19. Network: Stellar testnet. Figures re-measured 2026-11-01,
+and where a command prints a different number now than it did on 19 October the
+row says both: the tree has moved since, so a figure that only said October would
+be a figure a reader cannot reproduce.
 
 Tranche 1 is three deliverables. Deliverable 1, the core Soroban contracts, is
 proven in the three sections that follow. Deliverable 2, the dApp, and deliverable 3,
@@ -13,8 +16,8 @@ open or a command to run, not a description.
 
 | Criterion | How to check it | Result |
 |---|---|---|
-| contracts deployed on testnet, transactions publicly verifiable | `bash scripts/check-deployment-record.sh --wasm` | **77 passed, 0 failed**. Every deployed contract rebuilds from this tree byte for byte |
-| the full deposit / mint / stake / unstake / redeem flow end to end | `bash scripts/e2e-generation3.sh` | **21 passed, 0 failed** |
+| contracts deployed on testnet, transactions publicly verifiable | `bash scripts/check-deployment-record.sh --wasm` | **77 passed, 0 failed** on 19 October, **81 passed, 0 failed** today, the four new checks being the second private credit instance and the declarations covering it. Every deployed contract rebuilds from this tree byte for byte |
+| the full deposit / mint / stake / unstake / redeem flow end to end | `bash scripts/e2e-generation3.sh` | **21 passed, 0 failed** on 19 October, **20 passed, 0 failed** today |
 | sagUSD exchange rate readable through DeFindex assets-per-share | asserted inside the same run, `get_asset_amounts_per_shares` against `exchange_rate` | **PASS**, both return the same figure |
 | unit test suite passing on all core functions | `cargo test --workspace` | **227 passed, 0 failed**, 11 suites |
 
@@ -22,10 +25,10 @@ Four further checks the repository carries, all green:
 
 | Check | Command | Result |
 |---|---|---|
-| contracts still live, not archived | `bash scripts/check-ttl.sh` | 10 passed, 31 days left |
+| contracts still live, not archived | `bash scripts/check-ttl.sh` | 10 passed on 19 October, 11 today, 31 days left. The eleventh is the second private credit instance |
 | every state-changing entry point authorizes | `bash scripts/check-authorization.sh` | 69 entry points, 0 failures |
 | advisories against the deployed bytecode | `bash scripts/check-advisories.sh` | 2 passed, 0 failed |
-| every documented signature matches the ledger | `bash scripts/check-doc-entry-points.sh` | 9 passed, 0 failed |
+| every documented signature matches the ledger | `bash scripts/check-doc-entry-points.sh` | 9 passed, 0 failed on 19 October, 10 today |
 
 ## The live contracts
 
@@ -147,7 +150,8 @@ typed in by hand.
 ## Bytecode provenance
 
 `bash scripts/check-deployment-record.sh --wasm` rebuilds this tree and compares
-every deployed contract against the ledger. **77 assertions, none failing.** All
+every deployed contract against the ledger. **77 assertions, none failing** on
+19 October, and **81** today. All
 seven live contracts are byte for byte what this source compiles to, and the
 superseded generations still hold the hashes the record claims for them.
 

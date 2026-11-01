@@ -81,7 +81,7 @@ bash scripts/check-refusals.sh
 ```
 
 None of them needs anything. The first makes its own account, funds it from
-friendbot, and checks this README against the ledger: 24 assertions, including
+friendbot, and checks this README against the ledger: 27 assertions, including
 two refusals it reproduces by simulation at an account that is nobody. The
 second counts the oracle campaign off Horizon, every `submit_nav` the dedicated
 reporter has ever signed and the day each one landed on, so the one claim our
@@ -442,11 +442,11 @@ What re-proves each claim on the generation actually deployed:
 |---|---|
 | The whole user path, deposit through redemption | `bash scripts/e2e-generation3.sh`, 20 assertions, which also reconciles each token's circulation against what backs it |
 | The concentration cap and the reserve floor | `bash scripts/e2e-allocation-guards.sh`, 10 assertions, both guards made to bind on the live Engine |
-| A NAV cannot be moved by one key | `bash scripts/e2e-oracle-quorum.sh`, 11 assertions, against a quorum of two |
+| A NAV cannot be moved by one key | `bash scripts/e2e-oracle-quorum.sh`, 12 assertions, against a quorum of two |
 | The CCTP path is still wired to the right contracts | `bash scripts/e2e-cctp-wiring.sh`, 10 assertions, which read the three Circle contracts without spending anything |
 | USDC actually crosses, rather than the wiring merely existing | `EVM_KEY=... AMOUNT=1 bash scripts/e2e-cctp-transfer.sh`, 10 assertions, burning on Base Sepolia and asserting the Stellar balance moved. Needs a funded Base Sepolia account, so it is the one suite that cannot run from a clean checkout |
 | USDC leaves Stellar for the chain the yield is earned on | `AMOUNT=1 bash scripts/e2e-stellar-to-evm.sh`, 11 assertions, burning on Stellar towards Ethereum Sepolia and asserting the recipient was paid the attested amount. The direction the protocol needs: deposits land on Stellar and the credit book is on an EVM chain, so reserves have to leave before anything is earned. Asserts the message cannot be replayed afterwards |
-| Every deployed contract is the source in this tree | `bash scripts/check-deployment-record.sh --wasm`, 77 checks |
+| Every deployed contract is the source in this tree | `bash scripts/check-deployment-record.sh --wasm`, 81 checks |
 | The contracts still answer at all | `bash scripts/check-ttl.sh`, which is the one that catches a deployment quietly archiving itself |
 
 ### The Security Review, On-Chain
@@ -521,8 +521,12 @@ first review produced. The Medium and Low findings are recorded in the pull
 request and left for triage rather than fixed here.
 
 `scripts/smoke-review2.sh` proves both fixes against the live deployment, in two
-independently runnable stages: **52 assertions, no failures** (29 for the floor,
-23 for the queue). From the run of 9 September 2026:
+independently runnable stages. **52 assertions, no failures** on the run of
+9 September 2026, 29 for the floor and 23 for the queue; **45, no failures**
+today, the difference being assertions that moved to `smoke-mediums` and
+`smoke-hardening` as those suites were written. Both numbers, because the
+September one is what the finding was closed against and the other is what the
+command prints now:
 
 | Finding | Severity | What was wrong | What the fix does |
 |---|---|---|---|
@@ -582,8 +586,8 @@ carries them is proved the same way the Criticals were.
 `scripts/deploy-mediums.sh` redeployed the stack and `scripts/rewire-engine.sh`
 replaced the Allocation Engine once more without touching anything else.
 `scripts/smoke-mediums.sh` proves the five fixes against the result in five
-independently runnable stages: **59 assertions, no failures**. From the run of
-9 September 2026.
+independently runnable stages. **59 assertions, no failures** on the run of
+9 September 2026, and **61, no failures** today.
 
 | Finding | What was wrong | What the fix does |
 |---|---|---|
@@ -740,8 +744,11 @@ Only the Engine changed, so only the Engine moved:
 `scripts/rewire-engine-review3.sh` deployed the replacement and the Vault and
 both adapters were repointed through their setters.
 
-`scripts/smoke-review3.sh` proves it in three independently runnable stages:
-**42 assertions, no failures.** From the run of 9 September 2026.
+`scripts/smoke-review3.sh` proves it in three independently runnable stages.
+**42 assertions, no failures** on the run of 9 September 2026, and **38, no
+failures** today: the private credit pool now carries a write-off charge against
+its cap, so the round trip that used to assert through a `#407` is skipped with
+its reason instead.
 
 The exploit is submitted rather than described. The Engine from the commit
 before the fix was built out of a `git worktree` and given a two Vault stack, so
