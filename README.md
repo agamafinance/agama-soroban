@@ -108,10 +108,10 @@ Network: **Stellar Testnet** · RPC: `https://soroban-testnet.stellar.org`
 | Contract | Address |
 |---|---|
 | USDC (Circle) | [`CBIELTK6...XQDAMA`](https://stellar.expert/explorer/testnet/contract/CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA) |
-| agUSD | [`CADD22PH...AHH33R`](https://stellar.expert/explorer/testnet/contract/CADD22PHOXWHYVCQ3K5DWIHPUNA5USTHBPOCBE2KDCYNUEBUGFAHH33R) |
-| sagUSD | [`CBOHG5YG...4CACV3`](https://stellar.expert/explorer/testnet/contract/CBOHG5YGAE7ORFDE5GIUN6MYYSXMHYWGLZTH3Y563HZCBBWFVQ4CACV3) |
-| sagUSD share token | [`CCQG6FDE...M7NBD5`](https://stellar.expert/explorer/testnet/contract/CCQG6FDEYA52IVWLXQ2IFZ56UTNKKBLOADGG5BASXNLTX53SBSM7NBD5) |
-| Vault Contract | [`CCVNCXPJ...PZTTJF`](https://stellar.expert/explorer/testnet/contract/CCVNCXPJXCA5GKJKNUNZRMJEEWYL74ASYYTL2DULPO5TZDGSHUPZTTJF) |
+| agUSD | [`CCTPFK27...GRZGNW`](https://stellar.expert/explorer/testnet/contract/CCTPFK27BDLHDVR3EBLCHC7AR3ON7BNQIPR25KHE4OY4ZHGK7TGRZGNW) |
+| sagUSD | [`CAQJGNUY...WFLYSS`](https://stellar.expert/explorer/testnet/contract/CAQJGNUY3Z4MDQ7SQ6RZICW3SU4MIVU4EWT3TIAA4AFAWXIYDPWFLYSS) |
+| sagUSD share token | [`CAHE6IBJ...WEHLDH`](https://stellar.expert/explorer/testnet/contract/CAHE6IBJLCO6UVLTWAXK5RUZDNHQCWJ44LUW56AVZI7LKMMRZTWEHLDH) |
+| Vault Contract | [`CCWZXRSN...MGLCEJ`](https://stellar.expert/explorer/testnet/contract/CCWZXRSNLCJY3MQKWSC6EHTXEY246RPZHQVLLHM2TIWCHBQZSBMGLCEJ) |
 | Allocation Engine | [`CBHCK63A...GMEPP7`](https://stellar.expert/explorer/testnet/contract/CBHCK63AKHZLE6ZLFFPJHRGPXS2I33F5RFA2ARBFDMXDNJTWGYGMEPP7) |
 | Oracle Adapter | [`CBJ3OZ4W...QQRLCV`](https://stellar.expert/explorer/testnet/contract/CBJ3OZ4W7ZUUMYFVO3T62FAE6H4APV7L4YPETT7VJAHDKEPEWOQQRLCV) |
 
@@ -1279,7 +1279,7 @@ ledger or in this repository, not asserted here.
 |---|---|
 | contracts deployed on testnet with transactions publicly verifiable on Stellar Expert | the live table above, every address linked. `bash scripts/check-deployment-record.sh --wasm` compares each one's bytecode against this tree and fails on any divergence nothing declares |
 | the full deposit / mint / stake / unstake / redeem flow executable end-to-end | `bash scripts/e2e-generation3.sh`, which runs the whole path against the live contracts and asserts each step: deposit at par, the same balance read back from Horizon as a classic trustline, stake through the sagUSD Stellar Asset Contract, yield moving the rate with no shares minted, unstake, a Soroswap swap, an SDEX path payment, and redemption through the Vault queue. It also reconciles what exists of each token against what backs it. `scripts/smoke-journey.sh` is the generation 2 version and is kept for the history; it asserts an exchange rate of 1.0 and knows nothing of the classic share token, so it does not pass on the live deployment |
-| sagUSD exchange rate readable through the DeFindex assets-per-share interface | `get_asset_amounts_per_shares(vault_shares)` and `fetch_total_managed_funds()` on `CBOHG5YGAE7ORFDE5GIUN6MYYSXMHYWGLZTH3Y563HZCBBWFVQ4CACV3`, under DeFindex's own signatures. See [SECURITY.md](SECURITY.md) for what each returns and why the amount is a direct quotient rather than the scalar rate multiplied out |
+| sagUSD exchange rate readable through the DeFindex assets-per-share interface | `get_asset_amounts_per_shares(vault_shares)` and `fetch_total_managed_funds()` on `CAQJGNUY3Z4MDQ7SQ6RZICW3SU4MIVU4EWT3TIAA4AFAWXIYDPWFLYSS`, under DeFindex's own signatures. See [SECURITY.md](SECURITY.md) for what each returns and why the amount is a direct quotient rather than the scalar rate multiplied out |
 | unit test suite passing on all core functions | `cargo test --workspace`, 279 tests across 12 suites, plus an invariant fuzzer over randomised operation sequences |
 | source public at github.com/agamafinance/agama-soroban | this repository, Apache-2.0, public from the first commit |
 

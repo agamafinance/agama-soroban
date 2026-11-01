@@ -508,18 +508,24 @@ if [ -z "$READER" ]; then
   READER=record-reader-$$
   stellar keys generate "$READER" --network testnet --fund >/dev/null 2>&1 || READER=""
 fi
-while IFS='|' read -r name addr want label; do
+# A fourth column names the entry point to ask, because "who controls this" is
+# not always answered by `admin`. agusd_core has both an admin, the operator,
+# and a minter, the Vault, and the one that matters for supply is the minter.
+# Asking every contract for its admin reported the correct configuration as a
+# drift on two contracts at once.
+while IFS='|' read -r name addr want label getter; do
   [ -n "$addr" ] || continue
+  getter=${getter:-admin}
   if [ -z "$READER" ]; then
-    echo "  SKIP  no account to read with, so $name's admin was not asked"
+    echo "  SKIP  no account to read with, so $name's $getter was not asked"
     continue
   fi
   got=$(stellar contract invoke --id "$addr" --source-account "$READER" --network testnet --send=no \
-          -- admin 2>/dev/null | tr -d '"' | tail -1)
+          -- "$getter" 2>/dev/null | tr -d '"' | tail -1)
   case "$got" in
-    "")        ok "$name has no admin entry point to ask" ;;
-    "$want")   ok "$name is administered by $label" ;;
-    *)         bad "$name is administered by $got, and $label is $want" ;;
+    "")        ok "$name has no $getter entry point to ask" ;;
+    "$want")   ok "$name answers $getter with $label" ;;
+    *)         bad "$name answers $getter with $got, and $label is $want" ;;
   esac
 done < <(python3 -c "
 import json
@@ -530,18 +536,30 @@ vault = d['contracts']['vault']
 # Vault is the only address its mint will create supply for. Checking it against
 # the operator would report the correct state as wrong, and a check that cries
 # wolf on the right answer is a check people learn to skip.
+staking = d['contracts']['staking']
+# Each entry is the address expected, how to describe it, and which entry point
+# to ask. agUSD's mint authority is the Vault and that is the design, not a
+# drift: the Vault is the only address its mint will create supply for. But on
+# agusd_core that authority is `minter`, while `admin` is the operator, so
+# asking for the admin and expecting the Vault accuses a correct deployment.
+# The share token is a Stellar Asset Contract whose admin was handed to the
+# staking contract on purpose, so that the contract is the only address that can
+# mint shares; its issuer is then locked at master weight 0 and cannot take it
+# back. See scripts/deploy-sagusd-classic.sh, which performs that ceremony and
+# reads the handover back before locking anything.
 expected = {
-    'agusd':     (vault, 'its mint authority, the Vault'),
-    'agusdCore': (vault, 'its mint authority, the Vault'),
+    'agusd':         (vault,   'its mint authority, the Vault',          'minter'),
+    'agusdCore':     (vault,   'its mint authority, the Vault',          'minter'),
+    'stakingShares': (staking, 'the staking contract that mints shares', 'admin'),
 }
 skip = {'usdc'}
 for k, v in d['contracts'].items():
     if k in skip:
         continue
-    want, label = expected.get(k, (admin, 'the recorded admin'))
-    print(f'{k}|{v}|{want}|{label}')
+    want, label, getter = expected.get(k, (admin, 'the recorded admin', 'admin'))
+    print(f'{k}|{v}|{want}|{label}|{getter}')
 for k, v in d.get('poolAdapters', {}).items():
-    print(f'poolAdapters.{k}|{v}|{admin}|the recorded admin')
+    print(f'poolAdapters.{k}|{v}|{admin}|the recorded admin|admin')
 ")
 
 echo ""

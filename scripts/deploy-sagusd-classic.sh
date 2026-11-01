@@ -21,32 +21,61 @@ DEP=deployments/testnet.json
 j() { python3 -c "import json;print(json.load(open('$DEP'))$1)"; }
 
 ADMIN=$(j "['admin']")
-AGUSD=$(j "['contracts']['agusd']")
+AGUSD=${AGUSD:-$(j "['contracts'].get('agusdCore') or d['contracts']['agusd']")}
 COOLDOWN=$(j "['cooldownSeconds']")
+# GEN names the issuer and holder keys, because an asset is its code and its
+# issuer together: a new share token for a new staking generation needs a new
+# issuer, and the previous one cannot be reused. Its master weight is set to 0
+# at the end of this script, deliberately, so it can never mint or move its
+# admin again.
+GEN=${GEN:-2}
+ISSUER_KEY=sagusd-issuer$GEN
+HOLDER_KEY=sagusd-holder$GEN
 
 echo "== staking, three argument constructor: it has no share token yet"
-STAKING=$(stellar contract deploy --wasm target/wasm32v1-none/release/staking.wasm \
-  --source-account "$SRC" --network "$NET" -- \
-  --admin "$ADMIN" --agusd "$AGUSD" --cooldown_seconds "$COOLDOWN" | tail -1)
-[ -n "$STAKING" ] || { echo "deploy produced no address"; exit 1; }
-echo "   $STAKING"
+if [ -n "${STAKING:-}" ]; then
+  echo "   adopting the already deployed $STAKING"
+  [ "$(stellar contract invoke --id "$STAKING" --source "$SRC" --network "$NET" --send=no -- agusd | tr -d '"')" = "$AGUSD" ] \
+    || { echo "   that contract does not name $AGUSD as its agUSD"; exit 1; }
+else
+  STAKING=$(stellar contract deploy --wasm target/wasm32v1-none/release/staking.wasm \
+    --source-account "$SRC" --network "$NET" -- \
+    --admin "$ADMIN" --agusd "$AGUSD" --cooldown_seconds "$COOLDOWN" | tail -1)
+  [ -n "$STAKING" ] || { echo "deploy produced no address"; exit 1; }
+  echo "   $STAKING"
+fi
 
 echo "== classic sagUSD, and one unit paid out so the asset exists"
-stellar keys generate sagusd-issuer2 --network "$NET" --fund >/dev/null 2>&1 || true
-ISSUER=$(stellar keys address sagusd-issuer2)
-stellar keys generate sagusd-holder2 --network "$NET" --fund >/dev/null 2>&1 || true
-HOLDER=$(stellar keys address sagusd-holder2)
-stellar tx new change-trust --source-account sagusd-holder2 --line "sagUSD:$ISSUER" --network "$NET" >/dev/null
-stellar tx new payment --source-account sagusd-issuer2 --destination "$HOLDER" \
+stellar keys generate "$ISSUER_KEY" --network "$NET" --fund >/dev/null 2>&1 || true
+ISSUER=$(stellar keys address "$ISSUER_KEY")
+stellar keys generate "$HOLDER_KEY" --network "$NET" --fund >/dev/null 2>&1 || true
+HOLDER=$(stellar keys address "$HOLDER_KEY")
+# An issuer whose weight is already 0 cannot sign anything below this line, and
+# every step below needs its signature. Checked here rather than discovered at
+# the set_admin, which would leave a deployed SAC nobody can administer.
+W=$(curl -s "${HORIZON:-https://horizon-testnet.stellar.org}/accounts/$ISSUER" \
+  | python3 -c "import json,sys;print(json.load(sys.stdin)['thresholds']['med_threshold'])" 2>/dev/null || echo 0)
+SW=$(curl -s "${HORIZON:-https://horizon-testnet.stellar.org}/accounts/$ISSUER" \
+  | python3 -c "
+import json,sys
+a=json.load(sys.stdin)
+print(max((s['weight'] for s in a['signers'] if s['key']==a['account_id']), default=0))" 2>/dev/null || echo 1)
+if [ "${SW:-1}" = "0" ]; then
+  echo "   $ISSUER_KEY is already locked at master weight 0, so it cannot issue this asset."
+  echo "   Run with GEN set to a number that has not been used: GEN=3 bash \$0"
+  exit 1
+fi
+stellar tx new change-trust --source-account "$HOLDER_KEY" --line "sagUSD:$ISSUER" --network "$NET" >/dev/null
+stellar tx new payment --source-account "$ISSUER_KEY" --destination "$HOLDER" \
   --asset "sagUSD:$ISSUER" --amount 10000000 --network "$NET" >/dev/null
 echo "   issuer $ISSUER"
 
 echo "== its Stellar Asset Contract"
-SAC=$(stellar contract asset deploy --asset "sagUSD:$ISSUER" --source-account sagusd-issuer2 --network "$NET" | tail -1)
+SAC=$(stellar contract asset deploy --asset "sagUSD:$ISSUER" --source-account "$ISSUER_KEY" --network "$NET" | tail -1)
 echo "   $SAC"
 
 echo "== admin to the staking contract, then read it back"
-stellar contract invoke --id "$SAC" --source sagusd-issuer2 --network "$NET" -- \
+stellar contract invoke --id "$SAC" --source "$ISSUER_KEY" --network "$NET" -- \
   set_admin --new_admin "$STAKING" >/dev/null
 GOT=$(stellar contract invoke --id "$SAC" --source "$SRC" --network "$NET" --send=no -- admin | tr -d '"')
 [ "$GOT" = "$STAKING" ] || {
@@ -69,12 +98,12 @@ echo "== burn the unit that brought the asset into existence"
 # pays more than its share of the assets. It is one unit and it was still worth
 # measuring: the first time round the gap sat there until a reconciliation
 # against Horizon found it.
-stellar contract invoke --id "$SAC" --source sagusd-holder2 --network "$NET" -- \
+stellar contract invoke --id "$SAC" --source "$HOLDER_KEY" --network "$NET" -- \
   burn --from "$HOLDER" --amount 10000000 >/dev/null
 echo "   burned"
 
 echo "== lock the issuer, irreversible, and only now"
-stellar tx new set-options --source-account sagusd-issuer2 --master-weight 0 --network "$NET" >/dev/null
+stellar tx new set-options --source-account "$ISSUER_KEY" --master-weight 0 --network "$NET" >/dev/null
 echo "   locked: the staking contract is the only address that can mint sagUSD"
 
 echo ""

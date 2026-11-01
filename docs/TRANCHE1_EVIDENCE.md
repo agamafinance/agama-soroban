@@ -34,10 +34,10 @@ Four further checks the repository carries, all green:
 
 | Contract | Address | What it does |
 |---|---|---|
-| Vault Contract | [`CCVNCXPJ...PZTTJF`](https://stellar.expert/explorer/testnet/contract/CCVNCXPJXCA5GKJKNUNZRMJEEWYL74ASYYTL2DULPO5TZDGSHUPZTTJF) | USDC deposits, reserve floor, FIFO withdrawal queue |
-| sagUSD Staking | [`CBOHG5YG...4CACV3`](https://stellar.expert/explorer/testnet/contract/CBOHG5YGAE7ORFDE5GIUN6MYYSXMHYWGLZTH3Y563HZCBBWFVQ4CACV3) | share price, yield, unstake cooldown |
-| agUSD (SAC) | [`CADD22PH...AHH33R`](https://stellar.expert/explorer/testnet/contract/CADD22PHOXWHYVCQ3K5DWIHPUNA5USTHBPOCBE2KDCYNUEBUGFAHH33R) | the dollar, as a classic Stellar asset |
-| sagUSD (SAC) | [`CCQG6FDE...M7NBD5`](https://stellar.expert/explorer/testnet/contract/CCQG6FDEYA52IVWLXQ2IFZ56UTNKKBLOADGG5BASXNLTX53SBSM7NBD5) | the share, as a classic Stellar asset, quotable on the SDEX |
+| Vault Contract | [`CCWZXRSN...MGLCEJ`](https://stellar.expert/explorer/testnet/contract/CCWZXRSNLCJY3MQKWSC6EHTXEY246RPZHQVLLHM2TIWCHBQZSBMGLCEJ) | USDC deposits, reserve floor, FIFO withdrawal queue |
+| sagUSD Staking | [`CAQJGNUY...WFLYSS`](https://stellar.expert/explorer/testnet/contract/CAQJGNUY3Z4MDQ7SQ6RZICW3SU4MIVU4EWT3TIAA4AFAWXIYDPWFLYSS) | share price, yield, unstake cooldown |
+| agUSD (SAC) | [`CCTPFK27...GRZGNW`](https://stellar.expert/explorer/testnet/contract/CCTPFK27BDLHDVR3EBLCHC7AR3ON7BNQIPR25KHE4OY4ZHGK7TGRZGNW) | the dollar, as a classic Stellar asset |
+| sagUSD (SAC) | [`CAHE6IBJ...WEHLDH`](https://stellar.expert/explorer/testnet/contract/CAHE6IBJLCO6UVLTWAXK5RUZDNHQCWJ44LUW56AVZI7LKMMRZTWEHLDH) | the share, as a classic Stellar asset, quotable on the SDEX |
 | Allocation Engine | [`CBHCK63A...GMEPP7`](https://stellar.expert/explorer/testnet/contract/CBHCK63AKHZLE6ZLFFPJHRGPXS2I33F5RFA2ARBFDMXDNJTWGYGMEPP7) | pool routing and caps |
 | Oracle Adapter | [`CBJ3OZ4W...QQRLCV`](https://stellar.expert/explorer/testnet/contract/CBJ3OZ4W7ZUUMYFVO3T62FAE6H4APV7L4YPETT7VJAHDKEPEWOQQRLCV) | multi source NAV, staleness and deviation guards |
 | CCTP Adapter | [`CAY4GXTU...2RHUXS`](https://stellar.expert/explorer/testnet/contract/CAY4GXTULXLQUQZ3VDFUA4ULEQOKJKLG2RFAXDBF56VSDLI6WT2RHUXS) | cross chain USDC leg |

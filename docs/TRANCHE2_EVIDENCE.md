@@ -166,23 +166,29 @@ second pass over the same code, run the day this submission was finalised,
 reported here because a finding a reviewer discovers for themselves costs more
 than one we hand them.
 
-**One row in this table reads "open", and it is the one whose fix cannot be
-deployed because deploying it is the thing it blocks.** Everything else that
+**One row in this table reads "open", and it is structural: a staking contract
+with no way to carry a position across generations can be pinned by any holder
+who stops answering.** It is worked around rather than fixed, which the section
+under the table explains in full. Everything else that
 stood open on 2026-11-01, including two criticals, is closed. **Eleven are fixed
 in source with a test each**, one was already mitigated on chain and cannot be
 fixed in source because the contract is immutable, one is marked verified bounded
 with the reasoning for why nothing was changed, and the twelfth is the structural
 one on staking generations described below the table.
 
-**Four of the eleven are on the ledger** and seven are not. Three went live with
-a new Oracle Adapter, `CBJ3OZ4W...`, replacing `CAUOHPPN...`: the round deadlock,
-the quorum floor and the staleness check. The fourth went live the same day with
-a new CCTP adapter, `CAY4GXTU...`, replacing `CDSO4GJR...`: the announce then
-apply delay on `set_destination`. The `max_fee_bps` getter shipped with it and is
-deliberately not counted as a fifth, because it was never a finding; it was what
-made that migration impossible to perform faithfully, which is a different kind
-of defect and is described below. The remaining seven are declared under
-`treeAheadOfLedger` with what each changes and why it is not deployed.
+**Eleven of the eleven are on the ledger** and `treeAheadOfLedger` is empty.
+Three went live with a new Oracle Adapter, `CBJ3OZ4W...`, replacing
+`CAUOHPPN...`: the round deadlock, the quorum floor and the staleness check. The
+fourth with a new CCTP adapter, `CAY4GXTU...`, replacing `CDSO4GJR...`: the
+announce then apply delay on `set_destination`. The `max_fee_bps` getter shipped
+with it and is deliberately not counted as a fifth, because it was never a
+finding; it was what made that migration impossible to perform faithfully, which
+is a different kind of defect and is described below.
+
+The last seven went out together, with a Vault and a staking generation,
+`CCWZXRSN...` and `CAQJGNUY...`. That pair could not be deployed the way the
+other two were, and the way it finally went is worth reading before the table
+rather than after it, because the trade it makes is a real one.
 
 Two further contracts were replaced on 2026-11-01 and neither is counted here,
 because they close declarations rather than findings. The QIRO private credit
@@ -213,37 +219,54 @@ engine, same vault, same admin, same domain, same recipient, same 10 bps ceiling
 The getter it lacked is on the replacement, with a comment saying what its
 absence cost.
 
-**`treeAheadOfLedger` was five entries yesterday and is two now**: the Vault and
-staking. They hold all seven undeployed fixes and both are blocked on
-the same number, which is now measured rather than asserted:
-
-    bash scripts/check-staking-migration-block.sh
-
-It enumerates every sagUSD holder off Horizon, tells the ones this deployment can
-sign for from the ones it cannot, and prints the subtotal. Today that is
-**8.1939395 sagUSD across three accounts**, `GB4T5LQX`, `GAQZEQVW` and
-`GCTH2NLA`, last active on 27 October, 13 October and 27 October. The other
-346.1290922 is ours. `deploy-vault-generation.sh` refuses to start above a
-staking supply of zero, because a replacement generation starts its own supply at
-zero and a holder redeeming against zero divides by it.
-
-Four things were checked before calling that unreachable, and the script prints
-all four because any one of them failing would mean it is not. The holders are
-dormant, so a bid on the SDEX does not reach them. sagUSD has
-`auth_clawback_enabled` false, so the balance cannot be taken. The classic issuer
-signs at weight 0, so its flags cannot be changed and nothing can be minted or
-revoked through it; the token is minted by the staking contract, which holds the
-SAC admin. And `Supply` is written in exactly three places in the staking source,
-the constructor at zero, `stake` and `unstake`, so no admin path seeds a
+**The Vault and staking generations went side by side rather than by
+replacement, and nobody was stranded.** `deploy-vault-generation.sh` retires the
+outgoing generation at zero, which is the right default: a generation that still
+owes somebody something should not be walked away from. It refuses to start
+above a staking supply of zero, and that supply could not be brought to zero.
+Three accounts hold 8.1939395 sagUSD, they last acted on 27 October, 13 October
+and 27 October, and four separate things have to be true for that to be
+unreachable rather than merely inconvenient. All four are, and
+`scripts/check-staking-migration-block.sh` prints them live: the holders are
+dormant so a bid on the SDEX does not reach them; sagUSD has
+`auth_clawback_enabled` false so the balance cannot be taken; the classic issuer
+signs at master weight 0, deliberately, so that the staking contract is the only
+address that can mint shares, which also means nothing can be revoked through
+the issuer; and `Supply` is written in exactly three places in the staking
+source, the constructor at zero, `stake` and `unstake`, so no admin path seeds a
 replacement with an existing position.
 
-That last one is a finding in its own right and it is in the table above: a
-staking contract with no upgrade path and no way to carry positions across
-generations can be pinned indefinitely by any holder who stops answering. It is
-the one finding here whose fix cannot be deployed, because deploying it is the
-thing it blocks. Breaking the deadlock means stranding three holders, and that is
-not a trade this deployment is willing to make on a testnet to tidy up a
-declaration. The reason
+So the outgoing generation was left running instead of emptied. It still holds
+its reserves, its agUSD still has a minter, its staking contract still names a
+token it can burn, and the 15.08 agUSD owed to those three holders is covered by
+its idle reserves roughly 497 times over. Their exit path is unchanged:
+`request_unstake`, then `claim`, then `request_withdrawal` on the Vault they
+deposited into. The migration script measures that coverage before it starts and
+refuses to run without it, because a side by side deploy whose old half cannot
+pay is not a migration, it is an abandonment. What changed is which generation
+this record points at, not which ones work.
+
+The honest cost, stated rather than buried: there are two live Vaults and two
+live agUSD tokens, and the record points at one of each. Both retired contracts
+are in `superseded` with that reason written next to the address.
+
+**One of the two tries got it wrong, and the way it was caught is the part worth
+keeping.** The first replacement deployed agUSD as `agusd_core.wasm`, a Soroban
+contract token. The Vault accepted it, `set_agusd` passed its own checks,
+deposits minted and redemptions burned, and the full round trip ran green.
+Nothing failed. What a contract token cannot do is sit on an orderbook: the SDEX
+holds classic assets only, and every generation before it had made agUSD a
+classic asset whose Stellar Asset Contract the Vault administers, for exactly
+that reason. The replacement had silently removed the venue the token trades on
+and left the market maker quoting a retired asset. It was found by
+`check-deployment-record.sh` asking why `agusdClassic.sac` was live and absent
+from the README, which is a question about bookkeeping and not about
+orderbooks, and it is the only reason it was found at all before the reviewer
+did. The second try put both tokens back on classic assets through
+`scripts/deploy-agusd-classic.sh` and `scripts/deploy-sagusd-classic.sh`, and the
+four contracts of the first are in `superseded` with that explanation.
+
+The reason
 is the same in every case and it is not a scheduling excuse: no contract in this
 repository has an `upgrade` entry point, by design, so a fix means a
 redeployment, which is exactly what the Oracle Adapter just had and why its three
@@ -258,19 +281,19 @@ behind it by exactly what the record declares.
 | Finding | Severity | Status |
 |---|---|---|
 | Generation 1 agUSD (`contracts/agusd`, superseded) has an `initialize` with no `require_auth` and no re-entry guard, so anyone can claim its admin role and sweep its reserve | critical, on a retired contract | **reserve swept to the treasury on 27 October**, `reserve()` reads 0, nothing in service points at it. The contract is immutable so the source fix cannot reach it; `SECURITY.md` now names it as the exception to the constructor rule |
-| `staking::stake` has no minimum first stake and no virtual offset, so a one stroop stake held through a distribution raises the share price permanently: later stakers below the new price are refused, above it they lose the truncation to the incumbent | critical on a fresh deployment | **fixed in source 2026-11-01, not deployed**. `stake` refuses a first stake under `MIN_FIRST_STAKE`, one agUSD, before it takes the money, and the guard is on the supply rather than on whether the contract has ever been used, so an empty supply is a fresh opening price. A minimum and not a virtual offset, because `exchange_rate` is `nav * ONE / supply` and the Vault, `get_asset_amounts_per_shares` and three on-chain suites compare against exactly that ratio. Three new cases, `the_first_stake_cannot_be_one_stroop`, `the_minimum_applies_again_if_everybody_leaves` and the rewritten `yield_into_an_empty_pool_is_refused_rather_than_held_for_whoever_arrives`. Declared under `treeAheadOfLedger`: staking cannot be replaced alone, `agusd-core::set_minter` freezes after the first mint |
+| `staking::stake` has no minimum first stake and no virtual offset, so a one stroop stake held through a distribution raises the share price permanently: later stakers below the new price are refused, above it they lose the truncation to the incumbent | critical on a fresh deployment | **closed and deployed 2026-11-01** on `CAQJGNUY...`. `stake` refuses a first stake under `MIN_FIRST_STAKE`, one agUSD, before it takes the money, and the guard is on the supply rather than on whether the contract has ever been used, so an empty supply is a fresh opening price. A minimum and not a virtual offset, because `exchange_rate` is `nav * ONE / supply` and the Vault, `get_asset_amounts_per_shares` and three on-chain suites compare against exactly that ratio. Three new cases, `the_first_stake_cannot_be_one_stroop`, `the_minimum_applies_again_if_everybody_leaves` and the rewritten `yield_into_an_empty_pool_is_refused_rather_than_held_for_whoever_arrives`. Declared under `treeAheadOfLedger`: staking cannot be replaced alone, `agusd-core::set_minter` freezes after the first mint |
 | A round is keyed on `(feed, timestamp)` and a reporter cannot change its vote, while the tally is keyed on the value. Two reporters who disagree on one timestamp split the tally one and one and neither can revote: that round is dead, and a reporter that disagrees on every round stops the feed for good | critical, needs a reporter key | **fixed and deployed 2026-11-01**, live on `CBJ3OZ4W...`. Raised by an outside reader of the repository on 27 October. `RoundVoters` stores the value each reporter voted for instead of a flag, so a reporter may move its vote and not add one: the value it leaves is decremented in the call that increments the one it joins, and the sum of a round's tallies never counts a reporter twice. `two_reporters_who_disagree_can_still_resolve_the_round` is the deadlock itself, `a_reporter_gets_one_vote_per_round_and_may_move_it` is the rule, and the fuzz invariant that pinned the old behaviour is rewritten as `a_reporter_cannot_carry_a_round_alone_however_often_it_changes_its_mind`, which casts five submissions from one key and asserts the round holds one vote |
-| `staking::distribute_yield` does not check that the share supply is non zero, so a distribution into an empty pool is taken whole by the next staker | high | **fixed in source 2026-11-01, not deployed**. Refused with `NoSupply`, before the transfer, so a refused distribution has not moved the admin's money. The test that pinned the old behaviour asserted where the thousand agUSD went; it now asserts the refusal and then that the same distribution lands once a share exists |
-| Nothing stops staking immediately before a distribution and requesting immediately after: the cooldown delays the cash, not the pricing | high | **fixed in source 2026-11-01, not deployed**. An exit inside the cooldown is priced at no better than the rate it entered at, and the difference stays in `nav`, so it stays with the holders who were there rather than being burned or skimmed. `EarlyExitPricedAtEntry` carries both numbers. Measured against the deployment's own cooldown and not a new constant: if the protocol's answer to how long is too short to be paid is the cooldown, it is the same number here. Three cases: the sniping flow itself, where the sniper gets back exactly what went in and the whole distribution reaches the holder who stayed; the cap being one sided, so a fall inside the window is still taken at the current rate, because protecting it would be the same unfairness reversed; and a position with no recorded entry being read as staked long ago, so the rule cannot reach back into one that predates it. A top-up re-arms the window for the whole position, which is the conservative direction and is written down rather than discovered |
-| `vault::set_agusd` gates on this vault having taken no deposit, which stopped being the same statement as the token having no supply when agUSD became a classic asset | high | **fixed in source 2026-11-01, not deployed**. It now also refuses to point away from a token that still has supply. One that publishes a supply is judged on it, which covers `agusd-core` and the case in `retiredAgusdResidue`, 38000000 stroops outstanding on a contract whose Vault had taken no deposit. A Stellar Asset Contract publishes none that a contract can read, so for one of those the question becomes whether this Vault is its mint authority: if it is, this Vault is what stands behind that token and will not abandon it unable to show nobody is holding it. Handing the mint authority away first is the deliberate route through, and it takes a transaction on the token rather than an assumption in here. Two cases, one per branch. Last of the four checks deliberately, so a call that is also wrong about the incoming token still reports that first |
-| The staking contract has no upgrade path and no way to carry a position across generations, so any holder who stops answering pins every fix behind them. Three dormant accounts hold 8.1939395 sagUSD and `Supply` is writable only by `stake` and `unstake`, which leaves no honest way to seed a replacement | medium, and structural | **open, and the one finding whose fix cannot be deployed**, since the deployment it needs is the one it blocks. Measured live by `scripts/check-staking-migration-block.sh`, which prints the holders and the four conditions that make it unreachable |
+| `staking::distribute_yield` does not check that the share supply is non zero, so a distribution into an empty pool is taken whole by the next staker | high | **closed and deployed 2026-11-01** on `CAQJGNUY...`. Refused with `NoSupply`, before the transfer, so a refused distribution has not moved the admin's money. The test that pinned the old behaviour asserted where the thousand agUSD went; it now asserts the refusal and then that the same distribution lands once a share exists |
+| Nothing stops staking immediately before a distribution and requesting immediately after: the cooldown delays the cash, not the pricing | high | **closed and deployed 2026-11-01** on `CAQJGNUY...`. An exit inside the cooldown is priced at no better than the rate it entered at, and the difference stays in `nav`, so it stays with the holders who were there rather than being burned or skimmed. `EarlyExitPricedAtEntry` carries both numbers. Measured against the deployment's own cooldown and not a new constant: if the protocol's answer to how long is too short to be paid is the cooldown, it is the same number here. Three cases: the sniping flow itself, where the sniper gets back exactly what went in and the whole distribution reaches the holder who stayed; the cap being one sided, so a fall inside the window is still taken at the current rate, because protecting it would be the same unfairness reversed; and a position with no recorded entry being read as staked long ago, so the rule cannot reach back into one that predates it. A top-up re-arms the window for the whole position, which is the conservative direction and is written down rather than discovered |
+| `vault::set_agusd` gates on this vault having taken no deposit, which stopped being the same statement as the token having no supply when agUSD became a classic asset | high | **closed and deployed 2026-11-01** on `CCWZXRSN...`. It now also refuses to point away from a token that still has supply. One that publishes a supply is judged on it, which covers `agusd-core` and the case in `retiredAgusdResidue`, 38000000 stroops outstanding on a contract whose Vault had taken no deposit. A Stellar Asset Contract publishes none that a contract can read, so for one of those the question becomes whether this Vault is its mint authority: if it is, this Vault is what stands behind that token and will not abandon it unable to show nobody is holding it. Handing the mint authority away first is the deliberate route through, and it takes a transaction on the token rather than an assumption in here. Two cases, one per branch. Last of the four checks deliberately, so a call that is also wrong about the incoming token still reports that first |
+| The staking contract has no upgrade path and no way to carry a position across generations, so any holder who stops answering pins every fix behind them. Three dormant accounts hold 8.1939395 sagUSD and `Supply` is writable only by `stake` and `unstake`, which leaves no honest way to seed a replacement | medium, and structural | **open, and worked around rather than fixed**. The seven fixes behind it are deployed, because the new generation went up beside the old one instead of replacing it, which strands nobody and is described above the table. The gap itself is untouched: there is still no way to carry a position across generations, so the next replacement meets the same wall, and the three holders are still the reason a Vault and a staking contract have to stay up. Measured live by `scripts/check-staking-migration-block.sh`, which prints the holders and the four conditions that make their balance unreachable |
 | The oracle's staleness window is measured against the timestamp the reporter attests to, and the keeper reposts the value already on the feed, so a feed expires when its reporters stop rather than when the number ages | high, as a control | **closed and deployed 2026-11-01, in both halves**. The on-chain half: `process` refuses a report whose own timestamp is already outside the feed's staleness window, `ReportAlreadyStale` 520, so a reading cannot be stored already expired. The guard was one sided before, refusing a timestamp in the future and accepting one from arbitrarily far in the past. The other half cannot live in the contract, and that is stated rather than worked around: the contract cannot tell a value the reporter re-read from one it reposted unchanged, because an unchanged number is legitimate and common, a peg sitting at par or a deterministic bond price that did not move. So it is the keeper's, and `keeper-reflector.sh` and `keeper-etherfuse.sh` both refuse to submit when their own upstream has stalled. `a_reading_already_outside_its_window_is_refused_on_arrival`. The on-chain half is declared under `treeAheadOfLedger` |
 | The quorum threshold is admin settable with no floor above one, and the admin was also one of the two reporters | high, as a control | **closed and deployed 2026-11-01**, both halves on the ledger. The admin is out of the reporter set on the live instance, verifiable with `is_reporter` on it, which reads `false`, and the deployment scripts seed reporters from `oracleReporters.addresses` and refuse the admin outright, so a redeployment cannot undo it. The floor is fixed in source rather than by a ratchet: raising a threshold is immediate, lowering one is announced, waits `QUORUM_REDUCTION_DELAY_SECS` of 72 hours and is applied by a second call with the same value. A pure upward ratchet was what the finding suggested and it is worse, because a threshold that can only rise turns one lost reporter key into a feed that can never be priced again. Three cases: the delay, a raise cancelling an announced reduction, and a different reduction restarting its own wait rather than inheriting one. Declared under `treeAheadOfLedger` |
 | `cctp::set_destination` lets the admin point the burn at any EVM address while exposure is zero, and `write_down` zeroes exposure with no cash moving | high, admin only | **closed and deployed 2026-11-01** on `CAY4GXTU...`, and the refusal is reproducible on chain: announce a repoint, call again inside the window, get `#715`. A repoint is announced by one call and applied by a second with the same domain and recipient after `DESTINATION_DELAY_SECS` of 72 hours, readable through `pending_destination` and announced in `DestinationAnnounced`. A delay rather than the second role the old comment implied, because a second role on a one-operator deployment is two keys in the same hand and reads as a control without being one; 72 hours in which a depositor can see the address their capital is about to be sent to is not. The exposure lock stays as well, so there are two guards. `writing_the_position_off_opens_the_lock_and_still_does_not_open_the_pointer` walks the exact sequence the finding describes. The allowlist is the other half and is listed under `decisions.crossChainToMainnet` |
 | `settle_withdrawal` takes no signature and strips the head claim of its queue position irreversibly, and a third party can choose the moment | medium | **verified bounded 2026-11-01, no change made, and here is why**. What a stranger can do is step the queue past a claim whose payment the token refused, and they cannot cause that refusal: it depends on the owner's own trustline. What the owner loses is the FIFO position; what they keep is the money and the liability, and a deferred claim is collectable by its owner at any time **without** being at the head, which is a weaker constraint than the one it replaced. `a_deferred_claim_is_still_owed_and_collectable_out_of_order` and `only_the_owner_can_collect_a_deferred_claim` pin both halves. The alternative, not advancing the head on a failed delivery, is the finding this deferral was introduced to fix: one undeliverable claim blocking everybody behind it for good. Recording who triggered it was considered and rejected: a top-level Soroban call has no caller address, so the only way to put one in the event is an unauthenticated parameter, and a self-reported identity in an event stream is worse than none |
-| The withdrawal queue has no partial fill, so a claim larger than idle reserves blocks every claim behind it | medium | **fixed in source 2026-11-01, not deployed**. `deliver` pays what the Vault holds, reduces the claim by exactly that and leaves it at the head with the rest owed, so the order of the queue is untouched and the Vault has simply paid down as far as it can. All-or-nothing on a queue is a deadlock with a good explanation: a 500 USDC claim at the head with 100 USDC in the Vault paid nobody, released nothing, and left a 10 USDC claim behind it waiting on capital returning from a pool that owed the 500. `InsufficientLiquidity` is now the answer only when there is nothing at all to pay with. The anti-dust floor is deliberately not applied to a remainder: it gates `request_withdrawal`, where its job is to stop a queue being stuffed with crumbs, and a residue the Vault itself left is the rest of what somebody is owed. Three cases, and the accounting fuzzer is clean at 1500 cases through partial payments, which is the assertion that matters: both counters move by what was paid, so a partial fill is neutral in `floor_base` |
-| `staking` never extends its instance TTL on any user path, unlike the Vault, which does it on all eighteen | medium | **fixed in source 2026-11-01, not deployed**. `stake`, `request_unstake`, `claim` and `distribute_yield` all bump it. `every_path_that_moves_value_extends_the_instance_ttl` burns two days of ledgers between calls, because `extend_ttl` is a no-op above the lifetime threshold and a shorter burn proves nothing |
-| Anyone can block `staking::set_agusd` for good by sending one stroop of the current agUSD to the contract, because the guard reads a raw balance | medium | **fixed in source 2026-11-01, not deployed**. With no stake and no distribution nothing is owed, so a balance here has no claimant: it is swept to the admin, who is authorizing the repoint, with a `StrayBalanceSwept` event, and `StrayBalanceStuck` if it cannot be moved. `a_stranger_cannot_wedge_the_repoint_with_one_stroop` |
+| The withdrawal queue has no partial fill, so a claim larger than idle reserves blocks every claim behind it | medium | **closed and deployed 2026-11-01** on `CCWZXRSN...`. `deliver` pays what the Vault holds, reduces the claim by exactly that and leaves it at the head with the rest owed, so the order of the queue is untouched and the Vault has simply paid down as far as it can. All-or-nothing on a queue is a deadlock with a good explanation: a 500 USDC claim at the head with 100 USDC in the Vault paid nobody, released nothing, and left a 10 USDC claim behind it waiting on capital returning from a pool that owed the 500. `InsufficientLiquidity` is now the answer only when there is nothing at all to pay with. The anti-dust floor is deliberately not applied to a remainder: it gates `request_withdrawal`, where its job is to stop a queue being stuffed with crumbs, and a residue the Vault itself left is the rest of what somebody is owed. Three cases, and the accounting fuzzer is clean at 1500 cases through partial payments, which is the assertion that matters: both counters move by what was paid, so a partial fill is neutral in `floor_base` |
+| `staking` never extends its instance TTL on any user path, unlike the Vault, which does it on all eighteen | medium | **closed and deployed 2026-11-01** on `CAQJGNUY...`. `stake`, `request_unstake`, `claim` and `distribute_yield` all bump it. `every_path_that_moves_value_extends_the_instance_ttl` burns two days of ledgers between calls, because `extend_ttl` is a no-op above the lifetime threshold and a shorter burn proves nothing |
+| Anyone can block `staking::set_agusd` for good by sending one stroop of the current agUSD to the contract, because the guard reads a raw balance | medium | **closed and deployed 2026-11-01** on `CAQJGNUY...`. With no stake and no distribution nothing is owed, so a balance here has no claimant: it is swept to the admin, who is authorizing the repoint, with a `StrayBalanceSwept` event, and `StrayBalanceStuck` if it cannot be moved. `a_stranger_cannot_wedge_the_repoint_with_one_stroop` |
 | `smoke-hardening.sh` counts four skipped branches as passes, so its 64 is compatible with the interval guard never having been exercised on that run | medium, in the evidence rather than the code | **closed**. Every conditional branch prints `SKIP` with its reason and increments nothing; the run that reads 62 passed names its 2 skips. The guard the finding was about is exercised by committing a round with both reporters and then submitting inside the interval |
 | `e2e-oracle-quorum.sh` submits the value the feed already holds, so "one reporter moves nothing" cannot fail | medium, in the evidence | **closed**. It submits `BEFORE + 1` and asserts the stored round did not advance after the first vote, so the assertion can now fail |
 | `check-authorization.sh` does not scan `adapters/cctp`, which is live and registered | medium, in the evidence | **closed**. `adapters/cctp/src/lib.rs` is in the scanned set and the count is 81 state-changing entry points, 5 deliberately permissionless, 0 failures |
