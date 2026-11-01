@@ -104,5 +104,29 @@ for f in scripts/keeper-oracle.sh scripts/keeper-reflector.sh scripts/keeper-eth
 done
 
 echo ""
+echo "== no secret seed is committed, in the tree or in the history =="
+# A public repository with a signing key in it is the shortest path from a
+# submission to an incident, and the admin key here can allocate, write down a
+# position and repoint counterparties. A Stellar secret is 56 characters
+# beginning with S, so it is grepable, and the history is grepable too: a key
+# removed in a later commit is still a key anybody can `git log -p` for.
+if git grep -qE "\bS[A-Z2-7]{55}\b" -- . 2>/dev/null; then
+  bad "a Stellar secret seed is in the working tree"
+else
+  ok "no Stellar secret seed in the working tree"
+fi
+HIST=""
+for c in $(git rev-list --all 2>/dev/null | head -500); do
+  if git grep -lE "\bS[A-Z2-7]{55}\b" "$c" -- . >/dev/null 2>&1; then
+    HIST="$HIST $c"
+  fi
+done
+if [ -n "$HIST" ]; then
+  bad "a Stellar secret seed appears in history:$HIST"
+else
+  ok "none in the last 500 commits of history either"
+fi
+
+echo ""
 printf 'TOTAL: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
