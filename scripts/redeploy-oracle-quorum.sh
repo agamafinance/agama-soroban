@@ -38,6 +38,21 @@ VAULT=$(j "d['contracts']['vault']")
 OLD_ORACLE=$(j "d['contracts']['oracleAdapter']")
 VAULT_FEED=$(j "d['vaultOracleFeed']")
 
+# This migration repoints the contract every keeper writes to, so it takes the
+# same lock the suites take and for a stronger reason: a keeper pushing to the
+# outgoing oracle between the repoint and the record being rewritten is a value
+# written somewhere nothing reads, and a keeper reaching for the operator's
+# sequence number mid-migration is a half-applied migration. The keepers stand
+# aside for this lock since 2026-11-01, so taking it is enough.
+LOCK=/tmp/agama-smoke-$SRC.lock
+if ! mkdir "$LOCK" 2>/dev/null; then
+  echo "a suite or another migration holds $SRC ($(cat "$LOCK/owner" 2>/dev/null || echo unknown))." >&2
+  echo "A migration is the last thing that should share this account. Wait for it." >&2
+  exit 1
+fi
+echo "pid $$ at $(date -u +%H:%M:%S), redeploy-oracle-quorum" > "$LOCK/owner"
+trap 'rm -rf "$LOCK"' EXIT
+
 PASS=0; FAIL=0
 ok()  { PASS=$((PASS+1)); echo "  PASS  $1"; }
 bad() { FAIL=$((FAIL+1)); echo "  FAIL  $1"; }
@@ -77,7 +92,7 @@ ORACLE=$(echo "$OUT" | grep -oE 'C[A-Z2-7]{55}' | tail -1)
 echo "    oracle-adapter = $ORACLE"
 
 echo ""
-echo "==> the reporter, then the three feeds, with the recorded parameters"
+echo "==> the reporters, then the four feeds, with the recorded parameters"
 # The reporter set is the two dedicated reporter keys, and deliberately not the
 # admin. An admin that is also a reporter can lower the quorum to one, remove
 # the other reporter and then post any NAV on its own signature, so a quorum of
@@ -162,9 +177,9 @@ echo "==> checking"
 for f in USDC_USD PC_NAV PC_NAV2 EF_BOND; do
   eval "V=\$NAV_$f"
   assert_eq "$f is back where it was" "$(q0 "$ORACLE" get_nav --feed_id "$f")" "$V"
-  # Registered at the record's threshold, which is two on every feed here. This
-  # asserted the V1 default of 1, which was true when the quorum was the thing
-  # being introduced and has not been since.
+  # Read back rather than assumed from the call that set it, because the value
+  # that matters is the one the contract holds. This asserted the V1 default of
+  # 1, which was true when the quorum was the thing being introduced.
   assert_eq "$f runs at a quorum of two" "$(q0 "$ORACLE" quorum_threshold --feed_id "$f")" "2"
 done
 eval "VF=\$NAV_$VAULT_FEED"
