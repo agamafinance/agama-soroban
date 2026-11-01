@@ -1,0 +1,48 @@
+# What can be checked without a key, checked on every push.
+#
+# Most of the verification in this repository reads the live testnet deployment,
+# and some of it signs as the protocol's admin or as an oracle reporter. None of
+# that belongs in CI: the keys would have to be here, and a job that cannot
+# allocate or write down a position cannot assert anything about the guards that
+# refuse it. Those suites are run by hand, serially, and their results are in
+# docs/TRANCHE2_EVIDENCE.md with the command beside each number.
+#
+# What is left needs nothing: the unit suites, and the source invariants that are
+# shapes the tree has to keep rather than state on a ledger. That is what runs
+# here, and it runs on the compiler the deployed contracts were built with,
+# because rust-toolchain.toml pins it and the wasm hashes on the ledger depend on
+# it.
+#
+# rustfmt is deliberately not run. See the section on it in
+# docs/TRANCHE2_EVIDENCE.md: it would move the wasm hash of every deployed
+# contract, and eight of those hashes are evidence this submission has published.
+name: checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    name: unit suites and source invariants
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml decides the version. Nothing here overrides it,
+      # because the deployed bytecode was produced by that compiler and
+      # check-deployment-record --wasm rebuilds against it.
+      - name: show the pinned toolchain
+        run: rustc --version && cargo --version
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo test --workspace
+        run: cargo test --workspace
+
+      # No network, no keys, no build. Three of the controls here are not entry
+      # points and not state: they are shapes the source has to keep, and the
+      # only thing that had been holding them was a comment.
+      - name: source invariants
+        run: bash scripts/check-source-invariants.sh

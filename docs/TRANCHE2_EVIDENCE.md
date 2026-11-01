@@ -203,6 +203,23 @@ behind it by exactly what the record declares.
 | `e2e-oracle-quorum.sh` submits the value the feed already holds, so "one reporter moves nothing" cannot fail | medium, in the evidence | **closed**. It submits `BEFORE + 1` and asserts the stored round did not advance after the first vote, so the assertion can now fail |
 | `check-authorization.sh` does not scan `adapters/cctp`, which is live and registered | medium, in the evidence | **closed**. `adapters/cctp/src/lib.rs` is in the scanned set and the count is 81 state-changing entry points, 5 deliberately permissionless, 0 failures |
 
+## What runs automatically, and what cannot
+
+`.github/workflows/checks.yml` runs the unit suites and
+`check-source-invariants.sh` on every push, on the compiler
+`rust-toolchain.toml` pins, which is the one the deployed bytecode was built
+with. There was no CI at all until 2026-11-01, so a reviewer looking for a green
+tick found nothing to look at.
+
+What cannot run there is most of the verification in this file, and the reason is
+worth stating rather than leaving as an omission. These suites read the live
+testnet deployment, and the ones that matter most sign as the protocol's admin or
+as an oracle reporter: a job that cannot allocate, write down a position or push
+a NAV cannot assert anything about the guards that refuse those calls. Putting
+the keys in CI to get a green tick would be trading the thing the keys protect
+for the appearance of rigour. So those are run by hand, serially, and every
+number in this file has the command next to it.
+
 ## Two things a reviewer will run that come back noisy, and why they stay that way
 
 `cargo fmt --all -- --check` reports **138 diffs across 22 files**, and the tree
