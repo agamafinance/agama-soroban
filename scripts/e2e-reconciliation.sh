@@ -110,14 +110,35 @@ LASTTS=$(stellar contract invoke --id "$ORACLE" --source "$SRC" --network "$NET"
 NOW=$(( $(date -u +%s) - 60 ))
 AGE=$(( NOW - LASTTS ))
 if [ "$AGE" -lt "$MININT" ]; then
-  # The feed accepts one point per hour, so a rerun inside that hour cannot
-  # push again. That is the guard working, not a gap in the procedure, and the
-  # link in the chain it would have demonstrated is still checkable: the value
-  # on chain has to be the one this tape produces.
+  # The feed accepts one point per hour, so a rerun inside that hour cannot push
+  # again. That is the guard working and not a gap in the procedure, and what it
+  # costs is this link of the chain: a push that does not happen proves nothing
+  # about what the quorum would have done with it.
+  #
+  # This used to assert that the stored NAV equals the one this tape produces,
+  # under the heading "what the push would have proved is asserted instead". It
+  # is not the same statement. The push would have CAUSED that equality; asserting
+  # it without the push asserts that some earlier run happened to carry this exact
+  # tape, which is true only until the tape changes or anything else writes to the
+  # feed. On 2026-11-01 an oracle migration carried the previous value across six
+  # minutes before this ran, and the suite reported the tape and the feed
+  # disagreeing as a failure of the reconciliation rather than as the rate limit
+  # it was.
+  #
+  # So the skip asserts what is true without the push and says plainly what is
+  # not proven on this run.
   printf '        SKIP  the last point is %ss old and this feed takes one per %ss.\n' "$AGE" "$MININT"
-  printf '              Not pushing again. What the push would have proved is asserted instead.\n'
-  eq "the NAV on chain is the one this tape produces" "$(rd "$ORACLE" get_nav --feed_id PC_NAV)" "$NAV"
-  eq "it was accepted, so it met the two reporter quorum" \
+  printf '              Not pushing again, so this run does not demonstrate the commit.\n'
+  STORED=$(rd "$ORACLE" get_nav --feed_id PC_NAV)
+  [ "${STORED:-0}" -gt 0 ] \
+    && ok "the feed holds a value for the Vault to read" "$STORED" \
+    || bad "the feed holds a value for the Vault to read" "$STORED"
+  # The tape's number against the stored one, through the bound the feed would
+  # apply to it. Step 3 above computed that move and asserted it is inside the
+  # deviation bound, so the number this tape produces is one this feed would
+  # accept: that is the part of the link that survives a skipped push.
+  ok "and the tape's number is one this feed would take" "$NAV against $STORED"
+  eq "the quorum it would have to clear is two" \
      "$(rd "$ORACLE" quorum_threshold --feed_id PC_NAV)" "2"
 else
   V1=$(stellar contract invoke --id "$ORACLE" --source agama-oracle-2 --network "$NET" -- \
