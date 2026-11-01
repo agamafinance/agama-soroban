@@ -105,8 +105,28 @@ if [ -z "$GUARD_POOL" ]; then
   echo "  SKIP  no registered pool has $MOVE of cap headroom left:"
   printf '        private credit %s, etherfuse %s, against a %s bps cap\n' \
     "$(headroom "$PC")" "$(headroom "$EF")" "$POOL_CAP_BPS"
-  echo "        That charge is accumulated write-offs and it is permanent by"
-  echo "        design. The Engine refusing here is the guard working, so the"
+  # Two very different reasons land here and the old message asserted the worse
+  # one. A cap can be full because capital is out at work, which unwinds, or
+  # because write-offs have charged against it, which does not. Printing
+  # "accumulated write-offs" either way sent a reader looking for a loss that
+  # had not happened: on 2026-11-01 the cause was 500 USDC somebody had
+  # allocated by hand and not unwound, and five suites reported five different
+  # symptoms with none of them naming it.
+  PC_CHARGED=$(rd "$ENGINE" written_off_pool --pool_id "$PC")
+  EF_CHARGED=$(rd "$ENGINE" written_off_pool --pool_id "$EF")
+  PC_LIVE=$(rd "$ENGINE" get_exposure --pool_id "$PC")
+  EF_LIVE=$(rd "$ENGINE" get_exposure --pool_id "$EF")
+  printf '        of which written off %s and %s, live exposure %s and %s\n' \
+    "${PC_CHARGED:-?}" "${EF_CHARGED:-?}" "${PC_LIVE:-?}" "${EF_LIVE:-?}"
+  if [ "${PC_CHARGED:-0}" != "0" ] || [ "${EF_CHARGED:-0}" != "0" ]; then
+    echo "        Part of that is written off, which is permanent by design and"
+    echo "        only falls when capital actually comes back."
+  fi
+  if [ "${PC_LIVE:-0}" != "0" ] || [ "${EF_LIVE:-0}" != "0" ]; then
+    echo "        Part of it is live exposure, which is not permanent: deallocate"
+    echo "        it, or wait for whatever put it there to unwind, and rerun."
+  fi
+  echo "        Either way the Engine refusing is the guard working, so the"
   echo "        guards below are skipped rather than asserted through a #407."
   echo "TOTAL: $pass passed, $fail failed"
   exit 0

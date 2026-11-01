@@ -34,22 +34,22 @@ check-advisories.sh              2    2
 check-ttl.sh                    10   11    10 on 2026-10-19, 11 since
 verify-tranche2.sh              24   27    24 before it read its feed list from the record
 check-source-invariants.sh      14   14
-e2e-etherfuse.sh                24   27    the EF_BOND accrual step, inside the hour or not
+e2e-etherfuse.sh                22   27    22 when PC_NAV has capital behind two originators, so the keeper refuses to price one off the other
 e2e-reconciliation.sh           11   13    the PC_NAV round, inside the hour or not
 e2e-two-originators.sh          13   15
 e2e-oracle-quorum.sh            11   12    11 before it submitted a value the feed did not hold
 e2e-round-deadlock.sh            2    6    2 when the feed's own rate limit makes the round uncommittable
 e2e-peg-gate.sh                 11   11
 e2e-cctp-wiring.sh              10   10
-e2e-allocation-guards.sh        10   12
+e2e-allocation-guards.sh         1   12    1 when no pool has cap headroom, which is write-offs or live exposure and the skip now says which
 e2e-concentration-caps.sh       10   10
-e2e-generation3.sh              20   21
-e2e-test.sh                     23   24    one credit vault whose distribution does not always land
+e2e-generation3.sh              21   22    21 since the redemption asserts the USDC came back and not only that the agUSD burnt
+e2e-test.sh                     24   25    one credit vault whose distribution does not always land; 25 since the cooldown exit asserts both halves
 smoke-core.sh                   11   14    one assertion per feed that can take a value
 smoke-agusd-core.sh             32   32
 smoke-review2.sh                45   52    52 on 2026-09-09, 45 since assertions moved to other suites
 smoke-review3.sh                38   42    42 on 2026-09-09, 38 since the pool took a write-off charge
-smoke-mediums.sh                59   64    64 once the admin rotation stopped being skipped
+smoke-mediums.sh                55   64    64 once the admin rotation stopped being skipped; 55 when the Vault cannot pay a queued claim
 smoke-hardening.sh              62   64    the interval guard needs a round to commit first
 "
 

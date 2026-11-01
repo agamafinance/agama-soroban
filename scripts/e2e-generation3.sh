@@ -255,9 +255,19 @@ ok "sagUSD in circulation equals the tracked count" "$(circulating sagUSD $SAG_I
 
 echo "== 9. redeem the rest through the Vault queue"
 REST=$(bal $AGUSD $E)
+USDC_BEFORE_REDEEM=$(bal $USDC $E)
 ID=$(stellar contract invoke --id "$VAULT" --source "$KEY" --network "$NET" -- request_withdrawal --from "$E" --amount "$REST" 2>/dev/null | tr -d '"' | tail -1)
-stellar contract invoke --id "$VAULT" --source "$KEY" --network "$NET" -- claim_withdrawal --from "$E" --claim_id "$ID" >/dev/null 2>&1
+# The claim can be refused with #309 when an older one is in front, and
+# settle_withdrawal is permissionless for exactly that. Retried through it rather
+# than swallowed, because the assertion below used to be on the burn alone:
+# request_withdrawal burns the agUSD whether or not the claim is ever paid, so a
+# claim stuck in the queue left the account's capital in the Vault and the suite
+# still reported success.
+stellar contract invoke --id "$VAULT" --source "$KEY" --network "$NET" -- claim_withdrawal --from "$E" --claim_id "$ID" >/dev/null 2>&1   || stellar contract invoke --id "$VAULT" --source "$SRC" --network "$NET" -- settle_withdrawal >/dev/null 2>&1   || true
 ok "agUSD fully burnt" "$(bal $AGUSD $E)" "0"
+# And the point of burning it: the USDC came back. Checked separately, because
+# the burn happening is not evidence that anybody got paid.
+gt "and the USDC came back out of the queue" "$(bal $USDC $E)" "$USDC_BEFORE_REDEEM"
 echo ""
 echo "  user ends with $(bal $USDC $E) stroops of USDC, having deposited 20"
 echo ""
