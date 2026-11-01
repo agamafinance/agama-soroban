@@ -27,7 +27,7 @@
   "usdcIssuer": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
   "usdcReal": true,
   "poolAdapters": {
-    "private-credit": "CDNWXGSSP3BOAIKIYTGDHST2BBSZNWIW6RMDQERM3HOQ24EO43WLP3VE",
+    "private-credit": "CDYSHPCKRZE5CDSXTTZV3KHGFYVPSHDSMRIHMLR3OV3D57I77VRZATOJ",
     "etherfuse": "CCXSQEUMW42BNEB7HUNBVAAYRPAJ5SAR5VUWVSCE735HDMG7M7DBNJKC",
     "private-credit-2": "CBAO767N6WXGQZHAKD3ONU7BJSIDYPPZZX453JRE2VDVI23KFIXIBCVO"
   },
@@ -45,7 +45,7 @@
         "originator": "QIRO",
         "jurisdiction": "LU",
         "capBps": 4000,
-        "address": "CDNWXGSSP3BOAIKIYTGDHST2BBSZNWIW6RMDQERM3HOQ24EO43WLP3VE"
+        "address": "CDYSHPCKRZE5CDSXTTZV3KHGFYVPSHDSMRIHMLR3OV3D57I77VRZATOJ"
       },
       "etherfuse": {
         "originator": "ETHERFUS",
@@ -746,6 +746,14 @@
       "address": "CAUOHPPNHUIYQI3KIVPLP75CGWKFBGSXK3RW75UO52PKY3YKQRTWIQUS",
       "supersededBy": "oracleAdapter",
       "reason": "Replaced by scripts/redeploy-oracle-quorum.sh so that the deployed Oracle Adapter is the one in this repository, carrying three fixes that could not reach it any other way: no contract here has an upgrade entry point. (1) A round is keyed on (feed, timestamp) and the tally on the value, and the outgoing instance stored a flag for who had voted rather than what they voted for, so a reporter was locked to its first value: two reporters who disagreed at one timestamp split the tally one and one, neither could revote, the round was dead, and a reporter that disagreed on every round stopped the feed for good. A feed any single reporter can switch off does not have a quorum of two, it has a veto. Raised by an outside reader of the repository on 2026-10-27. The replacement stores the value and lets a reporter move its vote, which cannot manufacture a quorum because the value a vote leaves is decremented in the call that increments the one it joins. (2) set_quorum_threshold had no floor above one, so the admin key could drop a quorum of two to one, post alone and put it back, in three transactions with nothing visible in advance. Raising is still immediate; lowering is announced, waits 72 hours and is applied by a second call with the same value, readable in pending_quorum_reduction. An upward-only ratchet was the obvious alternative and is worse: it turns one lost reporter key into a feed nobody can ever price again. (3) The staleness window is measured against the timestamp the reporter attests to and nothing checked that timestamp was inside it, so a reading could be stored already expired and would read as current until the window ran out from the moment of its own obsolescence. ReportAlreadyStale 520. Two contracts name this one, the Vault and the Etherfuse adapter, so the rewiring was two set_oracle calls, four feeds re-registered with their recorded parameters, the reporter set seeded from oracleReporters.addresses with the admin refused outright, every feed set to a quorum of two before any value was carried, and the four values restored by two reporter signatures each."
+    },
+    {
+      "contract": "poolAdapters.private-credit",
+      "generation": 10,
+      "label": "Private credit adapter, tenth deployment",
+      "address": "CDNWXGSSP3BOAIKIYTGDHST2BBSZNWIW6RMDQERM3HOQ24EO43WLP3VE",
+      "supersededBy": "poolAdapters.private-credit",
+      "reason": "Replaced 2026-11-01 so that the deployed QIRO adapter is the one in this repository. It was deployed before the oracle feed became a constructor parameter, so it carried a compiled pub const ORACLE_FEED and answered 17 entry points where the source answers 18: it had no set_oracle_feed, which is what makes onboarding an originator a deployment rather than a build. That difference was declared under treeAheadOfLedger from 2026-10-31, and the declaration could not be cleared while unregister_pool refused the pool: it carried 29138631047 stroops of accumulated test write-offs against its concentration cap, and that charge is permanent on purpose because a write-down reopening a cap was a finding this Engine closed. The charge reached zero through ordinary recoveries during the suites of 2026-10-31, which is the only thing that can clear it, and the replacement went in the next morning: unregister_pool, then register_pool with the same originator QIRO, the same jurisdiction LU and the same 4000 bps cap. No capital was deployed on the pool at the time and both calls are in one sequence."
     }
   ],
   "oracleFeedGuards": "The band bounds every report including the first, which a deviation bound cannot reach because a bound on a move needs something to move from. The minimum interval is measured in ledger time between accepted values, not in the timestamps the reporter supplies, because the reporter chooses those. The reference point is persistent, so it cannot expire out from under the checks that read it.",
@@ -1037,13 +1045,6 @@
       ],
       "provenBy": "scripts/e2e-peg-gate.sh",
       "reason": "The tree is ahead of the ledger here by a feature: the peg gate reads USDC_USD on every deposit and refuses outside 200 bps of par, which is what Tranche 2 Deliverable 2's Reflector feed is for. contractspecv0 therefore differs, by exactly those four entry points and their doc comments, and the difference is checkable as an interface delta rather than asserted. Every other deployed contract does rebuild from this tree byte for byte, against the raw compiler artefact in target/wasm32v1-none/release/deps, which is what the deploy scripts sent before the CLI grew an optimise step; the Etherfuse adapter, deployed on 2026-10-30 with CLI 28.1.0, matches the optimised artefact instead. This Vault is the only one that matches neither, and the reason is the four entry points and nothing else. No contract in this repository has an upgrade entry point, by design, so carrying the gate to the live Vault means a generation migration: a new Vault, a new agUSD because agusd-core::set_minter freezes after the first mint, a redeployed staking for the same reason, and the outstanding supply redeemed first. That is scripts/deploy-vault-generation.sh and it retires the generation Tranche 2 is proven on, so it is a decision. Meanwhile the gate has nine unit cases and eleven on-chain assertions against a Vault deployed for the purpose, recorded under demonstrations.pegGate. Also ahead by one fix with no entry point behind it, added 2026-11-01: set_agusd refuses to point away from a token that still has supply outstanding. deposits counts what this Vault issued and stopped being the same statement as what the token has outstanding when agUSD became a classic asset, which retiredAgusdResidue in this record is the proof of. A token that publishes a supply is judged on it; a Stellar Asset Contract publishes none, so for one of those the question becomes whether this Vault is its mint authority, and a Vault that stands behind a token will not walk away from it unable to show nobody is holding it. And a third, the same day: the withdrawal queue pays partially. deliver pays what the Vault holds, reduces the claim by exactly that and leaves it at the head with the rest owed, so a claim larger than idle reserves no longer stops everything behind it. InsufficientLiquidity is now the answer only when there is nothing at all to pay with. Both counters move by what was paid, so a partial fill is neutral in floor_base, and the accounting fuzzer is clean at 1500 cases through it."
-    },
-    {
-      "contract": "private-credit",
-      "entryPointsNotDeployed": [
-        "set_oracle_feed"
-      ],
-      "note": "CDNWXGSS is the instance deployed before the feed became a constructor parameter, so it carries the compiled constant and does not answer set_oracle_feed. It is not being replaced: it holds a written-off charge of 29138631047, which unregister_pool refuses to erase, and that refusal is the guard working rather than an obstacle to route around. The new shape is deployed and live as private-credit-2, CBAO767N, which does answer it. One instance per originator is the design, so two instances of two generations is a true picture of the book rather than a migration left half done."
     },
     {
       "contract": "allocationEngine",

@@ -80,14 +80,23 @@ the refusal is carried unconditionally by two unit cases instead:
 `the_feed_moves_only_while_the_adapter_is_empty`, which also checks the feed did
 not move and that it does move once empty, and `only_the_admin_moves_the_feed`.
 
-One honest detail about "one wasm". The first instance, `CDNWXGSS`, was
-deployed before the feed became a constructor parameter, so it carries the
-compiled constant and answers 17 entry points where the second answers 18. They
-are the same crate and not the same bytecode, which is a one command comparison
-and is declared under `treeAheadOfLedger` in the deployment record rather than
-left to be found. What is true from here on is the part that matters: a third
-originator is a deployment of the current wasm with a different `--feed` and no
-rebuild.
+One honest detail about "one wasm", and how it stopped being true. The QIRO
+instance was `CDNWXGSS`, deployed before the feed became a constructor
+parameter, so it carried the compiled constant and answered 17 entry points
+where the QIRO2 instance answered 18: same crate, different bytecode, a one
+command comparison, and declared under `treeAheadOfLedger` rather than left to
+be found.
+
+That declaration could not be cleared for as long as it stood, and the reason is
+worth keeping. `unregister_pool` refuses a pool carrying a write-off charge, and
+that pool carried 29138631047 stroops of accumulated test write-offs against its
+concentration cap. The charge is permanent on purpose, because a write-down
+reopening a cap was a finding this Engine closed, so the only thing that can
+lower it is capital actually coming back. It reached zero through ordinary
+recoveries during the suites of 2026-10-31, and the replacement went in the next
+morning: `CDYSHPCK...`, same originator, same jurisdiction, same 4000 bps cap,
+and `set_oracle_feed` answering on both instances now. Both are the current
+wasm, so "one wasm, two instances" is simply true today.
 
 ## Who does what, and who touches nothing
 

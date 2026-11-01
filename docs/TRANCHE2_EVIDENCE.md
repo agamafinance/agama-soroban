@@ -175,7 +175,17 @@ with the reasoning for why nothing was changed. **Three of the eleven are on the
 ledger** and eight are not. The three went live on 2026-11-01 with a new Oracle
 Adapter, `CBJ3OZ4W...`, replacing `CAUOHPPN...`: the round deadlock, the quorum
 floor and the staleness check. The remaining eight are declared under
-`treeAheadOfLedger` with what each changes and why it is not deployed. The reason
+`treeAheadOfLedger` with what each changes and why it is not deployed.
+
+A fourth contract was replaced on 2026-11-01 and it is deliberately not counted
+here, because it closes a declaration rather than a finding. The QIRO private
+credit adapter predated the feed becoming a constructor parameter, so it answered
+17 entry points to the source's 18; the fix itself was already live on the QIRO2
+instance. It was replaced by `CDYSHPCK...` the morning its write-off charge
+reached zero, since `unregister_pool` refuses a pool carrying one and that charge
+only falls when capital actually comes back. Four of the five declarations that
+stood yesterday are gone; `treeAheadOfLedger` lists the Vault, the Engine,
+staking and the cross chain adapter. The reason
 is the same in every case and it is not a scheduling excuse: no contract in this
 repository has an `upgrade` entry point, by design, so a fix means a
 redeployment, which is exactly what the Oracle Adapter just had and why its three
