@@ -46,3 +46,10 @@ jobs:
       # only thing that had been holding them was a comment.
       - name: source invariants
         run: bash scripts/check-source-invariants.sh
+
+      # Every suite figure quoted in the documentation against one table. The
+      # claim this repository makes is that every number has a command next to
+      # it, which is worth nothing while the number is not what the command
+      # prints, and eleven of them had drifted by 2026-11-01.
+      - name: documented figures
+        run: bash scripts/check-doc-figures.sh
