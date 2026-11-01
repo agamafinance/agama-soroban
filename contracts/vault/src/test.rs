@@ -494,20 +494,119 @@ fn a_claim_beyond_idle_reserves_reports_a_liquidity_problem() {
     assert_eq!(f.vault.get_total_assets(), 1_000 * USDC);
 
     let claim_id = f.vault.request_withdrawal(&alice, &(500 * USDC));
-    // At the head of the queue and still unpayable: the error names the real
-    // problem, which is capital, not sequencing.
+    // At the head of the queue and not payable in full. Which used to be
+    // refused outright, with the error naming capital rather than sequencing,
+    // and the refusal was the defect: 100 USDC sat in the Vault, owed to the
+    // holder standing in front of it, and went nowhere.
     assert_eq!(f.vault.queue_head(), claim_id);
     assert_eq!(f.vault.claim_status(&claim_id), ClaimStatus::Pending);
+    let owed_before = f.vault.outstanding_liabilities();
+
+    f.vault.claim_withdrawal(&alice, &claim_id);
+    assert_eq!(f.usdc.balance(&alice), 100 * USDC, "paid what was there");
+    assert_eq!(f.vault.idle_reserves(), 0);
+    assert_eq!(
+        f.vault.outstanding_liabilities(),
+        owed_before - 100 * USDC,
+        "and the liability fell by exactly that"
+    );
+    assert_eq!(
+        f.vault.queue_head(),
+        claim_id,
+        "the claim kept its place, so nothing behind it was reordered"
+    );
+    assert!(!f.vault.is_deferred(&claim_id));
+
+    // Nothing left to pay with is still a liquidity error: there is no partial
+    // fill to make out of zero.
     assert_eq!(
         f.vault.try_claim_withdrawal(&alice, &claim_id),
         Err(Ok(VaultError::InsufficientLiquidity))
     );
 
-    // The pool repays, and the same claim becomes payable with no other action.
+    // The pool repays, and the rest of the same claim is payable with no other
+    // action. 400 remains, not 500: the claim records what it is still owed.
     f.engine.deallocate(&f.pool, &(600 * USDC));
     assert_eq!(f.vault.claim_status(&claim_id), ClaimStatus::Ready);
     f.vault.claim_withdrawal(&alice, &claim_id);
     assert_eq!(f.usdc.balance(&alice), 500 * USDC);
+    assert_eq!(
+        f.vault.queue_head(),
+        claim_id + 1,
+        "and now that it is closed the queue moves past it"
+    );
+}
+
+/// The point of the partial fill is the claim behind the one at the head.
+///
+/// All-or-nothing on a queue is a deadlock with a good explanation: a 500 USDC
+/// claim at the head and 100 USDC in the Vault paid nobody, released nothing,
+/// and left a 10 USDC claim behind it waiting on capital returning from a pool
+/// that owed the 500.
+#[test]
+fn a_short_vault_pays_the_queue_down_instead_of_stalling_it() {
+    let f = setup();
+    let alice = depositor(&f, 1_000 * USDC);
+    let bob = depositor(&f, 100 * USDC);
+    f.engine.allocate(&f.admin, &f.pool, &(1_000 * USDC));
+    assert_eq!(f.vault.idle_reserves(), 100 * USDC);
+
+    let big = f.vault.request_withdrawal(&alice, &(500 * USDC));
+    let small = f.vault.request_withdrawal(&bob, &(10 * USDC));
+    assert_eq!(f.vault.queue_head(), big);
+
+    // Anybody can walk the queue, and walking it now moves money instead of
+    // reverting. Alice is paid down to 400 still owed.
+    f.vault.settle_withdrawal();
+    assert_eq!(f.usdc.balance(&alice), 100 * USDC);
+    assert_eq!(f.vault.queue_head(), big, "still the next thing owed");
+
+    // The pool returns enough for the rest of Alice and all of Bob.
+    f.engine.deallocate(&f.pool, &(410 * USDC));
+    f.vault.settle_withdrawal();
+    assert_eq!(f.usdc.balance(&alice), 500 * USDC, "Alice is whole");
+    assert_eq!(f.vault.queue_head(), small);
+    f.vault.settle_withdrawal();
+    assert_eq!(f.usdc.balance(&bob), 10 * USDC, "and Bob was never stuck");
+    assert_eq!(f.vault.outstanding_liabilities(), 0);
+}
+
+/// A residue below the anti-dust floor is still owed and still claimable.
+///
+/// The floor gates `request_withdrawal`, where its job is to stop a queue being
+/// stuffed with crumbs. A crumb the Vault itself left by paying as far as it
+/// could is not somebody gaming the queue, it is the rest of what they are owed.
+#[test]
+fn a_remainder_under_the_dust_floor_is_still_paid() {
+    let f = setup();
+    let alice = depositor(&f, 1_000 * USDC);
+    // Leave a hair under the full claim, so the remainder is smaller than the
+    // floor a fresh request would be refused for.
+    // Allocate before queueing, so the Vault starts at nothing idle: `allocate`
+    // is bounded by free reserves and cannot take money the queue is owed, so
+    // after a request there is always at least the claim sitting there.
+    f.engine
+        .allocate(&f.admin, &f.pool, &(f.vault.free_reserves()));
+    assert_eq!(f.vault.idle_reserves(), 0);
+    let claim = f.vault.request_withdrawal(&alice, &(500 * USDC));
+    let short = 500 * USDC - MIN_WITHDRAWAL / 2;
+    f.engine.deallocate(&f.pool, &short);
+    assert_eq!(f.vault.idle_reserves(), short);
+
+    f.vault.settle_withdrawal();
+    assert_eq!(f.usdc.balance(&alice), short);
+    assert_eq!(
+        f.vault.outstanding_liabilities(),
+        MIN_WITHDRAWAL / 2,
+        "the residue is under the floor and still owed"
+    );
+    assert_eq!(f.vault.queue_head(), claim);
+
+    f.engine.deallocate(&f.pool, &(MIN_WITHDRAWAL / 2));
+    f.vault.settle_withdrawal();
+    assert_eq!(f.usdc.balance(&alice), 500 * USDC);
+    assert_eq!(f.vault.outstanding_liabilities(), 0);
+    assert_eq!(f.vault.queue_head(), claim + 1);
 }
 
 #[test]

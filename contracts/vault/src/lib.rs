@@ -392,6 +392,20 @@ pub struct Claim {
     pub claimed: bool,
 }
 
+/// What one attempt at paying a claim did. Internal: the callers need three
+/// outcomes and a bool only carries two, which is how a partial payment had
+/// nowhere to be reported even once it existed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Delivery {
+    /// Paid in full. The claim is closed and the queue moves past it.
+    Full,
+    /// Paid what the Vault was holding. The claim stays open for the rest and
+    /// keeps its place at the head, so nothing behind it is reordered.
+    Partial,
+    /// The token refused the transfer and nothing moved.
+    Rejected,
+}
+
 /// Where a claim stands. `Ready` is derived rather than stored: a claim is
 /// ready exactly when it is at the head of the queue and the Vault holds the
 /// cash, and both of those change without anyone touching the claim.
@@ -1061,13 +1075,21 @@ impl Vault {
         if !at_head && !deferred {
             return Err(VaultError::NotAtQueueHead);
         }
-        if !Self::deliver(&e, claim_id, claim)? {
-            return Err(VaultError::PaymentRejected);
-        }
-        if deferred {
-            e.storage().persistent().remove(&Store::Deferred(claim_id));
-        } else {
-            e.storage().instance().set(&Cfg::QueueHead, &(claim_id + 1));
+        match Self::deliver(&e, claim_id, claim)? {
+            Delivery::Rejected => return Err(VaultError::PaymentRejected),
+            // Part paid, and the rest is still owed, so nothing about where this
+            // claim stands has changed: it keeps its place in the queue or it
+            // keeps its deferral, and the owner calls again when the Vault holds
+            // more. Returning an error here instead would be refusing to hand
+            // over money the Vault has and the caller is owed.
+            Delivery::Partial => {}
+            Delivery::Full => {
+                if deferred {
+                    e.storage().persistent().remove(&Store::Deferred(claim_id));
+                } else {
+                    e.storage().instance().set(&Cfg::QueueHead, &(claim_id + 1));
+                }
+            }
         }
         Self::bump_instance(&e);
         Ok(())
@@ -1130,8 +1152,16 @@ impl Vault {
         let owner = claim.owner.clone();
         let amount = claim.amount;
         let delivered = Self::deliver(&e, claim_id, claim)?;
+        if delivered == Delivery::Partial {
+            // The head does not move. The claim was paid down as far as the
+            // Vault could and is still the next thing owed, which is exactly
+            // where it should be: a partial fill is progress through the queue,
+            // not a step past it.
+            Self::bump_instance(&e);
+            return Ok(claim_id);
+        }
         e.storage().instance().set(&Cfg::QueueHead, &(claim_id + 1));
-        if !delivered {
+        if delivered == Delivery::Rejected {
             // Nothing was written about the payment, which means nothing bumped
             // the claim's TTL either, and this is the claim most likely to sit
             // unwritten for a long time. Postpone its archival explicitly.
@@ -2007,38 +2037,83 @@ impl Vault {
     /// Advancing the head is deliberately not done here. A deferred claim is
     /// collected long after the head has moved past it, and paying one must not
     /// drag the pointer backwards, so the two callers each move it or do not.
-    fn deliver(e: &Env, claim_id: u64, mut claim: Claim) -> Result<bool, VaultError> {
-        if Self::idle_reserves(e.clone()) < claim.amount {
+    /// Pay as much of a claim as the Vault is holding.
+    ///
+    /// It used to pay all of it or refuse the call, and refusing meant one claim
+    /// larger than idle reserves stopped every claim behind it: a 500 USDC claim
+    /// at the head with 100 USDC in the Vault paid nobody and released nothing,
+    /// and the 10 USDC claim behind it waited on capital returning from a pool
+    /// that owed the 500. The holder at the head was not better served by it
+    /// either. Nobody was: it was all-or-nothing on a queue, which is a
+    /// deadlock with a good explanation.
+    ///
+    /// A partial fill pays what is there, reduces the claim by exactly that, and
+    /// leaves it at the head with the remainder still owed. The claim keeps its
+    /// place, so the order of the queue is untouched and the Vault has simply
+    /// paid down as far as it can. `InsufficientLiquidity` is still the answer
+    /// when there is nothing at all to pay with, because then there is no
+    /// partial fill to make.
+    ///
+    /// The anti-dust floor is not applied to a remainder. It gates
+    /// `request_withdrawal`, where its job is to stop a queue being stuffed with
+    /// crumbs, and a residue left by the Vault's own partial payment is not
+    /// somebody gaming the queue: it is the rest of what they are owed, and it
+    /// stays claimable however small it is.
+    fn deliver(e: &Env, claim_id: u64, mut claim: Claim) -> Result<Delivery, VaultError> {
+        let idle = Self::idle_reserves(e.clone());
+        if idle <= 0 {
             return Err(VaultError::InsufficientLiquidity);
         }
+        let pay = if idle < claim.amount { idle } else { claim.amount };
         let usdc = Self::usdc(e.clone())?;
         let delivered = matches!(
             TokenClient::new(e, &usdc).try_transfer(
                 &e.current_contract_address(),
                 &claim.owner,
-                &claim.amount,
+                &pay,
             ),
             Ok(Ok(()))
         );
         if !delivered {
-            return Ok(false);
+            return Ok(Delivery::Rejected);
         }
 
-        claim.claimed = true;
-        Self::write_claim(e, claim_id, &claim);
-        Self::set_queued(
-            e,
-            Self::outstanding_liabilities(e.clone()) - claim.amount,
-        );
-        Self::add_booked(e, -claim.amount);
+        // Both counters move by what was actually paid, whether that closed the
+        // claim or not, which is what keeps a partial fill neutral in the
+        // accounting: `floor_base` is free reserves plus deployed capital plus
+        // recognised losses, and paying a claim lowers the cash and the
+        // liability by the same number.
+        Self::set_queued(e, Self::outstanding_liabilities(e.clone()) - pay);
+        Self::add_booked(e, -pay);
 
-        WithdrawalClaimed {
-            user: claim.owner,
-            claim_id,
-            amount: claim.amount,
+        if pay == claim.amount {
+            claim.claimed = true;
+            Self::write_claim(e, claim_id, &claim);
+            WithdrawalClaimed {
+                user: claim.owner,
+                claim_id,
+                amount: pay,
+            }
+            .publish(e);
+            Ok(Delivery::Full)
+        } else {
+            claim.amount -= pay;
+            let still_owed = claim.amount;
+            let owner = claim.owner.clone();
+            Self::write_claim(e, claim_id, &claim);
+            // Written to, so its TTL moved with it; bumped anyway, because the
+            // one thing a partially filled claim is guaranteed to do is sit
+            // there waiting for more capital.
+            let _ = Self::bump_claim(e.clone(), claim_id);
+            WithdrawalPartiallyFilled {
+                user: owner,
+                claim_id,
+                paid: pay,
+                still_owed,
+            }
+            .publish(e);
+            Ok(Delivery::Partial)
         }
-        .publish(e);
-        Ok(true)
     }
 
     fn set_deferred(e: &Env, claim_id: u64) {
@@ -2104,6 +2179,24 @@ pub struct WithdrawalClaimed {
     #[topic]
     pub claim_id: u64,
     pub amount: i128,
+}
+
+/// Emitted when the Vault paid part of a claim because that is all it was
+/// holding. The claim stays at the head for the rest.
+///
+/// In the stream because a holder needs to know their withdrawal arrived in
+/// pieces and how much is still owed, and because this is the event that says a
+/// queue is being paid down against a Vault that is short rather than stalled,
+/// which is a different thing for anybody watching the protocol's liquidity.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WithdrawalPartiallyFilled {
+    #[topic]
+    pub user: Address,
+    #[topic]
+    pub claim_id: u64,
+    pub paid: i128,
+    pub still_owed: i128,
 }
 
 /// Emitted when `settle_withdrawal` could not hand a claim to its owner and

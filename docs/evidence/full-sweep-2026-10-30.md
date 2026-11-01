@@ -31,7 +31,8 @@ is shared. It is the same two-reporter shape as `smoke-core.sh`, which is proven
 on chain.
 
 **The figures moved.** Measured serially on 31 October: `cargo test --workspace`
-**263 / 0** across twelve crates, `check-deployment-record.sh --wasm`
+**263 / 0** across twelve crates, and **279 / 0** after the nine source fixes
+of 1 November, `check-deployment-record.sh --wasm`
 **81 / 0** and **47 / 0** without it, the two new checks being the second
 private credit instance, whose bytecode the record declares rather than shares
 with the first, `check-doc-entry-points.sh` **10 / 0**: across nine contracts, all **187** live

@@ -241,6 +241,23 @@ pub trait ShareToken {
     fn admin(e: Env) -> Address;
 }
 
+/// Emitted when an exit inside the cooldown was priced at the rate the position
+/// entered at rather than the current one.
+///
+/// In the stream because it is money a staker expected and did not get, and the
+/// difference between the two numbers is exactly what stayed with the holders
+/// who were there for the distribution. A holder who sees this should be able to
+/// read why without asking anybody.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EarlyExitPricedAtEntry {
+    #[topic]
+    pub staker: Address,
+    pub shares: i128,
+    pub at_entry: i128,
+    pub at_current: i128,
+}
+
 /// Emitted when `set_agusd` finds agUSD on this contract that nothing accounts
 /// for and moves it to the admin to clear the way for the repoint.
 ///
@@ -291,6 +308,22 @@ enum Cfg {
 #[contracttype]
 enum Store {
     Pending(Address),
+    /// When a staker last staked and the share price they staked at. Read by
+    /// `request_unstake` to decide whether an exit is being priced on
+    /// appreciation the position was present for. Absent for anybody who
+    /// staked before this was recorded, which is read as "long ago": the cap
+    /// below must not reach backwards into positions that predate it.
+    Entry(Address),
+}
+
+/// A staker's entry point into the pool.
+#[derive(Clone)]
+#[contracttype]
+pub struct Entry {
+    pub staked_at: u64,
+    /// `exchange_rate` at the moment of the stake, which is the price the
+    /// shares were bought at.
+    pub rate: i128,
 }
 
 #[derive(Clone)]
@@ -619,6 +652,19 @@ impl Staking {
         // configured for ninety days could archive itself while people were
         // still staking in it. Four paths move value here and all four bump now.
         tok::bump_instance(&e);
+        // The price this position was bought at, and when. See `request_unstake`
+        // for what it is for. Written after the mint, so the rate it records is
+        // the one the stake has already been priced into, which is the same
+        // number as before it: staking at the current rate does not move the
+        // rate, and that is the property this relies on.
+        Self::write_entry(
+            &e,
+            &from,
+            &Entry {
+                staked_at: e.ledger().timestamp(),
+                rate: Self::exchange_rate(e.clone()),
+            },
+        );
         Staked {
             staker: from,
             assets: amount,
@@ -642,7 +688,61 @@ impl Staking {
             return Err(StakingError::NoSupply);
         }
         let nav = Self::nav(e.clone());
-        let assets = shares * nav / supply;
+        let mut assets = shares * nav / supply;
+
+        // An exit inside the cooldown is priced at no better than the price it
+        // entered at.
+        //
+        // The cooldown delays the cash and it did not delay the pricing, so the
+        // two were different guards and only one of them was there. Stake, wait
+        // for `distribute_yield`, request immediately: the shares appreciated
+        // for the whole distribution while the capital was present for a block
+        // of it, and the cooldown then made the sniper wait for money they had
+        // already been credited with. Every other holder paid for that, because
+        // a distribution is a fixed amount divided by a supply that just grew.
+        //
+        // So a short held position cannot leave on a rate above the one it
+        // arrived at. The difference stays in `nav`, which means it stays with
+        // the holders who were actually there, rather than being burned or
+        // skimmed somewhere. The cap is one sided on purpose: a position whose
+        // price **fell** inside the window takes that loss at the current rate,
+        // because protecting it from a fall would be the same unfairness
+        // pointing the other way.
+        //
+        // Measured against the feed's own cooldown rather than a new constant.
+        // If the protocol's answer to "how long is too short to be paid" is the
+        // cooldown, then it is the same number here, and a deployment that
+        // changes one changes both.
+        //
+        // Two deliberate limits. A staker with no entry recorded is read as
+        // having staked long ago and is not capped, so this cannot reach back
+        // into a position that predates it. And a top-up re-arms the window for
+        // the whole position rather than for the amount added, which is the
+        // conservative direction and costs a long-term holder who tops up the
+        // appreciation of one cooldown; pricing each tranche separately is a
+        // lot of per-staker state for a small gain, and the state is the thing
+        // this contract is careful with.
+        if let Some(en) = e
+            .storage()
+            .persistent()
+            .get::<Store, Entry>(&Store::Entry(from.clone()))
+        {
+            let cooldown: u64 = e.storage().instance().get(&Cfg::Cooldown).unwrap();
+            if e.ledger().timestamp() < en.staked_at.saturating_add(cooldown) {
+                let capped = shares * en.rate / ONE;
+                if capped < assets {
+                    EarlyExitPricedAtEntry {
+                        staker: from.clone(),
+                        shares,
+                        at_entry: capped,
+                        at_current: assets,
+                    }
+                    .publish(&e);
+                    assets = capped;
+                }
+            }
+        }
+
         let shares_token = Self::shares(e.clone())?;
         SharesClient::new(&e, &shares_token).burn(&from, &shares);
         e.storage().instance().set(&Cfg::Supply, &(supply - shares));
@@ -1004,6 +1104,14 @@ impl Staking {
 
     /// One place that writes a pending record, so there is one place that can
     /// forget to extend it.
+    fn write_entry(e: &Env, addr: &Address, en: &Entry) {
+        let key = Store::Entry(addr.clone());
+        e.storage().persistent().set(&key, en);
+        e.storage()
+            .persistent()
+            .extend_ttl(&key, PENDING_LIFETIME, PENDING_BUMP);
+    }
+
     fn write_pending(e: &Env, addr: &Address, p: &Pending) {
         let key = Store::Pending(addr.clone());
         e.storage().persistent().set(&key, p);

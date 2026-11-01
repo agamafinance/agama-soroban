@@ -21,6 +21,16 @@ struct Fix {
     admin: Address,
 }
 
+/// Move the clock past the cooldown, so an exit is priced at the current rate
+/// rather than capped at the rate it entered at. Several of these tests stake,
+/// distribute and unstake in the same instant, which is the sniping shape
+/// `request_unstake` now prices against, so they say out loud that the holder
+/// waited.
+fn hold_past_cooldown(f: &Fix) {
+    f.e.ledger()
+        .set_timestamp(f.e.ledger().timestamp() + COOLDOWN + 1);
+}
+
 fn setup() -> Fix {
     let e = Env::default();
     e.mock_all_auths();
@@ -99,18 +109,23 @@ fn full_yield_flow() {
     let bob_shares = f.vault.stake(&bob, &110_0000000);
     assert_eq!(bob_shares, 100_0000000);
 
-    // Alice unstakes all her shares: 1000 shares now worth 1100 agUSD.
+    // Alice unstakes all her shares: 1000 shares now worth 1100 agUSD. She has
+    // held them across the appreciation, which is the whole point of her being
+    // paid for it.
+    hold_past_cooldown(&f);
     let assets = f.vault.request_unstake(&alice, &1_000_0000000);
     assert_eq!(assets, 1_100_0000000);
     let p = f.vault.pending(&alice);
     assert_eq!(p.assets, 1_100_0000000);
-    assert_eq!(p.claimable_at, 1_000 + COOLDOWN);
+    assert_eq!(p.claimable_at, f.e.ledger().timestamp() + COOLDOWN);
 
     // Cooldown not elapsed -> claim must fail.
     assert!(f.vault.try_claim(&alice).is_err());
 
-    // Advance past cooldown and claim.
-    f.e.ledger().set_timestamp(1_000 + COOLDOWN + 1);
+    // Advance past cooldown and claim. Relative to now, because the stake was
+    // already held past one cooldown before the unstake was requested.
+    f.e.ledger()
+        .set_timestamp(f.vault.pending(&alice).claimable_at + 1);
     let claimed = f.vault.claim(&alice);
     assert_eq!(claimed, 1_100_0000000);
     assert_eq!(f.ag.balance(&alice), 1_100_0000000);
@@ -161,6 +176,7 @@ fn the_agusd_pointer_moves_before_the_first_stake_and_never_after() {
     // Unwinding to zero does not reopen it. The counter records that custody
     // happened, not what is being held right now, and a pending unstake can
     // outlive the shares that created it.
+    hold_past_cooldown(&f);
     let assets = f.vault.request_unstake(&alice, &(100 * ONE));
     assert_eq!(assets, 100 * ONE);
     assert_eq!(f.vault.total_shares(), 0);
@@ -284,6 +300,7 @@ fn the_defindex_reading_is_what_unstaking_actually_pays() {
     let via_rate = 3 * ONE * f.vault.exchange_rate() / ONE;
 
     // What the contract pays for exactly those shares.
+    hold_past_cooldown(&f);
     f.vault.request_unstake(&alice, &(3 * ONE));
     assert_eq!(f.vault.pending(&alice).assets, quoted);
 
@@ -377,6 +394,7 @@ fn yield_into_an_empty_pool_is_refused_rather_than_held_for_whoever_arrives() {
     f.vault.stake(&alice, &MIN_FIRST_STAKE);
     f.vault.distribute_yield(&orphaned);
     assert_eq!(f.vault.nav(), MIN_FIRST_STAKE + orphaned);
+    hold_past_cooldown(&f);
     assert_eq!(
         f.vault.request_unstake(&alice, &MIN_FIRST_STAKE),
         MIN_FIRST_STAKE + orphaned,
@@ -503,9 +521,14 @@ fn the_admin_cannot_reprice_shares_without_moving_the_agusd_behind_them() {
     assert!(mallory_shares * 1_000 < alice_shares);
 
     // And unstaking returns what was put in, not a share of Alice's position.
+    // Mallory's exit is inside the cooldown and is capped at the price she paid,
+    // which for a 99 stroop stake at a rate above par is the same answer the
+    // old arithmetic gave: she gets back what she put in and no more.
     let owed = f.vault.request_unstake(&mallory, &mallory_shares);
     assert!(owed <= 99);
-    // Alice is untouched, and better off by the delivered yield.
+    // Alice is untouched, and better off by the delivered yield. She held it,
+    // which is the condition for being paid for it.
+    hold_past_cooldown(&f);
     let alice_owed = f.vault.request_unstake(&alice, &alice_shares);
     assert!(alice_owed >= 1_099 * ONE);
 }
@@ -1098,4 +1121,101 @@ fn every_path_that_moves_value_extends_the_instance_ttl() {
         .set_timestamp(f.e.ledger().timestamp() + COOLDOWN + 1);
     f.vault.claim(&alice);
     assert_eq!(ttl(&f), after_stake, "claim bumped it back");
+}
+
+/// The sniping flow, which the cooldown did not stop.
+///
+/// The cooldown delays the cash and it did not delay the pricing, so the two
+/// were different guards and only one of them existed. Stake, wait for a
+/// distribution, request immediately: the shares appreciated for the whole
+/// distribution while the capital was present for a moment of it, and every
+/// other holder paid for that, because a distribution is a fixed amount divided
+/// by a supply that just grew.
+#[test]
+fn a_position_held_for_a_moment_does_not_collect_a_distribution() {
+    let f = setup();
+    let alice = Address::generate(&f.e);
+    fund_agusd(&f, &alice, 1_000 * ONE);
+    f.vault.stake(&alice, &(1_000 * ONE));
+
+    // The sniper arrives, with the same capital Alice has.
+    let mallory = Address::generate(&f.e);
+    fund_agusd(&f, &mallory, 1_000 * ONE);
+    let mallory_shares = f.vault.stake(&mallory, &(1_000 * ONE));
+    assert_eq!(f.vault.exchange_rate(), ONE, "no appreciation yet");
+
+    // 200 agUSD of yield, over a supply the sniper has just doubled.
+    fund_agusd(&f, &f.admin, 200 * ONE);
+    f.vault.distribute_yield(&(200 * ONE));
+    assert_eq!(f.vault.nav(), 2_200 * ONE);
+
+    // Out immediately. The current rate would pay 1100, half the distribution
+    // for none of the holding, and it pays 1000: the price the position was
+    // bought at.
+    let owed = f.vault.request_unstake(&mallory, &mallory_shares);
+    assert_eq!(owed, 1_000 * ONE, "what went in, and not a stroop of the yield");
+
+    // Which is not burned and not skimmed. It stayed in the pool, so it is
+    // Alice's, who was there for it.
+    let alice_shares = f.vault.balance(&alice);
+    hold_past_cooldown(&f);
+    let alice_owed = f.vault.request_unstake(&alice, &alice_shares);
+    assert_eq!(
+        alice_owed,
+        1_200 * ONE,
+        "the whole distribution, which is what it would have been \
+         had the sniper never arrived"
+    );
+    assert_eq!(f.vault.nav(), 0);
+}
+
+#[test]
+fn the_cap_is_one_sided_so_a_fall_inside_the_window_is_still_taken() {
+    // Protecting a short held position from a drop would be the same unfairness
+    // pointing the other way: it would hand the loss to the holders who stayed.
+    let f = setup();
+    let alice = Address::generate(&f.e);
+    fund_agusd(&f, &alice, 1_000 * ONE);
+    f.vault.stake(&alice, &(1_000 * ONE));
+
+    let bob = Address::generate(&f.e);
+    fund_agusd(&f, &bob, 1_000 * ONE);
+    let bob_shares = f.vault.stake(&bob, &(1_000 * ONE));
+
+    // A loss: the only lever that lowers the rate without moving shares is the
+    // agUSD leaving, which a pending unstake does. Alice takes half out and
+    // leaves the pool smaller per share than Bob entered at.
+    let alice_shares = f.vault.balance(&alice);
+    hold_past_cooldown(&f);
+    f.vault.request_unstake(&alice, &(alice_shares / 2));
+    let rate_now = f.vault.exchange_rate();
+
+    // Bob exits inside his own window and is priced at the current rate,
+    // because it is the lower of the two.
+    let owed = f.vault.request_unstake(&bob, &bob_shares);
+    assert_eq!(owed, bob_shares * rate_now / ONE);
+}
+
+#[test]
+fn a_position_that_predates_the_cap_is_not_reached_by_it() {
+    // Nobody who staked before an entry was recorded should be repriced by a
+    // rule that did not exist when they arrived, so a missing record reads as
+    // "staked long ago" rather than "staked now".
+    let f = setup();
+    let alice = Address::generate(&f.e);
+    fund_agusd(&f, &alice, 1_000 * ONE);
+    let shares = f.vault.stake(&alice, &(1_000 * ONE));
+
+    // Erase the entry, which is the state an upgrade leaves behind.
+    let v = f.vault.address.clone();
+    f.e.as_contract(&v, || {
+        f.e.storage()
+            .persistent()
+            .remove(&Store::Entry(alice.clone()))
+    });
+
+    fund_agusd(&f, &f.admin, 100 * ONE);
+    f.vault.distribute_yield(&(100 * ONE));
+    let owed = f.vault.request_unstake(&alice, &shares);
+    assert_eq!(owed, 1_100 * ONE, "priced at the current rate, uncapped");
 }
