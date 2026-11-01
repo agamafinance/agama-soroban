@@ -28,6 +28,11 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 NET=${NET:-testnet}
 SRC=${SRC:-agama-poc}
+# Stand aside while a suite holds this account, rather than becoming the second
+# signer on its sequence number. See lib-keeper-lock.sh for what that cost.
+# shellcheck source=lib-keeper-lock.sh
+. "$(dirname "$0")/lib-keeper-lock.sh"
+keeper_stand_aside_if_suite_running "$SRC" || exit 0
 REPORTER2_KEY=${REPORTER2_KEY:-agama-oracle-2}
 DEP=deployments/testnet.json
 

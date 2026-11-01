@@ -21,6 +21,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 NET=${NET:-testnet}
 SRC=${SRC:-agama-poc}
+# Stand aside while a suite holds this account, rather than becoming the second
+# signer on its sequence number. See lib-keeper-lock.sh for what that cost.
+# shellcheck source=lib-keeper-lock.sh
+. "$(dirname "$0")/lib-keeper-lock.sh"
+keeper_stand_aside_if_suite_running "$SRC" || exit 0
 SPREAD_BPS=${SPREAD_BPS:-10}
 SIZE=${SIZE:-1000000000}          # 100 sagUSD a side
 # USDC this keeper will not commit, whatever the size says. An offer locks its

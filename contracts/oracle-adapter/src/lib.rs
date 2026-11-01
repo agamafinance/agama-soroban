@@ -192,6 +192,9 @@ pub enum OracleError {
     /// delay had run out. The announcement stands; repeat the call once
     /// `pending_quorum_reduction` says it is ready.
     QuorumReductionNotReady = 519,
+    /// The report's own timestamp is already outside the feed's staleness
+    /// window, so storing it would store a value that is expired on arrival.
+    ReportAlreadyStale = 520,
 }
 
 /// Per feed validation guards, fixed at registration time.
@@ -884,6 +887,26 @@ impl OracleAdapter {
         }
         if timestamp > e.ledger().timestamp() {
             return Err(OracleError::TimestampInFuture);
+        }
+        // And a reading that is already expired on arrival is refused.
+        //
+        // The staleness window is measured against the timestamp the reporter
+        // attests to, so a reporter could attest to a reading older than the
+        // window and have it stored: a value that is stale the instant it
+        // lands, which every reader then treats as current until the window
+        // runs out again from the moment of its own obsolescence. The guard was
+        // one sided, refusing a timestamp in the future and accepting one from
+        // arbitrarily far in the past.
+        //
+        // This is the on-chain half of the control. The other half cannot live
+        // here: the contract cannot tell a value the reporter re-read from one
+        // it reposted unchanged, because an unchanged number is legitimate and
+        // common, a peg sitting at par or a deterministic bond price that did
+        // not move. That half is the keeper's, and `keeper-reflector.sh` and
+        // `keeper-etherfuse.sh` both refuse to submit when their own upstream
+        // has stalled rather than pushing an old number under a new timestamp.
+        if e.ledger().timestamp().saturating_sub(timestamp) >= feed.staleness_secs {
+            return Err(OracleError::ReportAlreadyStale);
         }
 
         let threshold = Self::threshold_for(e, feed_id);

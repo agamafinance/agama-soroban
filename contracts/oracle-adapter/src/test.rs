@@ -645,11 +645,51 @@ fn the_reference_value_outlives_the_old_temporary_ttl() {
             .try_push_nav(&f.reporter, &FEED_PC_NAV, &(ONE * 2), &(T0 + 45 * 86_400)),
         Err(Ok(OracleError::DeviationOutOfBounds))
     );
+    // A timestamp from before the stored point is refused, and at this clock
+    // the first thing wrong with it is its age rather than its order: 45 days
+    // is outside PC_NAV's seven day window, so the reading is expired on
+    // arrival. Monotonicity is asserted on its own at a clock where it is the
+    // binding problem, four times in this file.
     assert_eq!(
         f.oracle
             .try_push_nav(&f.reporter, &FEED_PC_NAV, &ONE, &(T0 - 1)),
-        Err(Ok(OracleError::NonMonotonicTimestamp))
+        Err(Ok(OracleError::ReportAlreadyStale))
     );
+}
+
+/// The staleness window was measured against the timestamp the reporter
+/// attests to and nothing checked that timestamp was inside it, so the guard
+/// was one sided: a timestamp in the future was refused and one from
+/// arbitrarily far in the past was stored. A value that is expired on arrival
+/// then reads as current to every caller until the window runs out again from
+/// the moment of its own obsolescence.
+#[test]
+fn a_reading_already_outside_its_window_is_refused_on_arrival() {
+    let f = setup();
+    let window = f.oracle.get_feed(&FEED_PC_NAV).staleness_secs;
+    f.e.ledger().set_timestamp(T0 + 10 * window);
+
+    // One second past the window: refused.
+    assert_eq!(
+        f.oracle.try_push_nav(
+            &f.reporter,
+            &FEED_PC_NAV,
+            &ONE,
+            &(f.e.ledger().timestamp() - window)
+        ),
+        Err(Ok(OracleError::ReportAlreadyStale))
+    );
+    assert_eq!(
+        f.oracle.try_get_nav(&FEED_PC_NAV),
+        Err(Ok(OracleError::NoNavReported)),
+        "and nothing was stored"
+    );
+
+    // One second inside it: accepted, and it is the reading the feed holds.
+    let fresh = f.e.ledger().timestamp() - window + 1;
+    f.oracle.push_nav(&f.reporter, &FEED_PC_NAV, &ONE, &fresh);
+    assert_eq!(f.oracle.get_nav(&FEED_PC_NAV), ONE);
+    assert_eq!(f.oracle.last_update(&FEED_PC_NAV).timestamp, fresh);
 }
 
 /// Admin rotation, in the two steps that make it safe: a proposal that changes

@@ -541,23 +541,52 @@ assert_eq "the two admins agree to start with" "$(q "$ENGINE" admin_aligned)" tr
 assert_eq "and the Engine reports the Vault's admin" "$(q "$ENGINE" vault_admin)" "$ADMIN"
 
 echo "  hand the Engine's admin to alice, and leave the Vault's where it is."
-echo "    propose_admin    tx $(tx "$ENGINE" propose_admin --admin "$ADMIN" --new_admin "$OTHER_ADDR")"
-echo "    accept_admin     tx $(tx_as $OTHER "$ENGINE" accept_admin --new_admin "$OTHER_ADDR")  (signed by alice, which is the whole point of the second step)"
-assert_eq "the Engine's admin is alice now" "$(q "$ENGINE" admin)" "$OTHER_ADDR"
-assert_eq "and the divergence is readable in one call, before any incident" \
-  "$(q "$ENGINE" admin_aligned)" false
-refused_as $OTHER 418 "write_down refuses with a named AdminMismatch" \
-  "$ENGINE" write_down --admin "$OTHER_ADDR" --pool_id "$PC" --amount 1 --reason DEFAULT
-refused_as $OTHER 418 "and so does recover, for the same reason" \
-  "$ENGINE" recover --admin "$OTHER_ADDR" --pool_id "$PC"
-refused 402 "the Vault's admin is not the Engine's admin any more either" \
-  "$ENGINE" write_down --admin "$ADMIN" --pool_id "$PC" --amount 1 --reason DEFAULT
+# Both steps are checked for having landed before anything is asserted about the
+# state they were supposed to produce.
+#
+# This section read five protocol failures off one dropped transaction. The
+# operator key signs for the oracle keepers too, under launchd, every ten
+# minutes, so a suite and a keeper can reach for the same sequence number:
+# propose_admin came back TxBadSeq, the rotation never happened, and the five
+# assertions below compared the Engine against an admin it had never been given.
+# A step that did not happen is a skip. That rule is written in this
+# repository's own sweep document and this was the second place that did not
+# follow it.
+PROP=$(tx "$ENGINE" propose_admin --admin "$ADMIN" --new_admin "$OTHER_ADDR")
+echo "    propose_admin    tx $PROP"
+if [ "$(q0 "$ENGINE" pending_admin)" != "$OTHER_ADDR" ]; then
+  echo "  SKIP  the proposal did not land ($PROP), so there is no rotation to"
+  echo "        walk. The operator key also signs for the keepers, which run"
+  echo "        every ten minutes, and two signers reaching for one sequence"
+  echo "        number is TxBadSeq. Nothing below is asserted against a"
+  echo "        handover that never started."
+else
+  echo "    accept_admin     tx $(tx_as $OTHER "$ENGINE" accept_admin --new_admin "$OTHER_ADDR")  (signed by alice, which is the whole point of the second step)"
+  if [ "$(q "$ENGINE" admin)" != "$OTHER_ADDR" ]; then
+    echo "  SKIP  the acceptance did not land, so the role did not move. The"
+    echo "        proposal stands and is readable in pending_admin; the four"
+    echo "        assertions about a diverged admin are about a state this run"
+    echo "        did not reach."
+  else
+    ok "the Engine's admin is alice now ($OTHER_ADDR)"
+    assert_eq "and the divergence is readable in one call, before any incident" \
+      "$(q "$ENGINE" admin_aligned)" false
+    refused_as $OTHER 418 "write_down refuses with a named AdminMismatch" \
+      "$ENGINE" write_down --admin "$OTHER_ADDR" --pool_id "$PC" --amount 1 --reason DEFAULT
+    refused_as $OTHER 418 "and so does recover, for the same reason" \
+      "$ENGINE" recover --admin "$OTHER_ADDR" --pool_id "$PC"
+    refused 402 "the Vault's admin is not the Engine's admin any more either" \
+      "$ENGINE" write_down --admin "$ADMIN" --pool_id "$PC" --amount 1 --reason DEFAULT
 
-echo "  give it back, the same way round."
-echo "    propose_admin    tx $(tx_as $OTHER "$ENGINE" propose_admin --admin "$OTHER_ADDR" --new_admin "$ADMIN")"
-echo "    accept_admin     tx $(tx "$ENGINE" accept_admin --new_admin "$ADMIN")"
-assert_eq "the Engine's admin is back" "$(q "$ENGINE" admin)" "$ADMIN"
-assert_eq "and the two agree again" "$(q "$ENGINE" admin_aligned)" true
+    echo "  give it back, the same way round."
+    echo "    propose_admin    tx $(tx_as $OTHER "$ENGINE" propose_admin --admin "$OTHER_ADDR" --new_admin "$ADMIN")"
+    echo "    accept_admin     tx $(tx "$ENGINE" accept_admin --new_admin "$ADMIN")"
+    # Loud and not a skip, because leaving the Engine's admin on a throwaway key
+    # is the one outcome here that damages the deployment rather than the run.
+    assert_eq "the Engine's admin is back" "$(q "$ENGINE" admin)" "$ADMIN"
+    assert_eq "and the two agree again" "$(q "$ENGINE" admin_aligned)" true
+  fi
+fi
 fi
 
 # ---------------------------------------------------------------------------
