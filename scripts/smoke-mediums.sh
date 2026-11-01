@@ -562,7 +562,13 @@ if [ "$(q0 "$ENGINE" pending_admin)" != "$OTHER_ADDR" ]; then
   echo "        handover that never started."
 else
   echo "    accept_admin     tx $(tx_as $OTHER "$ENGINE" accept_admin --new_admin "$OTHER_ADDR")  (signed by alice, which is the whole point of the second step)"
-  if [ "$(q "$ENGINE" admin)" != "$OTHER_ADDR" ]; then
+  # q0 and not q. `q` returns the CLI's output verbatim, which for an address is
+  # a quoted string, so comparing it against a bare address is never equal and
+  # this branch always fired. The suite therefore skipped the handback on every
+  # run that worked, and left the Engine's admin on a throwaway identity: the
+  # exact outcome the comment below says is the one worth being loud about, and
+  # the comparison meant to protect against it was the thing causing it.
+  if [ "$(q0 "$ENGINE" admin)" != "$OTHER_ADDR" ]; then
     echo "  SKIP  the acceptance did not land, so the role did not move. The"
     echo "        proposal stands and is readable in pending_admin; the four"
     echo "        assertions about a diverged admin are about a state this run"
