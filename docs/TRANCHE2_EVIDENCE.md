@@ -192,12 +192,24 @@ charge reached zero on its own through recoveries during the suites; the cross
 chain charge did not, and `decisions.crossChainWriteOffCleared` says exactly what
 clearing it was, including the part that was not a recovery.
 
-**`treeAheadOfLedger` was five entries yesterday and is three now**: the Vault,
-staking and the cross chain adapter. The first two hold seven of the eight
-undeployed fixes and are blocked on 8.19 sagUSD in two accounts nobody here can
-sign for. The third was built, tested and ready, and stopped on `max_fee_bps`
-being stored by the live contract and exposed by nothing, so the value could not
-be carried across. The reason
+The cross chain adapter went out the same day, and the reason it had stopped is
+worth writing down because it was not a real obstacle. Its replacement was
+abandoned once on `max_fee_bps`: the constructor stored it and no entry point
+returned it, so the fee ceiling on an irreversible path could not be carried to a
+replacement without guessing, and guessing it is how a migration meant to change
+nothing changes something. The value was never hidden. Instance storage is a
+ledger entry and a ledger entry can be read whether or not the contract has an
+opinion about it, which is now `scripts/read-instance-storage.sh`. Every one of
+the nine constructor arguments was read off the outgoing contract rather than
+typed, and the replacement was compared to it field by field afterwards: same
+engine, same vault, same admin, same domain, same recipient, same 10 bps ceiling.
+The getter it lacked is on the replacement, with a comment saying what its
+absence cost.
+
+**`treeAheadOfLedger` was five entries yesterday and is two now**: the Vault and
+staking. They hold seven of the eight undeployed fixes and both are blocked on
+the same thing, 8.19 sagUSD in two accounts nobody here can sign for, because
+`deploy-vault-generation.sh` refuses to strand a holder. The reason
 is the same in every case and it is not a scheduling excuse: no contract in this
 repository has an `upgrade` entry point, by design, so a fix means a
 redeployment, which is exactly what the Oracle Adapter just had and why its three

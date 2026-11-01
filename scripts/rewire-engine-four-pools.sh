@@ -62,13 +62,20 @@ num(){ printf '%s' "${1:-}" | tr -d '"'; }
 assert_eq() { if [ "$(num "$2")" = "$(num "$3")" ]; then ok "$1 ($(num "$2"))"; else bad "$1: got $(num "$2"), want $(num "$3")"; fi; }
 # A call that did not land says so rather than printing an empty hash, which at
 # a glance reads exactly like one that worked.
+# Errors are looked for first, and that order is the whole point. The previous
+# version searched the output for a 64 hex transaction hash and reported success
+# on the first match, but --recipient is 64 hex characters, so a call refused
+# with #715 printed its own argument back and was read as a hash. It reported
+# three refusals as landed transactions.
 _tx() {
-  local out h
+  local out err h
   out=$("$@" 2>&1) || true
-  h=$(printf '%s' "$out" | grep -oE '[0-9a-f]{64}' | head -1 || true)
+  err=$(printf '%s' "$out" | tr '\n' ' ' | grep -oE 'Error\(Contract, #[0-9]+\)|TxBadSeq|error: [^ ]+' | head -1 || true)
+  if [ -n "$err" ]; then printf 'FAILED %s' "$err"; return 1; fi
+  h=$(printf '%s' "$out" | grep -oE 'Transaction hash is [0-9a-f]{64}' | grep -oE '[0-9a-f]{64}' | head -1 || true)
+  [ -n "$h" ] || h=$(printf '%s' "$out" | grep -oE '[0-9a-f]{64}' | head -1 || true)
   if [ -n "$h" ]; then printf '%s' "$h"; return 0; fi
-  printf 'FAILED %s' "$(printf '%s' "$out" | tr '\n' ' ' | grep -oE '#[0-9]+|TxBadSeq|error: [^ ]+' | head -1)"
-  return 1
+  printf 'landed, no hash printed'
 }
 tx() { _tx stellar contract invoke --id "$1" --source "$SRC" --network "$NET" -- "${@:2}"; }
 

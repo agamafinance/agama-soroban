@@ -14,7 +14,7 @@
     "allocationEngine": "CBHCK63AKHZLE6ZLFFPJHRGPXS2I33F5RFA2ARBFDMXDNJTWGYGMEPP7",
     "oracleAdapter": "CBJ3OZ4W7ZUUMYFVO3T62FAE6H4APV7L4YPETT7VJAHDKEPEWOQQRLCV",
     "agusdCore": "CADD22PHOXWHYVCQ3K5DWIHPUNA5USTHBPOCBE2KDCYNUEBUGFAHH33R",
-    "cctpAdapter": "CDSO4GJRY7BFVMQ4PYP3ISVOFPQLPA3C7ZFT5HQOUDM3VXTGOUWUWFML"
+    "cctpAdapter": "CAY4GXTULXLQUQZ3VDFUA4ULEQOKJKLG2RFAXDBF56VSDLI6WT2RHUXS"
   },
   "creditVaults": {
     "payment-financing": "CAUFXVGKB2OKEDDO6SDWH4ZSWXJ37T2WYKEVUTBOCWZAFEUTGCFYQEF4",
@@ -55,7 +55,7 @@
         "note": "Replaced again on 2026-10-31, from the same source plus two fixes a full unwind found: deallocate rounded units up and the pool rounded proceeds down, so a ceil followed by a floor could land a stroop short; and recover_surplus redeemed units to realise a mark-to-market gain, which left fewer units behind the same cost basis and made the position unable to return what the Engine had booked once the price retraced. Only cash is swept now, except for a position that backs nothing after a write-down. The adapter it replaced is retired with zero exposure and no write-off charge."
       },
       "cross-chain": {
-        "address": "CDSO4GJRY7BFVMQ4PYP3ISVOFPQLPA3C7ZFT5HQOUDM3VXTGOUWUWFML",
+        "address": "CAY4GXTULXLQUQZ3VDFUA4ULEQOKJKLG2RFAXDBF56VSDLI6WT2RHUXS",
         "originator": "ABF",
         "jurisdiction": "JE",
         "capBps": 4000,
@@ -762,6 +762,14 @@
       "address": "CBDVZPMBUQQ6OML3WTT4TP6QIOJDRC4BWYXR7UZQAAZG2LETAVZE6FFD",
       "supersededBy": "allocationEngine",
       "reason": "Replaced by scripts/rewire-engine-four-pools.sh so that the deployed Engine is the one in this repository. No entry point changed and none of this is a feature: the Engine lists the pool adapters as regular dependencies rather than dev ones, so editing an adapter moves the Engine's bytecode while its interface stays identical, and that drift had been declared under treeAheadOfLedger since 2026-10-31. It could not be cleared until 2026-11-01, because this migration refuses to start on a book whose written_off is not zero and the cross chain pool carried a charge until the operator cleared it; see decisions.crossChainWriteOffCleared, which says what that clearing actually was. All four pools were carried with their originators, jurisdictions and caps, read out of this record rather than typed into the script, because the migration this replaces was written for two."
+    },
+    {
+      "contract": "cctpAdapter",
+      "generation": 1,
+      "label": "CCTP adapter, generation 1",
+      "address": "CDSO4GJRY7BFVMQ4PYP3ISVOFPQLPA3C7ZFT5HQOUDM3VXTGOUWUWFML",
+      "supersededBy": "cctpAdapter",
+      "reason": "Replaced by scripts/rewire-cctp.sh to put set_destination behind a 72 hour announce then apply delay and to expose max_fee_bps, which the outgoing contract stored and no entry point returned. That missing getter is why this migration was abandoned on its first attempt the same day: there was no way to carry the fee ceiling across without guessing it. Instance storage turned out to be readable as a ledger entry regardless of what the contract exposes, so every constructor argument here was read off the outgoing contract by scripts/read-instance-storage.sh rather than typed, and the replacement was checked field by field against it afterwards. The fee ceiling is 10 bps on both. The adapter is also the cross-chain pool, so it was unregistered and the replacement registered with the same originator, jurisdiction and cap."
     }
   ],
   "oracleFeedGuards": "The band bounds every report including the first, which a deviation bound cannot reach because a bound on a move needs something to move from. The minimum interval is measured in ledger time between accepted values, not in the timestamps the reporter supplies, because the reporter chooses those. The reference point is persistent, so it cannot expire out from under the checks that read it.",
@@ -1060,16 +1068,6 @@
       "entryPointsNotDeployed": [],
       "provenBy": "cargo test -p staking",
       "note": "The tree is ahead of the ledger by four fixes and no entry point, so the interface is identical and the bytecode is not. (1) stake refuses a first stake under MIN_FIRST_STAKE, one agUSD: a one stroop opening stake sets the share price at one stroop, and a distribution into that supply prices every later staker out or taxes them the truncation. (2) distribute_yield refuses an empty supply instead of making the next staker a present of the whole amount. (3) all four paths that move value extend the instance TTL, which none of them did. (4) set_agusd sweeps an unaccounted stray balance to the admin instead of refusing the repoint on it, which handed anybody a permanent veto over the pointer for one stroop. Not deployed because staking cannot be replaced on its own: agusd-core::set_minter freezes after the first mint, so the Vault and agUSD move with it, which is the generation migration in scripts/deploy-vault-generation.sh and retires the generation Tranche 2 is proven on. Of the four, only (1) and (2) are reachable on this instance and both need a supply of zero, which it does not have. And a fifth, added the same day: an exit inside the cooldown is priced at no better than the rate it entered at. The cooldown delayed the cash and not the pricing, so stake, wait for distribute_yield, request immediately was a complete flow and every other holder paid for it. The difference stays in nav, so it stays with the holders who were there. One sided on purpose: a fall inside the window is still taken at the current rate. A staker with no recorded entry is read as having staked long ago, so the rule cannot reach back into a position that predates it, which is the state this instance is in for every holder it has."
-    },
-    {
-      "contract": "cctpAdapter",
-      "address": "CDSO4GJRY7BFVMQ4PYP3ISVOFPQLPA3C7ZFT5HQOUDM3VXTGOUWUWFML",
-      "entryPointsNotDeployed": [
-        "pending_destination",
-        "max_fee_bps"
-      ],
-      "provenBy": "cargo test -p cctp-adapter",
-      "note": "set_destination is behind a 72 hour delay in the tree: announced by one call, applied by a second with the same domain and recipient. The exposure lock was described in the source as the whole safety property in front of the pointer and it is not, because the admin holds both ends of it. write_down zeroes exposure with no cash moving and is admin only, so the sequence is write the position off, find the lock open, repoint at an address of your own, and the next allocate burns the Vault USDC towards it. A delay rather than a second role, because a second role on a one-operator deployment is two keys in the same hand. The lock stays as well. Not deployed because unregister_pool refuses to remove a pool carrying a write-off charge and this one carries one, so replacing the adapter means the Engine moves too. It ships with mainnet, where decisions.crossChainToMainnet also requires the allowlist that is the other half of this. Second entry point added 2026-11-01 and the reason is the thing that stopped the replacement going out that day: max_fee_bps was stored by the constructor and exposed by nothing. It bounds what CCTP may charge on a burn that cannot be undone, and a configuration value with no getter can neither be migrated faithfully nor checked by a reviewer. The replacement was built, the write-off charge that blocked unregister_pool was cleared, and the deployment stopped on not being able to read one number off the contract being replaced. It goes out with mainnet, where every contract is deployed fresh and there is nothing to carry across."
     }
   ],
   "decisions": {
