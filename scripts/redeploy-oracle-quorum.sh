@@ -48,13 +48,17 @@ q()  { stellar contract invoke --id "$1" --source "$SRC" --network "$NET" --send
 q0() { q "$@" | tr -d '"'; }
 tx() { stellar contract invoke --id "$1" --source "$SRC" --network "$NET" -- "${@:2}" 2>&1 \
          | grep -oE '[0-9a-f]{64}' | head -1; }
+# Signed by somebody other than $SRC. Needed since the oracle admin stopped
+# being a reporter: carrying a value across now takes two reporter signatures.
+tx_as() { stellar contract invoke --id "$2" --source "$1" --network "$NET" -- "${@:3}" 2>&1 \
+         | grep -oE '[0-9a-f]{64}' | head -1; }
 
 echo "vault (kept)     = $VAULT"
 echo "outgoing oracle  = $OLD_ORACLE"
 
 echo ""
 echo "==> the values the outgoing feeds are carrying, to be restored"
-for f in USDC_USD PC_NAV EF_BOND; do
+for f in USDC_USD PC_NAV PC_NAV2 EF_BOND; do
   printf -v "NAV_$f" '%s' "$(q0 "$OLD_ORACLE" get_nav --feed_id "$f")"
   eval "echo \"    $f = \$NAV_$f\""
 done
@@ -83,7 +87,7 @@ for R in $(j "' '.join(d['oracleReporters']['addresses'])"); do
   [ "$R" = "$ADMIN" ] && { echo "    refusing to make the admin a reporter"; exit 1; }
   echo "    add_reporter ${R:0:8}  tx $(tx "$ORACLE" add_reporter --admin "$ADMIN" --reporter "$R")"
 done
-for f in USDC_USD PC_NAV EF_BOND; do
+for f in USDC_USD PC_NAV PC_NAV2 EF_BOND; do
   S=$(j "d['oracleFeeds']['$f']['stalenessSecs']")
   D=$(j "d['oracleFeeds']['$f']['deviationBps']")
   MIN=$(j "d['oracleFeeds']['$f']['minNav']")
@@ -94,19 +98,57 @@ for f in USDC_USD PC_NAV EF_BOND; do
 done
 
 echo ""
+echo "==> the quorum, before any value is carried"
+# Before, and not after. A feed registered at the default threshold of 1 commits
+# on the first of the two votes below, so the round that was meant to prove two
+# reporters agreed would prove one reporter pushed, and the threshold would then
+# be raised over a value that never needed it. The script did not set the
+# threshold at all, which is how a replacement for the contract that introduced
+# the quorum would have come up without one.
+for f in USDC_USD PC_NAV PC_NAV2 EF_BOND; do
+  echo "    set_quorum_threshold $f = 2  tx $(tx "$ORACLE" set_quorum_threshold --admin "$ADMIN" --feed_id "$f" --threshold 2)"
+  assert_eq "$f is at two before a value is carried" "$(q0 "$ORACLE" quorum_threshold --feed_id "$f")" "2"
+done
+
+echo ""
 echo "==> restoring the values, one report per feed"
 # A reported timestamp ahead of the ledger's close time is refused as being
 # in the future, and the local clock can be a few seconds ahead of it. Backing
 # off a minute costs nothing: every feed's staleness window is hours or days.
 NOW=$(( $(date -u +%s) - 60 ))
-for f in USDC_USD PC_NAV EF_BOND; do
+# Two reporter signatures per feed, and neither of them the admin.
+#
+# This was one push_nav signed by $ADMIN, which stopped working twice over on
+# 2026-10-31: the admin was taken out of the reporter set, so it returns #503
+# NotAReporter, and every feed runs at a quorum of two, so a single vote records
+# a vote and commits nothing. A script that carries values across and silently
+# carries none would leave the replacement with no value on any feed, which is
+# every reader of it reverting until somebody noticed.
+R1=${R1:-agama-oracle-2}
+R2=${R2:-agama-reporter-2}
+R1_ADDR=$(stellar keys address "$R1")
+R2_ADDR=$(stellar keys address "$R2")
+[ "$R1_ADDR" = "$ADMIN" ] || [ "$R2_ADDR" = "$ADMIN" ] && {
+  echo "one of the reporter identities is the admin, which is the hole this fixed"; exit 1; }
+for f in USDC_USD PC_NAV PC_NAV2 EF_BOND; do
   eval "V=\$NAV_$f"
-  echo "    push $f      tx $(tx "$ORACLE" push_nav --reporter "$ADMIN" --feed_id "$f" --nav "$V" --timestamp "$NOW")"
+  stellar contract invoke --id "$ORACLE" --source "$R1" --network $NET -- submit_nav \
+    --reporter "$R1_ADDR" --feed_id "$f" --nav "$V" --timestamp "$NOW" >/dev/null 2>&1
+  echo "    submit $f    tx $(tx_as "$R2" "$ORACLE" submit_nav --reporter "$R2_ADDR" --feed_id "$f" --nav "$V" --timestamp "$NOW")"
 done
 
 echo ""
-echo "==> repointing the one contract that names it"
+echo "==> repointing the two contracts that name it"
+# Two, not one. The Vault stores the address and so does the Etherfuse adapter,
+# which prices its bond position through `oracle_value`; the private credit
+# adapters store only a feed symbol and reach the oracle through nothing, so
+# they need no repointing. This step said "the one contract that names it" and
+# repointed the Vault alone, which would have left the adapter valuing its
+# position against an oracle nothing updates any more.
 echo "    vault.set_oracle    tx $(tx "$VAULT" set_oracle --admin "$ADMIN" --oracle "$ORACLE" --feed_id "$VAULT_FEED")"
+EF=$(j "d['poolAdapters']['etherfuse']")
+echo "    etherfuse.set_oracle tx $(tx "$EF" set_oracle --admin "$ADMIN" --oracle "$ORACLE")"
+assert_eq "the adapter names the replacement" "$(q0 "$EF" oracle)" "$ORACLE"
 
 echo ""
 echo "==> checking"
@@ -117,10 +159,13 @@ echo "==> checking"
 # holds means moving a feed, and every feed is inside its own minimum interval
 # for the first hour after this runs, which is the rate limit working rather
 # than an obstacle to work around.
-for f in USDC_USD PC_NAV EF_BOND; do
+for f in USDC_USD PC_NAV PC_NAV2 EF_BOND; do
   eval "V=\$NAV_$f"
   assert_eq "$f is back where it was" "$(q0 "$ORACLE" get_nav --feed_id "$f")" "$V"
-  assert_eq "$f quorum threshold is still the V1 default" "$(q0 "$ORACLE" quorum_threshold --feed_id "$f")" "1"
+  # Registered at the record's threshold, which is two on every feed here. This
+  # asserted the V1 default of 1, which was true when the quorum was the thing
+  # being introduced and has not been since.
+  assert_eq "$f runs at a quorum of two" "$(q0 "$ORACLE" quorum_threshold --feed_id "$f")" "2"
 done
 eval "VF=\$NAV_$VAULT_FEED"
 assert_eq "the Vault reads its feed and gets the restored value" "$(q0 "$VAULT" get_nav)" "$VF"
