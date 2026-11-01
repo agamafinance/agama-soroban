@@ -88,18 +88,36 @@ else
 fi
 
 echo ""
-echo "== every keeper stands aside for a suite holding its account =="
+echo "== the keepers that sign as the operator stand aside, and only those =="
+# Both halves matter and the first version of this checked one. A keeper that
+# signs as the operator and does not stand aside is the TxBadSeq this lock
+# exists to prevent. A keeper that signs as a reporter and stands aside anyway
+# never contended for the lock in the first place, and waiting costs a feed:
+# a sweep takes a fresh lock per suite, so standing aside for one means standing
+# aside for hours, and USDC_USD has a one hour window.
 # The suites lock the operator account because two signers on one sequence
 # number is TxBadSeq for both. The keepers sign as the same key under launchd
 # and were never part of it, which cost five assertions in smoke-mediums on
 # 2026-11-01.
-for f in scripts/keeper-oracle.sh scripts/keeper-reflector.sh scripts/keeper-etherfuse.sh \
-         scripts/keeper-yield.sh scripts/keeper-sagusd-book.sh; do
+for f in scripts/keeper-*.sh; do
   [ -f "$f" ] || continue
-  if grep -q "keeper_stand_aside_if_suite_running" "$f"; then
-    ok "$(basename "$f") stands aside"
+  case "$f" in *keeper-oracle-run.sh|*keeper-run.sh) continue;; esac
+  # Does it spend the operator's sequence number? A classic transaction from
+  # $SRC, or a contract invoke as $SRC without --send=no.
+  if grep -qE 'stellar tx new .*--source-account "\$SRC"' "$f" \
+     || grep -E 'invoke .*--source "?\$SRC"?' "$f" | grep -qv 'send=no'; then
+    needs=yes
   else
+    needs=no
+  fi
+  if grep -q "keeper_stand_aside_if_suite_running" "$f"; then has=yes; else has=no; fi
+  if [ "$needs" = "$has" ]; then
+    if [ "$needs" = yes ]; then ok "$(basename "$f") signs as the operator and stands aside"
+    else ok "$(basename "$f") signs as a reporter and does not wait on the operator's lock"; fi
+  elif [ "$needs" = yes ]; then
     bad "$(basename "$f") signs as the operator and does not check the suite lock"
+  else
+    bad "$(basename "$f") waits on a lock it never contends for, which costs a feed its freshness"
   fi
 done
 

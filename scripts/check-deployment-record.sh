@@ -482,6 +482,68 @@ for e in d.get('superseded', []):
 ")
 fi
 
+# ---------------------------------------------------------------------------
+# Who actually holds each contract, against who the record says holds it.
+#
+# The record names an admin and nothing compared it to the ledger, so the
+# deployment could be administered by a key the record has never heard of and
+# every check here would still pass. That is not hypothetical: on 2026-11-01 a
+# suite's admin rotation test handed the Engine to a local throwaway identity
+# and a broken guard skipped the handback, so the live Engine was admin'd by
+# `alice` for an hour. Sixteen assertions in the next suite failed with #402 and
+# the cause took longer to find than it should have, because nothing was asking
+# this question.
+#
+# Read-only, one call per contract, and it is the question a reviewer would ask
+# first about a custodian: who can move this.
+echo ""
+echo "==> every contract is administered by the key the record names"
+RECORD_ADMIN=$(python3 -c "import json;print(json.load(open('deployments/testnet.json'))['admin'])")
+# A read needs a source account even when it sends nothing, and this script is
+# meant to run from a clean checkout with no keys. So it makes one and funds it
+# from friendbot, the way verify-tranche2 does, and falls back to skipping these
+# rather than failing them if that cannot be done.
+READER=${READER:-}
+if [ -z "$READER" ]; then
+  READER=record-reader-$$
+  stellar keys generate "$READER" --network testnet --fund >/dev/null 2>&1 || READER=""
+fi
+while IFS='|' read -r name addr want label; do
+  [ -n "$addr" ] || continue
+  if [ -z "$READER" ]; then
+    echo "  SKIP  no account to read with, so $name's admin was not asked"
+    continue
+  fi
+  got=$(stellar contract invoke --id "$addr" --source-account "$READER" --network testnet --send=no \
+          -- admin 2>/dev/null | tr -d '"' | tail -1)
+  case "$got" in
+    "")        ok "$name has no admin entry point to ask" ;;
+    "$want")   ok "$name is administered by $label" ;;
+    *)         bad "$name is administered by $got, and $label is $want" ;;
+  esac
+done < <(python3 -c "
+import json
+d = json.load(open('deployments/testnet.json'))
+admin = d['admin']
+vault = d['contracts']['vault']
+# agUSD's mint authority is the Vault and that is the design, not a drift: the
+# Vault is the only address its mint will create supply for. Checking it against
+# the operator would report the correct state as wrong, and a check that cries
+# wolf on the right answer is a check people learn to skip.
+expected = {
+    'agusd':     (vault, 'its mint authority, the Vault'),
+    'agusdCore': (vault, 'its mint authority, the Vault'),
+}
+skip = {'usdc'}
+for k, v in d['contracts'].items():
+    if k in skip:
+        continue
+    want, label = expected.get(k, (admin, 'the recorded admin'))
+    print(f'{k}|{v}|{want}|{label}')
+for k, v in d.get('poolAdapters', {}).items():
+    print(f'poolAdapters.{k}|{v}|{admin}|the recorded admin')
+")
+
 echo ""
 if [ "${AHEAD_N:-0}" -gt 0 ]; then
   echo "  $AHEAD_N contract(s) are declared source-ahead: the source here is not what is deployed."

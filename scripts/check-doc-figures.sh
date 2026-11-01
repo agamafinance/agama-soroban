@@ -27,7 +27,7 @@ cd "$(dirname "$0")/.."
 
 # script                        low  high  why the range, where there is one
 RANGES="
-check-deployment-record.sh      77   81    77 on 2026-10-19, 81 since private-credit-2
+check-deployment-record.sh      77   91    77 on 2026-10-19, 81 with private-credit-2, 91 with the live admin check
 check-doc-entry-points.sh        9   10    9 on 2026-10-19, 10 since
 check-refusals.sh                4    4
 check-advisories.sh              2    2
@@ -48,7 +48,7 @@ smoke-core.sh                   11   14    one assertion per feed that can take 
 smoke-agusd-core.sh             32   32
 smoke-review2.sh                45   52    52 on 2026-09-09, 45 since assertions moved to other suites
 smoke-review3.sh                38   42    42 on 2026-09-09, 38 since the pool took a write-off charge
-smoke-mediums.sh                59   61
+smoke-mediums.sh                59   64    64 once the admin rotation stopped being skipped
 smoke-hardening.sh              62   64    the interval guard needs a round to commit first
 "
 

@@ -33,11 +33,18 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 NET=${NET:-testnet}
 SRC=${SRC:-agama-poc}
-# Stand aside while a suite holds this account, rather than becoming the second
-# signer on its sequence number. See lib-keeper-lock.sh for what that cost.
-# shellcheck source=lib-keeper-lock.sh
-. "$(dirname "$0")/lib-keeper-lock.sh"
-keeper_stand_aside_if_suite_running "$SRC" || exit 0
+# This keeper does NOT stand aside for the suite lock, and that is deliberate.
+#
+# It was made to, this morning, along with the other four, and the reasoning was
+# wrong for this one: the lock is on the operator account and every transaction
+# this keeper signs is signed by a reporter key. `$SRC` is used only for reads,
+# with --send=no, which spends no sequence number. So it never contended for the
+# thing the lock protects, and making it wait cost a feed: a sweep takes a fresh
+# lock per suite, the keepers stood aside for the whole of one, and USDC_USD was
+# 9.4 hours old against a one hour window by the end of it.
+#
+# The two keepers that do sign as the operator, keeper-yield and
+# keeper-sagusd-book, still take it.
 REPORTER2_KEY=${REPORTER2_KEY:-agama-oracle-2}
 BOND=${BOND:-USTRY}
 MAX_AGE=${MAX_AGE:-900}          # a source older than this does not count
