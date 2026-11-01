@@ -48,14 +48,29 @@ LAST=$(stellar contract invoke --id "$ORACLE" --source "$SRC" --network "$NET" -
 MININT=$(stellar contract invoke --id "$ORACLE" --source "$SRC" --network "$NET" --send=no \
            -- get_feed --feed_id "$FEED" 2>/dev/null \
          | python3 -c "import sys,json;print(json.load(sys.stdin)['min_interval_secs'])")
+# Two different clocks, and conflating them printed an age of minus 38 seconds.
+# NOW is backdated a minute because a timestamp in the ledger's future is refused
+# with TimestampInFuture, 509; the age of the last point is measured against the
+# real clock. A keeper that pushed thirty seconds ago makes the backdated value
+# earlier than the point it is being compared to.
 NOW=$(( $(date -u +%s) - 60 ))
-printf '        %s reads %s, last point %ss ago, interval %ss\n' "$FEED" "$BEFORE" "$(( NOW - LAST ))" "$MININT"
-if [ "$(( NOW - LAST ))" -lt "$MININT" ]; then
+AGE=$(( $(date -u +%s) - LAST ))
+printf '        %s reads %s, last point %ss ago, interval %ss\n' "$FEED" "$BEFORE" "$AGE" "$MININT"
+if [ "$AGE" -lt "$MININT" ]; then
   echo "  SKIP  the feed is inside its own minimum interval, so a round opened now"
   echo "        could not commit whatever the reporters agreed on. That is the rate"
   echo "        limit working and the only way past it is to wait."
+  # And then assert what is true without opening a round, because a suite that
+  # reports zero passed and zero failed and exits 0 looks exactly like one that
+  # ran. That is the defect this repository spent a night taking out of three
+  # other suites, reintroduced here by the person taking it out.
+  eq "the feed holds a value for a round to be measured against" \
+     "$([ "${BEFORE:-0}" -gt 0 ] && echo yes || echo no)" "yes"
+  eq "and the quorum a round would have to clear is two" \
+     "$(rd "$ORACLE" quorum_threshold --feed_id "$FEED")" "2"
   printf '\nTOTAL: %d passed, %d failed\n' "$P" "$F"
-  exit 0
+  [ "$F" -eq 0 ]
+  exit $?
 fi
 
 MINE=$(( BEFORE + 1 ))
