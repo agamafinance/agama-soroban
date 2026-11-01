@@ -1312,7 +1312,7 @@ Engine that carries this had `total_allocated` of zero until these runs.
 | An adapter cannot be registered against the wrong Engine or Vault | `register_pool` refuses an adapter that does not name this Engine and this Engine's Vault, and `allocate`, `deallocate` and `recover` re-run that check rather than resting on registration. Covered in `cargo test -p allocation-engine` |
 | Oracle Adapter with live feeds | `CAUOHPPN...`, four feeds answering: `USDC_USD`, `PC_NAV` which the Vault reads, `PC_NAV2` for the second originator, and `EF_BOND`. `bash scripts/check-ttl.sh` catches the deployment archiving; the keeper at `scripts/keeper-oracle.sh` runs every ten minutes under launchd and resubmits each feed's existing value once half its staleness window is gone |
 | A NAV cannot be moved by one key | `bash scripts/e2e-oracle-quorum.sh`, 12 assertions. Every feed runs at a quorum of two against a reporter set of two: one submission returns `Pending` and moves nothing, a repeat from the same reporter is refused `#518 AlreadyVoted`, and a second distinct reporter on the same value and timestamp commits it |
-| Per-push NAV guards | A deviation bound per feed, an absolute band that also covers a feed's first report, and a minimum interval in ledger time. `cargo test -p oracle-adapter`, 32 tests |
+| Per-push NAV guards | A deviation bound per feed, an absolute band that also covers a feed's first report, and a minimum interval in ledger time. `cargo test -p oracle-adapter`, 37 tests |
 
 Two things stated rather than glossed. The quorum is two reporters and both
 keys are on one machine, so this is the mechanism proven on the deployment and

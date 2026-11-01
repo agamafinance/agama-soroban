@@ -1077,7 +1077,7 @@
         "an allowlist of destination domains and addresses rather than a free field",
         "a reporting obligation on the far side at least as strong as the PC_NAV quorum here"
       ],
-      "builtSoFar": "none of the three",
+      "builtSoFar": "one of the three, as of 2026-11-01. set_destination is behind a 72 hour timelock in source, announced by one call and applied by a second with the same domain and recipient, declared under treeAheadOfLedger and not on the ledger. The allowlist and the far-side reporting obligation are not built. The allowlist is deliberately not being added in the same pass as the timelock: allocate burns the Vault USDC irreversibly towards whatever this adapter names, CCTP carries 32 bare bytes with no type tag, and a wrong recipient cannot be recovered from Stellar, so a change to that path gets its own pass and its own review rather than riding along at the end of another one.",
       "note": "CCTP into Stellar is a funded Tranche 1 Deliverable 2 integration and is a different thing from this adapter, which goes the other way and is named nowhere in the award."
     },
     "thirdReporter": {
@@ -1096,9 +1096,9 @@
       "whatMoved": "git diff --name-only bbeae11..HEAD -- contracts/ adapters/ reports eight files as of 2026-10-31: the Etherfuse adapter and the private credit adapter with their tests, the Engine tests, and the Vault with its tests and its fuzzer. It is meant to keep reporting them until the baseline is moved deliberately."
     },
     "moneygram": {
-      "answer": "onboarding not started as of 2026-10-30, and it is the only thing missing",
+      "answer": "onboarding not started as of 2026-10-30, and it is the only thing missing that is not ours to write",
       "evidence": "docs/evidence/moneygram-sandbox-2026-10-30.log",
-      "note": "SEP-1, SEP-10 and SEP-24 all run against extmgxanchor.moneygram.com with no onboarding. The MoneyGram Ramps widget stops at their error RMP-01 with wallet_provider empty, which is partner registration and not code."
+      "note": "SEP-1, SEP-10 and SEP-24 all run against extmgxanchor.moneygram.com with no onboarding. The MoneyGram Ramps widget stops at their error RMP-01 with wallet_provider empty, which is partner registration and not code. Scope note added 2026-11-01: \"the only thing missing\" is about the deliverables, not about the code. Nine fixes to findings we raised against ourselves are in the tree and not on the ledger, each declared under treeAheadOfLedger, and they ship with the mainnet deployment. MoneyGram onboarding is the only item that no amount of work in this repository can close."
     },
     "sharedFeed": {
       "question": "the cross chain pool is capped as its own originator and priced from another one",

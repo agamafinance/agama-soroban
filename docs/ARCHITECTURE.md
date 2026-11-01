@@ -458,10 +458,17 @@ had that shape until 2026-10-31: the oracle admin was one of the two `PC_NAV`
 reporters. The admin is out of the reporter set now, `is_reporter` on it reads
 `false`, and the deployment scripts seed reporters from
 `oracleReporters.addresses` and refuse the admin outright, so a redeployment
-cannot quietly restore it. What is still open and said here rather than left to
-be found: `set_quorum_threshold` has no floor above one, so the admin key can
-still lower a quorum. A threshold that only ratchets upward needs a new Oracle
-Adapter and ships with the mainnet deployment.
+cannot quietly restore it. The floor was the other half and it is closed in
+source as of 2026-11-01, though not by the upward ratchet that suggests itself
+first: a threshold that can only rise turns one lost reporter key into a feed
+nobody can ever price again. Raising is immediate, lowering is announced, waits
+`QUORUM_REDUCTION_DELAY_SECS` of 72 hours and is applied by a second call with
+the same value, so the admin key can still lower a quorum and cannot do it in one
+transaction with nothing visible in advance. **Said plainly, because it is the
+part that matters: that fix is in this tree and not on the ledger.** It needs a
+new Oracle Adapter, which means re-registering four feeds with their bounds and
+the reporter set, and it is declared under `treeAheadOfLedger` in the deployment
+record until it ships with the mainnet deployment.
 
 **Pipeline**
 
