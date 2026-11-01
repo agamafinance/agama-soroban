@@ -35,7 +35,7 @@ check-ttl.sh                    10   11    10 on 2026-10-19, 11 since
 verify-tranche2.sh              24   27    24 before it read its feed list from the record
 check-source-invariants.sh      14   14
 e2e-etherfuse.sh                24   27    the EF_BOND accrual step, inside the hour or not
-e2e-reconciliation.sh           10   13    the PC_NAV round, inside the hour or not
+e2e-reconciliation.sh           11   13    the PC_NAV round, inside the hour or not
 e2e-two-originators.sh          13   15
 e2e-oracle-quorum.sh            11   12    11 before it submitted a value the feed did not hold
 e2e-round-deadlock.sh            4    5    one branch depends on the feed's own rate limit
