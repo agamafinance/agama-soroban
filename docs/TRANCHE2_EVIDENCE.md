@@ -166,15 +166,22 @@ second pass over the same code, run the day this submission was finalised,
 reported here because a finding a reviewer discovers for themselves costs more
 than one we hand them.
 
-**Nothing in this table reads "open" any more, and that sentence needs its
-qualification stated before the table rather than after it.** Eleven of these
-stood open until 2026-11-01, including two criticals. **Eleven are now fixed in
-source with a test each**, one was already mitigated on chain and cannot be fixed
-in source because the contract is immutable, and one is marked verified bounded
-with the reasoning for why nothing was changed. **Three of the eleven are on the
-ledger** and eight are not. The three went live on 2026-11-01 with a new Oracle
-Adapter, `CBJ3OZ4W...`, replacing `CAUOHPPN...`: the round deadlock, the quorum
-floor and the staleness check. The remaining eight are declared under
+**One row in this table reads "open", and it is the one whose fix cannot be
+deployed because deploying it is the thing it blocks.** Everything else that
+stood open on 2026-11-01, including two criticals, is closed. **Eleven are fixed
+in source with a test each**, one was already mitigated on chain and cannot be
+fixed in source because the contract is immutable, one is marked verified bounded
+with the reasoning for why nothing was changed, and the twelfth is the structural
+one on staking generations described below the table.
+
+**Four of the eleven are on the ledger** and seven are not. Three went live with
+a new Oracle Adapter, `CBJ3OZ4W...`, replacing `CAUOHPPN...`: the round deadlock,
+the quorum floor and the staleness check. The fourth went live the same day with
+a new CCTP adapter, `CAY4GXTU...`, replacing `CDSO4GJR...`: the announce then
+apply delay on `set_destination`. The `max_fee_bps` getter shipped with it and is
+deliberately not counted as a fifth, because it was never a finding; it was what
+made that migration impossible to perform faithfully, which is a different kind
+of defect and is described below. The remaining seven are declared under
 `treeAheadOfLedger` with what each changes and why it is not deployed.
 
 Two further contracts were replaced on 2026-11-01 and neither is counted here,
@@ -207,9 +214,36 @@ The getter it lacked is on the replacement, with a comment saying what its
 absence cost.
 
 **`treeAheadOfLedger` was five entries yesterday and is two now**: the Vault and
-staking. They hold seven of the eight undeployed fixes and both are blocked on
-the same thing, 8.19 sagUSD in two accounts nobody here can sign for, because
-`deploy-vault-generation.sh` refuses to strand a holder. The reason
+staking. They hold all seven undeployed fixes and both are blocked on
+the same number, which is now measured rather than asserted:
+
+    bash scripts/check-staking-migration-block.sh
+
+It enumerates every sagUSD holder off Horizon, tells the ones this deployment can
+sign for from the ones it cannot, and prints the subtotal. Today that is
+**8.1939395 sagUSD across three accounts**, `GB4T5LQX`, `GAQZEQVW` and
+`GCTH2NLA`, last active on 27 October, 13 October and 27 October. The other
+346.1290922 is ours. `deploy-vault-generation.sh` refuses to start above a
+staking supply of zero, because a replacement generation starts its own supply at
+zero and a holder redeeming against zero divides by it.
+
+Four things were checked before calling that unreachable, and the script prints
+all four because any one of them failing would mean it is not. The holders are
+dormant, so a bid on the SDEX does not reach them. sagUSD has
+`auth_clawback_enabled` false, so the balance cannot be taken. The classic issuer
+signs at weight 0, so its flags cannot be changed and nothing can be minted or
+revoked through it; the token is minted by the staking contract, which holds the
+SAC admin. And `Supply` is written in exactly three places in the staking source,
+the constructor at zero, `stake` and `unstake`, so no admin path seeds a
+replacement with an existing position.
+
+That last one is a finding in its own right and it is in the table above: a
+staking contract with no upgrade path and no way to carry positions across
+generations can be pinned indefinitely by any holder who stops answering. It is
+the one finding here whose fix cannot be deployed, because deploying it is the
+thing it blocks. Breaking the deadlock means stranding three holders, and that is
+not a trade this deployment is willing to make on a testnet to tidy up a
+declaration. The reason
 is the same in every case and it is not a scheduling excuse: no contract in this
 repository has an `upgrade` entry point, by design, so a fix means a
 redeployment, which is exactly what the Oracle Adapter just had and why its three
@@ -229,9 +263,10 @@ behind it by exactly what the record declares.
 | `staking::distribute_yield` does not check that the share supply is non zero, so a distribution into an empty pool is taken whole by the next staker | high | **fixed in source 2026-11-01, not deployed**. Refused with `NoSupply`, before the transfer, so a refused distribution has not moved the admin's money. The test that pinned the old behaviour asserted where the thousand agUSD went; it now asserts the refusal and then that the same distribution lands once a share exists |
 | Nothing stops staking immediately before a distribution and requesting immediately after: the cooldown delays the cash, not the pricing | high | **fixed in source 2026-11-01, not deployed**. An exit inside the cooldown is priced at no better than the rate it entered at, and the difference stays in `nav`, so it stays with the holders who were there rather than being burned or skimmed. `EarlyExitPricedAtEntry` carries both numbers. Measured against the deployment's own cooldown and not a new constant: if the protocol's answer to how long is too short to be paid is the cooldown, it is the same number here. Three cases: the sniping flow itself, where the sniper gets back exactly what went in and the whole distribution reaches the holder who stayed; the cap being one sided, so a fall inside the window is still taken at the current rate, because protecting it would be the same unfairness reversed; and a position with no recorded entry being read as staked long ago, so the rule cannot reach back into one that predates it. A top-up re-arms the window for the whole position, which is the conservative direction and is written down rather than discovered |
 | `vault::set_agusd` gates on this vault having taken no deposit, which stopped being the same statement as the token having no supply when agUSD became a classic asset | high | **fixed in source 2026-11-01, not deployed**. It now also refuses to point away from a token that still has supply. One that publishes a supply is judged on it, which covers `agusd-core` and the case in `retiredAgusdResidue`, 38000000 stroops outstanding on a contract whose Vault had taken no deposit. A Stellar Asset Contract publishes none that a contract can read, so for one of those the question becomes whether this Vault is its mint authority: if it is, this Vault is what stands behind that token and will not abandon it unable to show nobody is holding it. Handing the mint authority away first is the deliberate route through, and it takes a transaction on the token rather than an assumption in here. Two cases, one per branch. Last of the four checks deliberately, so a call that is also wrong about the incoming token still reports that first |
+| The staking contract has no upgrade path and no way to carry a position across generations, so any holder who stops answering pins every fix behind them. Three dormant accounts hold 8.1939395 sagUSD and `Supply` is writable only by `stake` and `unstake`, which leaves no honest way to seed a replacement | medium, and structural | **open, and the one finding whose fix cannot be deployed**, since the deployment it needs is the one it blocks. Measured live by `scripts/check-staking-migration-block.sh`, which prints the holders and the four conditions that make it unreachable |
 | The oracle's staleness window is measured against the timestamp the reporter attests to, and the keeper reposts the value already on the feed, so a feed expires when its reporters stop rather than when the number ages | high, as a control | **closed and deployed 2026-11-01, in both halves**. The on-chain half: `process` refuses a report whose own timestamp is already outside the feed's staleness window, `ReportAlreadyStale` 520, so a reading cannot be stored already expired. The guard was one sided before, refusing a timestamp in the future and accepting one from arbitrarily far in the past. The other half cannot live in the contract, and that is stated rather than worked around: the contract cannot tell a value the reporter re-read from one it reposted unchanged, because an unchanged number is legitimate and common, a peg sitting at par or a deterministic bond price that did not move. So it is the keeper's, and `keeper-reflector.sh` and `keeper-etherfuse.sh` both refuse to submit when their own upstream has stalled. `a_reading_already_outside_its_window_is_refused_on_arrival`. The on-chain half is declared under `treeAheadOfLedger` |
 | The quorum threshold is admin settable with no floor above one, and the admin was also one of the two reporters | high, as a control | **closed and deployed 2026-11-01**, both halves on the ledger. The admin is out of the reporter set on the live instance, verifiable with `is_reporter` on it, which reads `false`, and the deployment scripts seed reporters from `oracleReporters.addresses` and refuse the admin outright, so a redeployment cannot undo it. The floor is fixed in source rather than by a ratchet: raising a threshold is immediate, lowering one is announced, waits `QUORUM_REDUCTION_DELAY_SECS` of 72 hours and is applied by a second call with the same value. A pure upward ratchet was what the finding suggested and it is worse, because a threshold that can only rise turns one lost reporter key into a feed that can never be priced again. Three cases: the delay, a raise cancelling an announced reduction, and a different reduction restarting its own wait rather than inheriting one. Declared under `treeAheadOfLedger` |
-| `cctp::set_destination` lets the admin point the burn at any EVM address while exposure is zero, and `write_down` zeroes exposure with no cash moving | high, admin only | **fixed in source 2026-11-01, not deployed**. A repoint is announced by one call and applied by a second with the same domain and recipient after `DESTINATION_DELAY_SECS` of 72 hours, readable through `pending_destination` and announced in `DestinationAnnounced`. A delay rather than the second role the old comment implied, because a second role on a one-operator deployment is two keys in the same hand and reads as a control without being one; 72 hours in which a depositor can see the address their capital is about to be sent to is not. The exposure lock stays as well, so there are two guards. `writing_the_position_off_opens_the_lock_and_still_does_not_open_the_pointer` walks the exact sequence the finding describes. The allowlist is the other half and is listed under `decisions.crossChainToMainnet` |
+| `cctp::set_destination` lets the admin point the burn at any EVM address while exposure is zero, and `write_down` zeroes exposure with no cash moving | high, admin only | **closed and deployed 2026-11-01** on `CAY4GXTU...`, and the refusal is reproducible on chain: announce a repoint, call again inside the window, get `#715`. A repoint is announced by one call and applied by a second with the same domain and recipient after `DESTINATION_DELAY_SECS` of 72 hours, readable through `pending_destination` and announced in `DestinationAnnounced`. A delay rather than the second role the old comment implied, because a second role on a one-operator deployment is two keys in the same hand and reads as a control without being one; 72 hours in which a depositor can see the address their capital is about to be sent to is not. The exposure lock stays as well, so there are two guards. `writing_the_position_off_opens_the_lock_and_still_does_not_open_the_pointer` walks the exact sequence the finding describes. The allowlist is the other half and is listed under `decisions.crossChainToMainnet` |
 | `settle_withdrawal` takes no signature and strips the head claim of its queue position irreversibly, and a third party can choose the moment | medium | **verified bounded 2026-11-01, no change made, and here is why**. What a stranger can do is step the queue past a claim whose payment the token refused, and they cannot cause that refusal: it depends on the owner's own trustline. What the owner loses is the FIFO position; what they keep is the money and the liability, and a deferred claim is collectable by its owner at any time **without** being at the head, which is a weaker constraint than the one it replaced. `a_deferred_claim_is_still_owed_and_collectable_out_of_order` and `only_the_owner_can_collect_a_deferred_claim` pin both halves. The alternative, not advancing the head on a failed delivery, is the finding this deferral was introduced to fix: one undeliverable claim blocking everybody behind it for good. Recording who triggered it was considered and rejected: a top-level Soroban call has no caller address, so the only way to put one in the event is an unauthenticated parameter, and a self-reported identity in an event stream is worse than none |
 | The withdrawal queue has no partial fill, so a claim larger than idle reserves blocks every claim behind it | medium | **fixed in source 2026-11-01, not deployed**. `deliver` pays what the Vault holds, reduces the claim by exactly that and leaves it at the head with the rest owed, so the order of the queue is untouched and the Vault has simply paid down as far as it can. All-or-nothing on a queue is a deadlock with a good explanation: a 500 USDC claim at the head with 100 USDC in the Vault paid nobody, released nothing, and left a 10 USDC claim behind it waiting on capital returning from a pool that owed the 500. `InsufficientLiquidity` is now the answer only when there is nothing at all to pay with. The anti-dust floor is deliberately not applied to a remainder: it gates `request_withdrawal`, where its job is to stop a queue being stuffed with crumbs, and a residue the Vault itself left is the rest of what somebody is owed. Three cases, and the accounting fuzzer is clean at 1500 cases through partial payments, which is the assertion that matters: both counters move by what was paid, so a partial fill is neutral in `floor_base` |
 | `staking` never extends its instance TTL on any user path, unlike the Vault, which does it on all eighteen | medium | **fixed in source 2026-11-01, not deployed**. `stake`, `request_unstake`, `claim` and `distribute_yield` all bump it. `every_path_that_moves_value_extends_the_instance_ttl` burns two days of ledgers between calls, because `extend_ttl` is a no-op above the lifetime threshold and a shorter burn proves nothing |
@@ -331,6 +366,8 @@ the code did are corrected above.
 | `bash scripts/check-authorization.sh` | **0 failures** over **81** state-changing entry points, 5 of them deliberately permissionless and each with its reason printed |
 | `bash scripts/check-refusals.sh` | **4 passed**, 0 failed, four permanent refusals read back off the ledger |
 | `bash scripts/check-advisories.sh` | **2 passed**, 0 failed |
+| `bash scripts/read-instance-storage.sh <contract>` | **prints any deployed contract's instance storage**, by address or by record key, whether or not the contract exposes getters for it. It exists because this repository abandoned a migration on a value it could not read: `max_fee_bps` was stored by the CCTP adapter's constructor and returned by nothing. Instance storage is a ledger entry, so it was readable the whole time. Reach for this before concluding a value on a deployed contract is unrecoverable, because the alternative is guessing it |
+| `bash scripts/check-staking-migration-block.sh` | **names the accounts holding the two remaining declarations shut**, and prints the four conditions that make their balance unreachable. Today: 8.1939395 sagUSD across three dormant accounts out of 354.3230317 outstanding. It is a measurement rather than a test and exits 0 whatever it finds; what would make it interesting is the unreachable subtotal going to zero |
 | `bash scripts/check-doc-figures.sh` | **50 figures checked across 6 documents and 23 scripts**, 0 failed, and no network either. The claim this file makes is that every number has a command beside it, which is worth nothing while the number is not what the command prints. On 2026-11-01 **eleven had drifted**, three of them presented as current, and the scratch check meant to catch them stopped at the first mention of each script and reported nothing. The envelope now lives in one table in that script, so a deliberate change to a suite's assertion count is one number and the check says which documents disagree. The ranges are envelopes rather than values because five suites legitimately print different totals depending on whether a feed's minimum interval let them push |
 | `bash scripts/check-source-invariants.sh` | **14 passed**, 0 failed, and it needs no network, no keys and no build. Three of the controls here are not entry points and not state, they are shapes the source has to keep, and the only thing holding them was a comment: the oracle admin sat in the reporter set for weeks under a comment explaining why it should not. It checks that no current deployment script passes `$ADMIN` to `add_reporter` and that the ones seeding a reporter set read it from the record or carry it from the contract they replace; that `oracleReporters.admin` is not one of the addresses; that every keeper stands aside for a suite holding its account; that nothing claims the loss counters never fall; and that no Stellar secret seed is in the tree or in the last five hundred commits of history, because a key removed in a later commit is still a key anybody can `git log -p` for, and the admin key here can allocate, write down a position and repoint counterparties. **The loss-counter check found three more places on its first run**, after I had corrected two and believed I was done |
 | `bash scripts/check-ttl.sh` | **11 passed**, 0 failed |

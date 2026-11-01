@@ -18,9 +18,13 @@ dep = len(re.findall(r'\*\*(?:fixed|closed) and deployed', t))
 src = len(re.findall(r'\*\*fixed in source [^*]*not deployed\*\*', t))
 openn = len(re.findall(r'\*\*open\*\*', t))
 bad = 0
+# The patterns treat any run of whitespace as a space. Tying them to the exact
+# line wrapping made a reflow look like a counting error, and the obvious way to
+# make that failure go away is to reword the prose until the regex matches, which
+# is the opposite of what this script is for.
 for label, pattern, actual in [
-    ('fixed in source', r'\*\*(\w+) are now fixed in\nsource with a test each\*\*', dep + src),
-    ('on the ledger',   r'\*\*(\w+) of the \w+ are on the\nledger\*\*',             dep),
+    ('fixed in source', r'\*\*(\w+)\s+are\s+(?:now\s+)?fixed\s+in\s+source\s+with\s+a\s+test\s+each\*\*', dep + src),
+    ('on the ledger',   r'\*\*(\w+)\s+of\s+the\s+\w+\s+are\s+on\s+the\s+ledger\*\*',                        dep),
 ]:
     m = re.search(pattern, t)
     if not m:
