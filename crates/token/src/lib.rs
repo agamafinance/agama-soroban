@@ -5,6 +5,24 @@
 //! helpers and high-level token operations. Each token contract (`mock_usdc`, `agusd`)
 //! and the `staking` vault (for its `sagUSD` share token) embeds this module and
 //! delegates the standard SEP-41 entrypoints to it.
+//!
+//! # The five deprecation warnings in here are correct and are not to be fixed
+//!
+//! `cargo clippy` reports five uses of the deprecated `Events::publish`, one per
+//! token event, and suggests the `#[contractevent]` macro the rest of this
+//! repository uses. Taking that suggestion here would be a compatibility break.
+//!
+//! SEP-41 does not only say that a token emits a `transfer` event, it says what
+//! the topics are: the symbol, then the addresses, with the amount as the data.
+//! Every wallet, indexer and explorer that reads a Stellar token reads that exact
+//! shape. `#[contractevent]` derives a shape of its own from the struct, and a
+//! derived shape that differs from the standard one is a token whose transfers
+//! stop being visible to anything built against the standard rather than against
+//! this repository.
+//!
+//! So these five calls are deliberate, and a warning is the price. The protocol's
+//! own events, the ones nothing outside reads by a fixed shape, all use
+//! `#[contractevent]`: that is the right default and this is the exception to it.
 
 use soroban_sdk::{contracttype, panic_with_error, Address, Env, String};
 use soroban_sdk::contracterror;

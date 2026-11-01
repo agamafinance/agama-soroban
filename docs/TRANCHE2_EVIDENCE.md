@@ -203,6 +203,39 @@ behind it by exactly what the record declares.
 | `e2e-oracle-quorum.sh` submits the value the feed already holds, so "one reporter moves nothing" cannot fail | medium, in the evidence | **closed**. It submits `BEFORE + 1` and asserts the stored round did not advance after the first vote, so the assertion can now fail |
 | `check-authorization.sh` does not scan `adapters/cctp`, which is live and registered | medium, in the evidence | **closed**. `adapters/cctp/src/lib.rs` is in the scanned set and the count is 81 state-changing entry points, 5 deliberately permissionless, 0 failures |
 
+## Two things a reviewer will run that come back noisy, and why they stay that way
+
+`cargo fmt --all -- --check` reports **138 diffs across 22 files**, and the tree
+is deliberately left that way. rustfmt touches whitespace and import order,
+Soroban embeds doc comments in `contractspecv0`, and the `.wasm` of every
+contract is a hash this submission has published and
+`check-deployment-record.sh --wasm` compares against the ledger. Running it would
+move all eight of those hashes, and the ones currently reading "byte for byte
+what this tree builds" would become declared divergences. That is trading a real
+piece of evidence for whitespace. It goes with the mainnet deployment, where
+every contract is built fresh and there is no hash to protect. Note the direction
+of the trade rather than the state of it: the tree is not rustfmt clean and
+nothing here pretends otherwise.
+
+`cargo clippy --workspace --all-targets` reports **no errors** and 65 distinct
+warnings, which clippy totals as 96 across eighteen crate and target
+combinations because a warning in a library is counted again in its test build.
+The number is given three ways because a reviewer counting it a fourth way
+should not think anything is being hidden: zero errors is the part that matters.
+Five of them are the ones worth knowing about, all in `crates/token`, all
+`Events::publish` deprecated in favour of `#[contractevent]`. Taking that
+suggestion would be a compatibility break and the crate header now says so at
+length: SEP-41 fixes the topic shape of a token's events, every wallet and
+indexer reads that exact shape, and `#[contractevent]` derives one of its own. A
+token whose `transfer` event has a shape of our choosing is a token whose
+transfers are invisible to everything built against the standard. The protocol's
+own events, which nothing outside reads by a fixed shape, all use
+`#[contractevent]`.
+
+Two of them were real and are gone: an unused `ready_at` in the quorum
+reduction path, and an unused depositor in a peg test, which was the test taking
+a funded account from a helper when all it needed was the peg being configured.
+
 One word about who ran these. The adversarial reviews this file and the
 README refer to are ours, run internally, not a third party engagement, and
 no outside party has reviewed this repository. Which is also why Deliverable 3's

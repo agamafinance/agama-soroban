@@ -592,8 +592,11 @@ impl OracleAdapter {
                 Some((asked, ready_at)) if asked == threshold && now >= ready_at => {
                     pending.remove(feed_id.clone());
                 }
-                // The same reduction, announced and not matured yet.
-                Some((asked, ready_at)) if asked == threshold => {
+                // The same reduction, announced and not matured yet. The time
+                // is not read here on purpose: the caller asks
+                // `pending_quorum_reduction` for it, and an error carrying a
+                // deadline would be an error that goes stale.
+                Some((asked, _ready_at)) if asked == threshold => {
                     e.storage().instance().set(&Cfg::PendingQuorum, &pending);
                     Self::bump_instance(&e);
                     return Err(OracleError::QuorumReductionNotReady);

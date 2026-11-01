@@ -2722,7 +2722,10 @@ fn the_peg_feed_has_to_be_a_feed_the_oracle_knows() {
 #[test]
 fn only_the_admin_sets_the_peg() {
     let f = setup();
-    let user = with_peg(&f);
+    // The return is a funded depositor this test has no use for: what it needs
+    // from the helper is the peg being configured, so that the refusal below is
+    // the admin check firing and not an unconfigured feed.
+    let _ = with_peg(&f);
     f.e.mock_auths(&[]);
     assert!(f
         .vault
