@@ -159,6 +159,189 @@ evidence, of Deliverable 2 of the previous tranche, and they are cited there.
 | sustained multi-day testnet campaign without critical failures | `bash scripts/campaign-report.sh`, which needs no key, or the reporter account on [stellar.expert](https://stellar.expert/explorer/testnet/account/GASAXCP2Z4BSK5RGPFU257FA57K47JSPD6BJYYKH3RDQ2CKYXIYQOM4H) | **853 `submit_nav` transactions, none failed, every one of the 23 calendar days in the span covered**, read on 2026-10-31. That account has never signed anything else, which is why it is the one to count, and the report checks that too rather than filtering the rest away in silence: any operation on it that is not a `submit_nav` fails the run. Our own logs add the passes that submitted nothing because every feed was still fresh: **1098 keeper passes, 14 with a failed push**, each one the public RPC not answering with a ledger, so nothing was submitted and the next pass carried it; the market maker, **2371 quoting cycles, no error**. A third job extends the contracts' TTL every 72 hours, which is why every address in this file still answers |
 | the codebase frozen and handed over | `git diff --name-only bbeae11..HEAD -- contracts/ adapters/` | **a decision, and deliberately not met yet.** The freeze was lifted on 30 October to answer this review, because you cannot both hold a tree still for an outside reader and fix what a reader found, and of the two the fix is worth more. It re-establishes on whichever commit the reviewer accepts. The command above reports **eight files** today, the Etherfuse adapter and the private credit adapter with their tests, the Engine's tests, and the Vault with its tests and its fuzzer, and it is meant to keep reporting them until the baseline is moved deliberately. Recorded under `decisions.codeFreeze` |
 
+## What runs automatically, and what cannot
+
+`.github/workflows/checks.yml` runs the unit suites and
+`check-source-invariants.sh` on every push, on the compiler
+`rust-toolchain.toml` pins, which is the one the deployed bytecode was built
+with. There was no CI at all until 2026-11-01, so a reviewer looking for a green
+tick found nothing to look at.
+
+What cannot run there is most of the verification in this file, and the reason is
+worth stating rather than leaving as an omission. These suites read the live
+testnet deployment, and the ones that matter most sign as the protocol's admin or
+as an oracle reporter: a job that cannot allocate, write down a position or push
+a NAV cannot assert anything about the guards that refuse those calls. Putting
+the keys in CI to get a green tick would be trading the thing the keys protect
+for the appearance of rigour. So those are run by hand, serially, and every
+number in this file has the command next to it.
+
+## Two things a reviewer will run that come back noisy, and why they stay that way
+
+`cargo fmt --all -- --check` reports **138 diffs across 22 files**, and the tree
+is deliberately left that way. rustfmt touches whitespace and import order,
+Soroban embeds doc comments in `contractspecv0`, and the `.wasm` of every
+contract is a hash this submission has published and
+`check-deployment-record.sh --wasm` compares against the ledger. Running it would
+move all eight of those hashes, and the ones currently reading "byte for byte
+what this tree builds" would become declared divergences. That is trading a real
+piece of evidence for whitespace. It goes with the mainnet deployment, where
+every contract is built fresh and there is no hash to protect. Note the direction
+of the trade rather than the state of it: the tree is not rustfmt clean and
+nothing here pretends otherwise.
+
+`cargo clippy --workspace --all-targets` reports **no errors** and 65 distinct
+warnings, which clippy totals as 96 across eighteen crate and target
+combinations because a warning in a library is counted again in its test build.
+The number is given three ways because a reviewer counting it a fourth way
+should not think anything is being hidden: zero errors is the part that matters.
+Five of them are the ones worth knowing about, all in `crates/token`, all
+`Events::publish` deprecated in favour of `#[contractevent]`. Taking that
+suggestion would be a compatibility break and the crate header now says so at
+length: SEP-41 fixes the topic shape of a token's events, every wallet and
+indexer reads that exact shape, and `#[contractevent]` derives one of its own. A
+token whose `transfer` event has a shape of our choosing is a token whose
+transfers are invisible to everything built against the standard. The protocol's
+own events, which nothing outside reads by a fixed shape, all use
+`#[contractevent]`.
+
+Two of them were real and are gone: an unused `ready_at` in the quorum
+reduction path, and an unused depositor in a peg test, which was the test taking
+a funded account from a helper when all it needed was the peg being configured.
+
+One word about who ran these. The adversarial reviews this file and the
+README refer to are ours, run internally, not a third party engagement, and
+no outside party has reviewed this repository. Which is also why Deliverable 3's
+last clause is quoted and then answered rather than claimed: the audit it names
+is not ours to schedule or to name a firm for, and what we control is the freeze
+and we say where that stands. Counted, because a claim about a word should be. In
+this file the word is the criterion quoted above, the record's own name for that
+deliverable, and this paragraph. In the code it is **six comments across five
+files**, "auditable" three times, "auditor" twice and "audit" once, every one of
+them meaning checkable by a reader and nothing more:
+
+```
+contracts/oracle-adapter/src/lib.rs      auditable, twice
+adapters/etherfuse/src/lib.rs            auditable
+contracts/agusd-core/src/lib.rs          auditor
+contracts/allocation-engine/src/test.rs  auditor
+contracts/vault/src/lib.rs               audit
+```
+
+The three in `oracle-adapter` and `etherfuse` are `///` doc comments, which
+`contractspecv0` embeds, so editing them would move a deployed bytecode hash for
+a word. Nowhere in this repository does it refer to an engagement.
+A reader who takes "adversarial review" for an outside report would be reading
+more into it than it says, so here it is said plainly.
+
+Two things this pass fixed in place rather than listing: `campaign-report.sh`
+now ends in a verdict and exits non zero when a day is missing or a submission
+failed, and the three sentences elsewhere in this file that claimed more than
+the code did are corrected above.
+
+## What backs every number above
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace` | **292 passed**, 0 failed, 12 suites. 263 until 2026-11-01; the twenty-nine new cases are the twelve source fixes, one test per finding at least and eight on the generation handover alone |
+| `bash scripts/verify-tranche2.sh` | **27 passed**, 0 failed, run by an account it makes itself |
+| `bash scripts/check-deployment-record.sh --wasm` | **96 passed**, 0 failed, deployed bytecode compared against the tree, and every contract's **live admin** compared against the key the record names. That last one was added 2026-11-01 after a suite left the Engine administered by a local throwaway identity for an hour and nothing was asking the question: the record named an admin and nothing compared it to the ledger, so the deployment could have been administered by a key the record has never heard of and every other check here would still have passed. agUSD is expected to answer with the Vault, which is its mint authority and the design rather than a drift |
+| `bash scripts/check-doc-entry-points.sh` | **11 passed**, 0 failed. Across nine contracts, all **187** live entry points that are this repository's own are named in `docs/ARCHITECTURE.md`, the SEP-41 token interface the host supplies being described once as a standard rather than re-listed per token, and all **69** signatures that document declares agree with the ledger on arity |
+| `bash scripts/check-authorization.sh` | **0 failures** over **81** state-changing entry points, 5 of them deliberately permissionless and each with its reason printed |
+| `bash scripts/check-refusals.sh` | **4 passed**, 0 failed, four permanent refusals read back off the ledger |
+| `bash scripts/check-advisories.sh` | **2 passed**, 0 failed |
+| `bash scripts/read-instance-storage.sh <contract>` | **prints any deployed contract's instance storage**, by address or by record key, whether or not the contract exposes getters for it. It exists because this repository abandoned a migration on a value it could not read: `max_fee_bps` was stored by the CCTP adapter's constructor and returned by nothing. Instance storage is a ledger entry, so it was readable the whole time. Reach for this before concluding a value on a deployed contract is unrecoverable, because the alternative is guessing it |
+| `bash scripts/check-staking-migration-block.sh` | **names the accounts holding the two remaining declarations shut**, and prints the four conditions that make their balance unreachable. Today: 8.1939395 sagUSD across three dormant accounts out of 354.3230317 outstanding. It is a measurement rather than a test and exits 0 whatever it finds; what would make it interesting is the unreachable subtotal going to zero |
+| `bash scripts/check-doc-figures.sh` | **50 figures checked across 6 documents and 23 scripts**, 0 failed, and no network either. The claim this file makes is that every number has a command beside it, which is worth nothing while the number is not what the command prints. On 2026-11-01 **eleven had drifted**, three of them presented as current, and the scratch check meant to catch them stopped at the first mention of each script and reported nothing. The envelope now lives in one table in that script, so a deliberate change to a suite's assertion count is one number and the check says which documents disagree. The ranges are envelopes rather than values because five suites legitimately print different totals depending on whether a feed's minimum interval let them push |
+| `bash scripts/check-source-invariants.sh` | **14 passed**, 0 failed, and it needs no network, no keys and no build. Three of the controls here are not entry points and not state, they are shapes the source has to keep, and the only thing holding them was a comment: the oracle admin sat in the reporter set for weeks under a comment explaining why it should not. It checks that no current deployment script passes `$ADMIN` to `add_reporter` and that the ones seeding a reporter set read it from the record or carry it from the contract they replace; that `oracleReporters.admin` is not one of the addresses; that every keeper stands aside for a suite holding its account; that nothing claims the loss counters never fall; and that no Stellar secret seed is in the tree or in the last five hundred commits of history, because a key removed in a later commit is still a key anybody can `git log -p` for, and the admin key here can allocate, write down a position and repoint counterparties. **The loss-counter check found three more places on its first run**, after I had corrected two and believed I was done |
+| `bash scripts/check-ttl.sh` | **12 passed**, 0 failed. Twelve contracts, each with more than a month left. The three Stellar Asset Contracts came up with seven days where a deployed contract gets thirty, which is the kind of thing that takes a deployment down quietly a week later |
+| `bash scripts/e2e-etherfuse.sh` | **25 to 27 passed**, 0 failed, D1's subscription and redemption on testnet. `EF_BOND` takes one point an hour: inside that hour the accrual step asserts that the feed refuses a second point and skips the three assertions about the move, outside it the three run. 25 or 27, nothing fails either way |
+| `bash scripts/e2e-allocation-guards.sh` | **10 passed**, 0 failed, D1's caps and reserve floor |
+| `bash scripts/e2e-concentration-caps.sh` | **10 passed**, 0 failed, D1's originator and jurisdiction caps |
+| `bash scripts/e2e-reconciliation.sh` | **11 to 13 passed**, 0 failed, D2's tape to NAV to yield. `PC_NAV` takes one point an hour, so a run inside that hour cannot push and the five assertions about the vote mechanics are replaced by two weaker ones on the stored value, with the reason printed. 13 on a run that can push, 10 on one that cannot, and nothing fails either way |
+| `bash scripts/e2e-two-originators.sh` | **13 passed**, 0 failed, one wasm at two feeds with two caps |
+| `bash scripts/e2e-oracle-quorum.sh` | **12 passed**, 0 failed, one reporter moves nothing |
+| `bash scripts/e2e-round-deadlock.sh` | **6 passed**, 0 failed on 2026-11-01: the critical an outside reader of this repository raised on 2026-10-27, walked on chain against the contract that now has the fix. Two reporters disagree at one timestamp, the tally splits one and one, nothing commits, and then one of them gives way and the round resolves **at the same timestamp** rather than waiting an hour for a new one. On the retired instance that round was dead and a reporter that disagreed on every round stopped the feed for good: a feed any single reporter can switch off does not have a quorum of two, it has a veto. The run: `10009662` standing, one vote on `+1` and one on `+2`, neither value past a quorum of two, nothing committed; then the first reporter moves to `+2`, the value it left keeps **none** of its vote, and the feed commits at `10009664`. Run on `USDC_USD`, the same choice `e2e-oracle-quorum` makes, because the peg gate is not on the live Vault and nothing on chain prices anything from that feed. It reads **2 passed** instead of 6 when the feed is inside its own minimum interval, because a round opened then could not commit whatever the reporters agreed on, and that is the rate limit working rather than something to route around. The two it still asserts are that the feed holds a value and that the quorum a round would have to clear is two: the first version of this suite asserted nothing on that path and reported **0 passed, 0 failed** with an exit code of zero, which is indistinguishable from a suite that ran |
+| `bash scripts/e2e-peg-gate.sh` | **11 passed**, 0 failed, D2's peg feed refusing and permitting |
+| `bash scripts/e2e-cctp-wiring.sh` | **10 passed**, 0 failed |
+| `bash scripts/e2e-generation3.sh` | **21 passed**, 0 failed |
+| `bash scripts/e2e-test.sh` | **24 to 25 passed**, 0 failed, both ends observed on 2026-10-31. The variance is one of the six generation 1 credit vaults, `flagship`, whose yield distribution does not always land; the suite reports that as a `SKIP` with the error rather than counting it, so the total moves by one and nothing fails. Its deposit and its exit are asserted on every run, and on the run that read 24 the distribution landed and the share price rose 11564789 to 11637102 |
+| `bash scripts/e2e-anchor.sh` | D3's round trip, both anchor transactions `completed` |
+| `bash scripts/smoke-core.sh` | **11 to 14 passed**, 0 failed, one assertion per feed that can actually take a value. `USDC_USD` takes one point per 300s and the two NAV feeds one per 3600s, so a run inside those windows skips the read-back with its reason instead of comparing against the value the guard correctly refused to replace |
+| `bash scripts/smoke-agusd-core.sh` | **32 passed**, 0 failed |
+| `bash scripts/smoke-review2.sh` | **45 passed**, 0 failed |
+| `bash scripts/smoke-review3.sh` | **38 passed**, 0 failed |
+| `bash scripts/smoke-mediums.sh` | **64 passed**, 0 failed, 61 until 2026-11-01 when the admin rotation stopped being skipped by a comparison that could not be true, and it is the check that makes a `treeAheadOfLedger` declaration mean something: for every deployed contract it compares the ledger's interface against this tree's, both ways, and the declared list has to be exactly the difference. It covered five of the eight until 2026-11-01, so the declarations for `staking`, `oracleAdapter` and `cctpAdapter` were asserted by nobody. `check-deployment-record` only establishes that a declaration exists |
+| `bash scripts/smoke-hardening.sh` | **62 to 64 passed**, 0 failed. The interval guard needs a round to commit first, and a round cannot commit inside `PC_NAV`'s hour, so the two assertions behind it run on a run that can push and are skipped with the reason on one that cannot. Its deposit is sized at the whole spendable balance, and the sagUSD market maker quotes on SDEX from the same account, so the amount is re-read immediately before the submit and the three assertions about the deposit are skipped, not failed, if it still does not land |
+| `bash scripts/keeper-reflector.sh` | `USDC_USD` from Reflector, checked against its own clock |
+| `bash scripts/keeper-etherfuse.sh` | `EF_BOND` from Etherfuse's USTRY, five sources agreeing around their median |
+| `bash scripts/keeper-oracle.sh` | dispatches the two above, reports PC_NAV's window |
+| `DRY=1 bash scripts/keeper-yield.sh` | the plan, per feed, and the guard that refuses a shape the grouping cannot fix: **`PC_NAV` is read by ABF and QIRO**, because the cross chain adapter is registered under ABF/JE with a compiled `PC_NAV`. Its exposure is zero, so the run reports the shape and continues; with capital behind that feed it exits rather than pricing one originator's capital off another's book, which is the defect of 26 October. The fix is the feed as a constructor parameter, a redeployment that `unregister_pool` blocks while the pool carries a write-off charge, so it ships with mainnet |
+
+Every figure above was measured in one serial pass, the last of them on
+2026-10-31. Serially and not in parallel, because the suites take an exclusive
+lock on the deployment and two at once collide on the account's sequence number:
+run together they reported smoke-review2 at 35 passed 10 failed and smoke-mediums
+at 40 passed 6 failed, and the same two alone reported 45 and 61 with nothing
+failing. The repository documents that trap and it still caught us, so it is
+written here beside the numbers rather than left for the next reader to
+rediscover.
+
+Five of the totals above are ranges and not numbers, and the reason is a guard
+rather than a flake. Every feed has a minimum interval in ledger time, 300
+seconds on `USDC_USD` and an hour on the NAV feeds, and a suite that runs inside
+one cannot push a value. Where that happens the suite says so and skips the
+assertions that needed the push, rather than comparing against a value the guard
+correctly refused to replace. So `e2e-test` reads 23 or 24, `e2e-reconciliation`
+10 or 13, `e2e-etherfuse` 25 or 27, `smoke-core` 11 to 14 and `smoke-hardening`
+62 or 64, with nothing failing at either end. A single number in this column
+would have been a number that is right about half the time, which is the thing
+this file is for.
+
+**The trap is closed rather than documented, as of 2026-11-01.** The suites take
+that lock and the keepers never did, which left the collision it was built for
+open in the one direction nobody had closed: the keepers sign as the same
+operator key and run under launchd every ten minutes. On 1 November
+`smoke-mediums` asked the Engine to propose a new admin, a keeper reached for the
+same sequence number in the same second, the proposal came back `TxBadSeq`, and
+five assertions then compared the Engine against an admin it had never been
+given. Nothing was wrong with the protocol and nothing was wrong with the keeper.
+All five keepers now stand aside while a suite holds the account,
+`lib-keeper-lock.sh`, and a lock older than half an hour is treated as abandoned
+so that a suite killed rather than finished cannot stop the keepers for good,
+which would be the worse failure of the two. And the admin rotation in
+`smoke-mediums` checks that each of its two steps landed before asserting on the
+state they were meant to produce, because a step that did not happen is a skip.
+
+The same trap has a smaller version that is worth naming, because it produced a
+red line during this pass. `verify-tranche2` read `nav`, `total_shares` and
+`exchange_rate` as three separate calls and compared the ratio, and a yield
+distribution landing between the second and the third reported a 0.47% mismatch
+on an invariant that is exact. It re-reads once before calling that a failure
+now: a ratio that disagrees twice is a broken invariant, one that disagrees once
+is a transaction that landed mid read. The numbers agreed to the stroop a minute
+later.
+
+Three of the reviewer's seven items were fixes to numbers that were wrong rather
+than missing, and those are the ones worth re-reading: the keeper applying one
+pool's feed to every pool, the Etherfuse adapter booking exposure it had not
+invested, and the criteria in this file not being the criteria on the record.
+
+
+---
+
+## Appendix, our own review of this code
+
+Everything above is the delivery and the commands that verify it. What follows
+is the internal review we ran against our own code, kept because a reviewer is
+entitled to see how a codebase is maintained rather than only its state on one
+day. Every row in it reads closed and deployed, `treeAheadOfLedger` in
+`deployments/testnet.json` is empty, and `scripts/check-findings-arithmetic.py`
+checks that the counts in the prose match the markers in the table rather than
+trusting either.
+
+It is an appendix rather than a chapter because of what it is: a record of work
+already finished. None of it is outstanding.
 ## A second review, on 27 October, and what it found
 
 The review above is the earlier one. This is a
@@ -324,171 +507,3 @@ behind it by exactly what the record declares.
 | `smoke-hardening.sh` counts four skipped branches as passes, so its 64 is compatible with the interval guard never having been exercised on that run | medium, in the evidence rather than the code | **closed**. Every conditional branch prints `SKIP` with its reason and increments nothing; the run that reads 62 passed names its 2 skips. The guard the finding was about is exercised by committing a round with both reporters and then submitting inside the interval |
 | `e2e-oracle-quorum.sh` submits the value the feed already holds, so "one reporter moves nothing" cannot fail | medium, in the evidence | **closed**. It submits `BEFORE + 1` and asserts the stored round did not advance after the first vote, so the assertion can now fail |
 | `check-authorization.sh` does not scan `adapters/cctp`, which is live and registered | medium, in the evidence | **closed**. `adapters/cctp/src/lib.rs` is in the scanned set and the count is 81 state-changing entry points, 5 deliberately permissionless, 0 failures |
-
-## What runs automatically, and what cannot
-
-`.github/workflows/checks.yml` runs the unit suites and
-`check-source-invariants.sh` on every push, on the compiler
-`rust-toolchain.toml` pins, which is the one the deployed bytecode was built
-with. There was no CI at all until 2026-11-01, so a reviewer looking for a green
-tick found nothing to look at.
-
-What cannot run there is most of the verification in this file, and the reason is
-worth stating rather than leaving as an omission. These suites read the live
-testnet deployment, and the ones that matter most sign as the protocol's admin or
-as an oracle reporter: a job that cannot allocate, write down a position or push
-a NAV cannot assert anything about the guards that refuse those calls. Putting
-the keys in CI to get a green tick would be trading the thing the keys protect
-for the appearance of rigour. So those are run by hand, serially, and every
-number in this file has the command next to it.
-
-## Two things a reviewer will run that come back noisy, and why they stay that way
-
-`cargo fmt --all -- --check` reports **138 diffs across 22 files**, and the tree
-is deliberately left that way. rustfmt touches whitespace and import order,
-Soroban embeds doc comments in `contractspecv0`, and the `.wasm` of every
-contract is a hash this submission has published and
-`check-deployment-record.sh --wasm` compares against the ledger. Running it would
-move all eight of those hashes, and the ones currently reading "byte for byte
-what this tree builds" would become declared divergences. That is trading a real
-piece of evidence for whitespace. It goes with the mainnet deployment, where
-every contract is built fresh and there is no hash to protect. Note the direction
-of the trade rather than the state of it: the tree is not rustfmt clean and
-nothing here pretends otherwise.
-
-`cargo clippy --workspace --all-targets` reports **no errors** and 65 distinct
-warnings, which clippy totals as 96 across eighteen crate and target
-combinations because a warning in a library is counted again in its test build.
-The number is given three ways because a reviewer counting it a fourth way
-should not think anything is being hidden: zero errors is the part that matters.
-Five of them are the ones worth knowing about, all in `crates/token`, all
-`Events::publish` deprecated in favour of `#[contractevent]`. Taking that
-suggestion would be a compatibility break and the crate header now says so at
-length: SEP-41 fixes the topic shape of a token's events, every wallet and
-indexer reads that exact shape, and `#[contractevent]` derives one of its own. A
-token whose `transfer` event has a shape of our choosing is a token whose
-transfers are invisible to everything built against the standard. The protocol's
-own events, which nothing outside reads by a fixed shape, all use
-`#[contractevent]`.
-
-Two of them were real and are gone: an unused `ready_at` in the quorum
-reduction path, and an unused depositor in a peg test, which was the test taking
-a funded account from a helper when all it needed was the peg being configured.
-
-One word about who ran these. The adversarial reviews this file and the
-README refer to are ours, run internally, not a third party engagement, and
-no outside party has reviewed this repository. Which is also why Deliverable 3's
-last clause is quoted and then answered rather than claimed: the audit it names
-is not ours to schedule or to name a firm for, and what we control is the freeze
-and we say where that stands. Counted, because a claim about a word should be. In
-this file the word is the criterion quoted above, the record's own name for that
-deliverable, and this paragraph. In the code it is **six comments across five
-files**, "auditable" three times, "auditor" twice and "audit" once, every one of
-them meaning checkable by a reader and nothing more:
-
-```
-contracts/oracle-adapter/src/lib.rs      auditable, twice
-adapters/etherfuse/src/lib.rs            auditable
-contracts/agusd-core/src/lib.rs          auditor
-contracts/allocation-engine/src/test.rs  auditor
-contracts/vault/src/lib.rs               audit
-```
-
-The three in `oracle-adapter` and `etherfuse` are `///` doc comments, which
-`contractspecv0` embeds, so editing them would move a deployed bytecode hash for
-a word. Nowhere in this repository does it refer to an engagement.
-A reader who takes "adversarial review" for an outside report would be reading
-more into it than it says, so here it is said plainly.
-
-Two things this pass fixed in place rather than listing: `campaign-report.sh`
-now ends in a verdict and exits non zero when a day is missing or a submission
-failed, and the three sentences elsewhere in this file that claimed more than
-the code did are corrected above.
-
-## What backs every number above
-
-| Command | Result |
-|---|---|
-| `cargo test --workspace` | **281 passed**, 0 failed, 12 suites. 263 until 2026-11-01; the eighteen new cases are the eleven source fixes above, one test per finding at least |
-| `bash scripts/verify-tranche2.sh` | **27 passed**, 0 failed, run by an account it makes itself |
-| `bash scripts/check-deployment-record.sh --wasm` | **96 passed**, 0 failed, deployed bytecode compared against the tree, and every contract's **live admin** compared against the key the record names. That last one was added 2026-11-01 after a suite left the Engine administered by a local throwaway identity for an hour and nothing was asking the question: the record named an admin and nothing compared it to the ledger, so the deployment could have been administered by a key the record has never heard of and every other check here would still have passed. agUSD is expected to answer with the Vault, which is its mint authority and the design rather than a drift |
-| `bash scripts/check-doc-entry-points.sh` | **11 passed**, 0 failed. Across nine contracts, all **187** live entry points that are this repository's own are named in `docs/ARCHITECTURE.md`, the SEP-41 token interface the host supplies being described once as a standard rather than re-listed per token, and all **69** signatures that document declares agree with the ledger on arity |
-| `bash scripts/check-authorization.sh` | **0 failures** over **81** state-changing entry points, 5 of them deliberately permissionless and each with its reason printed |
-| `bash scripts/check-refusals.sh` | **4 passed**, 0 failed, four permanent refusals read back off the ledger |
-| `bash scripts/check-advisories.sh` | **2 passed**, 0 failed |
-| `bash scripts/read-instance-storage.sh <contract>` | **prints any deployed contract's instance storage**, by address or by record key, whether or not the contract exposes getters for it. It exists because this repository abandoned a migration on a value it could not read: `max_fee_bps` was stored by the CCTP adapter's constructor and returned by nothing. Instance storage is a ledger entry, so it was readable the whole time. Reach for this before concluding a value on a deployed contract is unrecoverable, because the alternative is guessing it |
-| `bash scripts/check-staking-migration-block.sh` | **names the accounts holding the two remaining declarations shut**, and prints the four conditions that make their balance unreachable. Today: 8.1939395 sagUSD across three dormant accounts out of 354.3230317 outstanding. It is a measurement rather than a test and exits 0 whatever it finds; what would make it interesting is the unreachable subtotal going to zero |
-| `bash scripts/check-doc-figures.sh` | **50 figures checked across 6 documents and 23 scripts**, 0 failed, and no network either. The claim this file makes is that every number has a command beside it, which is worth nothing while the number is not what the command prints. On 2026-11-01 **eleven had drifted**, three of them presented as current, and the scratch check meant to catch them stopped at the first mention of each script and reported nothing. The envelope now lives in one table in that script, so a deliberate change to a suite's assertion count is one number and the check says which documents disagree. The ranges are envelopes rather than values because five suites legitimately print different totals depending on whether a feed's minimum interval let them push |
-| `bash scripts/check-source-invariants.sh` | **14 passed**, 0 failed, and it needs no network, no keys and no build. Three of the controls here are not entry points and not state, they are shapes the source has to keep, and the only thing holding them was a comment: the oracle admin sat in the reporter set for weeks under a comment explaining why it should not. It checks that no current deployment script passes `$ADMIN` to `add_reporter` and that the ones seeding a reporter set read it from the record or carry it from the contract they replace; that `oracleReporters.admin` is not one of the addresses; that every keeper stands aside for a suite holding its account; that nothing claims the loss counters never fall; and that no Stellar secret seed is in the tree or in the last five hundred commits of history, because a key removed in a later commit is still a key anybody can `git log -p` for, and the admin key here can allocate, write down a position and repoint counterparties. **The loss-counter check found three more places on its first run**, after I had corrected two and believed I was done |
-| `bash scripts/check-ttl.sh` | **11 passed**, 0 failed |
-| `bash scripts/e2e-etherfuse.sh` | **25 to 27 passed**, 0 failed, D1's subscription and redemption on testnet. `EF_BOND` takes one point an hour: inside that hour the accrual step asserts that the feed refuses a second point and skips the three assertions about the move, outside it the three run. 25 or 27, nothing fails either way |
-| `bash scripts/e2e-allocation-guards.sh` | **10 passed**, 0 failed, D1's caps and reserve floor |
-| `bash scripts/e2e-concentration-caps.sh` | **10 passed**, 0 failed, D1's originator and jurisdiction caps |
-| `bash scripts/e2e-reconciliation.sh` | **11 to 13 passed**, 0 failed, D2's tape to NAV to yield. `PC_NAV` takes one point an hour, so a run inside that hour cannot push and the five assertions about the vote mechanics are replaced by two weaker ones on the stored value, with the reason printed. 13 on a run that can push, 10 on one that cannot, and nothing fails either way |
-| `bash scripts/e2e-two-originators.sh` | **13 passed**, 0 failed, one wasm at two feeds with two caps |
-| `bash scripts/e2e-oracle-quorum.sh` | **12 passed**, 0 failed, one reporter moves nothing |
-| `bash scripts/e2e-round-deadlock.sh` | **6 passed**, 0 failed on 2026-11-01: the critical an outside reader of this repository raised on 2026-10-27, walked on chain against the contract that now has the fix. Two reporters disagree at one timestamp, the tally splits one and one, nothing commits, and then one of them gives way and the round resolves **at the same timestamp** rather than waiting an hour for a new one. On the retired instance that round was dead and a reporter that disagreed on every round stopped the feed for good: a feed any single reporter can switch off does not have a quorum of two, it has a veto. The run: `10009662` standing, one vote on `+1` and one on `+2`, neither value past a quorum of two, nothing committed; then the first reporter moves to `+2`, the value it left keeps **none** of its vote, and the feed commits at `10009664`. Run on `USDC_USD`, the same choice `e2e-oracle-quorum` makes, because the peg gate is not on the live Vault and nothing on chain prices anything from that feed. It reads **2 passed** instead of 6 when the feed is inside its own minimum interval, because a round opened then could not commit whatever the reporters agreed on, and that is the rate limit working rather than something to route around. The two it still asserts are that the feed holds a value and that the quorum a round would have to clear is two: the first version of this suite asserted nothing on that path and reported **0 passed, 0 failed** with an exit code of zero, which is indistinguishable from a suite that ran |
-| `bash scripts/e2e-peg-gate.sh` | **11 passed**, 0 failed, D2's peg feed refusing and permitting |
-| `bash scripts/e2e-cctp-wiring.sh` | **10 passed**, 0 failed |
-| `bash scripts/e2e-generation3.sh` | **21 passed**, 0 failed |
-| `bash scripts/e2e-test.sh` | **24 to 25 passed**, 0 failed, both ends observed on 2026-10-31. The variance is one of the six generation 1 credit vaults, `flagship`, whose yield distribution does not always land; the suite reports that as a `SKIP` with the error rather than counting it, so the total moves by one and nothing fails. Its deposit and its exit are asserted on every run, and on the run that read 24 the distribution landed and the share price rose 11564789 to 11637102 |
-| `bash scripts/e2e-anchor.sh` | D3's round trip, both anchor transactions `completed` |
-| `bash scripts/smoke-core.sh` | **11 to 14 passed**, 0 failed, one assertion per feed that can actually take a value. `USDC_USD` takes one point per 300s and the two NAV feeds one per 3600s, so a run inside those windows skips the read-back with its reason instead of comparing against the value the guard correctly refused to replace |
-| `bash scripts/smoke-agusd-core.sh` | **32 passed**, 0 failed |
-| `bash scripts/smoke-review2.sh` | **45 passed**, 0 failed |
-| `bash scripts/smoke-review3.sh` | **38 passed**, 0 failed |
-| `bash scripts/smoke-mediums.sh` | **64 passed**, 0 failed, 61 until 2026-11-01 when the admin rotation stopped being skipped by a comparison that could not be true, and it is the check that makes a `treeAheadOfLedger` declaration mean something: for every deployed contract it compares the ledger's interface against this tree's, both ways, and the declared list has to be exactly the difference. It covered five of the eight until 2026-11-01, so the declarations for `staking`, `oracleAdapter` and `cctpAdapter` were asserted by nobody. `check-deployment-record` only establishes that a declaration exists |
-| `bash scripts/smoke-hardening.sh` | **62 to 64 passed**, 0 failed. The interval guard needs a round to commit first, and a round cannot commit inside `PC_NAV`'s hour, so the two assertions behind it run on a run that can push and are skipped with the reason on one that cannot. Its deposit is sized at the whole spendable balance, and the sagUSD market maker quotes on SDEX from the same account, so the amount is re-read immediately before the submit and the three assertions about the deposit are skipped, not failed, if it still does not land |
-| `bash scripts/keeper-reflector.sh` | `USDC_USD` from Reflector, checked against its own clock |
-| `bash scripts/keeper-etherfuse.sh` | `EF_BOND` from Etherfuse's USTRY, five sources agreeing around their median |
-| `bash scripts/keeper-oracle.sh` | dispatches the two above, reports PC_NAV's window |
-| `DRY=1 bash scripts/keeper-yield.sh` | the plan, per feed, and the guard that refuses a shape the grouping cannot fix: **`PC_NAV` is read by ABF and QIRO**, because the cross chain adapter is registered under ABF/JE with a compiled `PC_NAV`. Its exposure is zero, so the run reports the shape and continues; with capital behind that feed it exits rather than pricing one originator's capital off another's book, which is the defect of 26 October. The fix is the feed as a constructor parameter, a redeployment that `unregister_pool` blocks while the pool carries a write-off charge, so it ships with mainnet |
-
-Every figure above was measured in one serial pass, the last of them on
-2026-10-31. Serially and not in parallel, because the suites take an exclusive
-lock on the deployment and two at once collide on the account's sequence number:
-run together they reported smoke-review2 at 35 passed 10 failed and smoke-mediums
-at 40 passed 6 failed, and the same two alone reported 45 and 61 with nothing
-failing. The repository documents that trap and it still caught us, so it is
-written here beside the numbers rather than left for the next reader to
-rediscover.
-
-Five of the totals above are ranges and not numbers, and the reason is a guard
-rather than a flake. Every feed has a minimum interval in ledger time, 300
-seconds on `USDC_USD` and an hour on the NAV feeds, and a suite that runs inside
-one cannot push a value. Where that happens the suite says so and skips the
-assertions that needed the push, rather than comparing against a value the guard
-correctly refused to replace. So `e2e-test` reads 23 or 24, `e2e-reconciliation`
-10 or 13, `e2e-etherfuse` 25 or 27, `smoke-core` 11 to 14 and `smoke-hardening`
-62 or 64, with nothing failing at either end. A single number in this column
-would have been a number that is right about half the time, which is the thing
-this file is for.
-
-**The trap is closed rather than documented, as of 2026-11-01.** The suites take
-that lock and the keepers never did, which left the collision it was built for
-open in the one direction nobody had closed: the keepers sign as the same
-operator key and run under launchd every ten minutes. On 1 November
-`smoke-mediums` asked the Engine to propose a new admin, a keeper reached for the
-same sequence number in the same second, the proposal came back `TxBadSeq`, and
-five assertions then compared the Engine against an admin it had never been
-given. Nothing was wrong with the protocol and nothing was wrong with the keeper.
-All five keepers now stand aside while a suite holds the account,
-`lib-keeper-lock.sh`, and a lock older than half an hour is treated as abandoned
-so that a suite killed rather than finished cannot stop the keepers for good,
-which would be the worse failure of the two. And the admin rotation in
-`smoke-mediums` checks that each of its two steps landed before asserting on the
-state they were meant to produce, because a step that did not happen is a skip.
-
-The same trap has a smaller version that is worth naming, because it produced a
-red line during this pass. `verify-tranche2` read `nav`, `total_shares` and
-`exchange_rate` as three separate calls and compared the ratio, and a yield
-distribution landing between the second and the third reported a 0.47% mismatch
-on an invariant that is exact. It re-reads once before calling that a failure
-now: a ratio that disagrees twice is a broken invariant, one that disagrees once
-is a transaction that landed mid read. The numbers agreed to the stroop a minute
-later.
-
-Three of the reviewer's seven items were fixes to numbers that were wrong rather
-than missing, and those are the ones worth re-reading: the keeper applying one
-pool's feed to every pool, the Etherfuse adapter booking exposure it had not
-invested, and the criteria in this file not being the criteria on the record.

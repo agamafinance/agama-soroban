@@ -26,6 +26,13 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 # script                        low  high  why the range, where there is one
+#
+# Keyed on the string the documents write, because that is what the scan greps
+# for. That rules out `cargo test --workspace`: the only single token in it is
+# "cargo", which also appears in prose and in Cargo.toml, and keying on it
+# matched a figure three columns away in an unrelated table. Its count is not
+# checked here. It was quoted at 279 and then 281 while the suite returned 292,
+# in three documents, and this list cannot be read as covering it.
 RANGES="
 check-deployment-record.sh      77   96    77 on 2026-10-19, 81 with private-credit-2, 91 with the live admin check, 96 with the side by side generation
 check-doc-entry-points.sh        9   11    9 on 2026-10-19, 10 since, 11 once the four peg entry points were documented
@@ -73,9 +80,32 @@ def window(text, end):
     cuts = [c for c in (seg.find("\n|"), seg.find("\n\n")) if c >= 0]
     return seg[:min(cuts)] if cuts else seg
 
+DATE = re.compile(
+    # A short gap between the preposition and the date, because the documents
+    # write "on the run of 9 September 2026" as often as "on 19 October", and a
+    # pattern that only accepted the tight form called three true historical
+    # claims stale.
+    r"\b(?:on|since|until|before|after|in)\b[^|.]{0,20}?"
+    r"(?:\d{1,2}\s+)?(?:January|February|March|April|May|June|July|August|"
+    r"September|October|November|December|20\d\d-\d\d-\d\d)",
+    re.I,
+)
 FIG = re.compile(r"\*{0,2}(\d+)\*{0,2}\s*(?:to\s*\*{0,2}(\d+)\*{0,2}\s*)?(assertions?|checks?|passed)")
 bad = 0
 seen = 0
+# Read first, because the document loop below compares single figures against
+# these rather than against the envelope.
+import os
+observed = {}
+OBS = "docs/evidence/observed-counts.tsv"
+if os.path.exists(OBS):
+    for raw in open(OBS):
+        if raw.startswith("#") or not raw.strip():
+            continue
+        parts = raw.rstrip("\n").split("\t")
+        if len(parts) == 3:
+            observed[parts[0]] = int(parts[1])
+
 for doc in sys.argv[2:]:
     try:
         text = open(doc).read()
@@ -87,8 +117,33 @@ for doc in sys.argv[2:]:
                 a = int(f.group(1))
                 b = int(f.group(2)) if f.group(2) else a
                 seen += 1
-                if not (lo <= a <= hi and lo <= b <= hi):
-                    line = text[: m.start()].count("\n") + 1
+                line = text[: m.start()].count("\n") + 1
+                # A single figure is a statement about what the suite returns
+                # now, so it is compared against the observation, not against
+                # the envelope. An envelope wide enough to hold a legitimate
+                # skip branch is also wide enough to hold a stale number: the
+                # cargo figure sat at 281 while the suite returned 292 and
+                # passed, because 281 is inside 263..292. A range in the prose
+                # is a statement about the envelope and is checked against it.
+                # A dated figure is a claim about a past run and stays true as
+                # the suite changes: "77 passed on 19 October" is history. An
+                # undated one is a claim about now. Told apart by looking for a
+                # date beside the figure, because the alternative is either
+                # letting stale numbers through or calling the history wrong.
+                # Bounded to this figure's own clause, not the whole window. A
+                # window often holds a current claim and a historical one side
+                # by side: "292 passed, 0 failed, 12 suites. 263 until
+                # 2026-11-01" is both, and searching the window let the date on
+                # 263 excuse a stale number written for 292.
+                win = window(text, m.end())
+                clause = re.split(r"[.;|]", win[f.start():], 1)[0]
+                dated = bool(DATE.search(clause))
+                if a == b and script in observed and not dated:
+                    if a != observed[script]:
+                        print("  FAIL  %s:%d  %s quotes %d, the last observed run returned %d"
+                              % (doc, line, script, a, observed[script]))
+                        bad += 1
+                elif not (lo <= a <= hi and lo <= b <= hi):
                     print("  FAIL  %s:%d  %s quotes %r, the envelope is %d..%d"
                           % (doc, line, script, f.group(0).strip(), lo, hi))
                     bad += 1
@@ -99,8 +154,6 @@ for doc in sys.argv[2:]:
 # other and both passed. That is not hypothetical: on 2026-11-01
 # check-deployment-record.sh had been returning 96 for hours while this envelope
 # said 77..91 and three documents quoted 79, 91 and 81. All of it passed.
-import os
-OBS = "docs/evidence/observed-counts.tsv"
 if os.path.exists(OBS):
     print("")
     print("==> the envelope against observed runs")
