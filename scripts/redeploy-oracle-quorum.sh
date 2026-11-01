@@ -147,8 +147,18 @@ R2_ADDR=$(stellar keys address "$R2")
   echo "one of the reporter identities is the admin, which is the hole this fixed"; exit 1; }
 for f in USDC_USD PC_NAV PC_NAV2 EF_BOND; do
   eval "V=\$NAV_$f"
-  stellar contract invoke --id "$ORACLE" --source "$R1" --network $NET -- submit_nav \
-    --reporter "$R1_ADDR" --feed_id "$f" --nav "$V" --timestamp "$NOW" >/dev/null 2>&1
+  # The first vote's output is swallowed because it is a Pending round and the
+  # CLI prints a struct, but its failure must not be: a silenced first vote on a
+  # quorum of two means the second one records a vote and commits nothing, and
+  # the only thing that would notice is the assertion forty lines later, by
+  # which point the record has been rewritten.
+  if ! stellar contract invoke --id "$ORACLE" --source "$R1" --network $NET -- submit_nav \
+       --reporter "$R1_ADDR" --feed_id "$f" --nav "$V" --timestamp "$NOW" >/dev/null 2>&1; then
+    echo "    the first reporter could not vote on $f, so the round cannot commit." >&2
+    echo "    Stopping before the record is rewritten: a migration that half" >&2
+    echo "    applied is worse than one that did not start." >&2
+    exit 1
+  fi
   echo "    submit $f    tx $(tx_as "$R2" "$ORACLE" submit_nav --reporter "$R2_ADDR" --feed_id "$f" --nav "$V" --timestamp "$NOW")"
 done
 
