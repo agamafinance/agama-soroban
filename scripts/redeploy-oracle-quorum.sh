@@ -61,12 +61,23 @@ assert_eq() { if [ "$(num "$2")" = "$(num "$3")" ]; then ok "$1 ($(num "$2"))"; 
 
 q()  { stellar contract invoke --id "$1" --source "$SRC" --network "$NET" --send=no -- "${@:2}" 2>/dev/null; }
 q0() { q "$@" | tr -d '"'; }
-tx() { stellar contract invoke --id "$1" --source "$SRC" --network "$NET" -- "${@:2}" 2>&1 \
-         | grep -oE '[0-9a-f]{64}' | head -1; }
+# A transaction that did not land says so, rather than printing an empty hash.
+# `grep | head` on a failed invoke matches nothing and the caller is usually an
+# `echo "... tx $(tx ...)"`, which succeeds with a blank where a hash should be.
+# A migration printing "set_quorum_threshold PC_NAV = 2  tx" with nothing after
+# it reads, at a glance, exactly like one that worked.
+_tx_out() {
+  local out h
+  out=$("$@" 2>&1) || true
+  h=$(printf '%s' "$out" | grep -oE '[0-9a-f]{64}' | head -1 || true)
+  if [ -n "$h" ]; then printf '%s' "$h"; return 0; fi
+  printf 'FAILED %s' "$(printf '%s' "$out" | tr '\n' ' ' | grep -oE '#[0-9]+|TxBadSeq|tx_[A-Z_]+|error: [^ ]+' | head -1)"
+  return 1
+}
+tx() { _tx_out stellar contract invoke --id "$1" --source "$SRC" --network "$NET" -- "${@:2}"; }
 # Signed by somebody other than $SRC. Needed since the oracle admin stopped
 # being a reporter: carrying a value across now takes two reporter signatures.
-tx_as() { stellar contract invoke --id "$2" --source "$1" --network "$NET" -- "${@:3}" 2>&1 \
-         | grep -oE '[0-9a-f]{64}' | head -1; }
+tx_as() { _tx_out stellar contract invoke --id "$2" --source "$1" --network "$NET" -- "${@:3}"; }
 
 echo "vault (kept)     = $VAULT"
 echo "outgoing oracle  = $OLD_ORACLE"
@@ -84,12 +95,32 @@ stellar contract build >/dev/null
 
 echo ""
 echo "==> deploying the replacement"
-OUT=$(stellar contract deploy --wasm "$WASM/oracle_adapter.wasm" --source "$SRC" --network "$NET" \
-  -- --admin "$ADMIN" 2>&1)
-echo "$OUT" | grep -oE 'Using wasm hash [0-9a-f]{64}' | sed 's/^/    /'
-echo "$OUT" | grep -oE 'Transaction hash is [0-9a-f]{64}' | sed 's/Transaction hash is/    deploy tx/'
-ORACLE=$(echo "$OUT" | grep -oE 'C[A-Z2-7]{55}' | tail -1)
-echo "    oracle-adapter = $ORACLE"
+# ORACLE may be passed in to adopt a contract already deployed from this tree,
+# which is how a run that died after the deploy is resumed without burning a
+# second address.
+if [ -n "${ORACLE:-}" ]; then
+  echo "    adopting the already deployed $ORACLE"
+  got=$(q0 "$ORACLE" admin || echo "")
+  [ "$got" = "$ADMIN" ] || { echo "    that contract's admin is '$got', not $ADMIN"; exit 1; }
+else
+  OUT=$(stellar contract deploy --wasm "$WASM/oracle_adapter.wasm" --source "$SRC" --network "$NET" \
+    -- --admin "$ADMIN" 2>&1)
+  # `|| true` on every one of these, and the reason is a run that died here.
+  # The pipeline is `grep | sed`, the script runs under `set -e` and `pipefail`,
+  # and a grep that matches nothing exits 1 and takes the script with it. The
+  # CLI no longer prints "Using wasm hash", so a successful deploy killed the
+  # migration on the line that was only trying to pretty-print it, after the
+  # contract had been created and before anything was recorded about it.
+  echo "$OUT" | grep -oE 'Using wasm hash [0-9a-f]{64}' | sed 's/^/    /' || true
+  echo "$OUT" | grep -oE 'Transaction hash is [0-9a-f]{64}' | sed 's/Transaction hash is/    deploy tx/' || true
+  ORACLE=$(echo "$OUT" | grep -oE 'C[A-Z2-7]{55}' | tail -1 || true)
+  if [ -z "$ORACLE" ]; then
+    echo "    the deploy produced no contract address. Output follows:" >&2
+    printf '%s\n' "$OUT" | tail -20 >&2
+    exit 1
+  fi
+  echo "    oracle-adapter = $ORACLE"
+fi
 
 echo ""
 echo "==> the reporters, then the four feeds, with the recorded parameters"
