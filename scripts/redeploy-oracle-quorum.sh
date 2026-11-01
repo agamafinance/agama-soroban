@@ -204,22 +204,52 @@ history.append({
     'supersededBy': 'oracleAdapter',
     'reason': (
         'Replaced by scripts/redeploy-oracle-quorum.sh so that the deployed '
-        'Oracle Adapter is the one in this repository. It has no per-feed '
-        'quorum threshold, so the V2 path the architecture document describes, '
-        'a value committing only once N distinct authorized reporters have '
-        'submitted it for the same round, existed only in the document. The '
-        'replacement carries it with every feed defaulting to a threshold of 1, '
-        'which is V1 exactly: the first vote is quorum and it commits, and the '
-        'staleness, band, deviation and rate limit guards run unchanged. No '
-        'live feed was raised above 1 by that deployment, because a real 2-of-3 '
-        'needs reporter keys that are actually independent and that is an '
-        'operational decision. Only the Vault names this contract, so the '
-        'rewiring was one set_oracle and the three feeds re-registered with '
-        'their recorded parameters and their values restored.'
+        'Oracle Adapter is the one in this repository, carrying three fixes '
+        'that could not reach it any other way: no contract here has an '
+        'upgrade entry point. (1) A round is keyed on (feed, timestamp) and the '
+        'tally on the value, and the outgoing instance stored a flag for who '
+        'had voted rather than what they voted for, so a reporter was locked to '
+        'its first value: two reporters who disagreed at one timestamp split '
+        'the tally one and one, neither could revote, the round was dead, and a '
+        'reporter that disagreed on every round stopped the feed for good. A '
+        'feed any single reporter can switch off does not have a quorum of two, '
+        'it has a veto. Raised by an outside reader of the repository on '
+        '2026-10-27. The replacement stores the value and lets a reporter move '
+        'its vote, which cannot manufacture a quorum because the value a vote '
+        'leaves is decremented in the call that increments the one it joins. '
+        '(2) set_quorum_threshold had no floor above one, so the admin key '
+        'could drop a quorum of two to one, post alone and put it back, in '
+        'three transactions with nothing visible in advance. Raising is still '
+        'immediate; lowering is announced, waits 72 hours and is applied by a '
+        'second call with the same value, readable in pending_quorum_reduction. '
+        'An upward-only ratchet was the obvious alternative and is worse: it '
+        'turns one lost reporter key into a feed nobody can ever price again. '
+        '(3) The staleness window is measured against the timestamp the '
+        'reporter attests to and nothing checked that timestamp was inside it, '
+        'so a reading could be stored already expired and would read as current '
+        'until the window ran out from the moment of its own obsolescence. '
+        'ReportAlreadyStale 520. Two contracts name this one, the Vault and the '
+        'Etherfuse adapter, so the rewiring was two set_oracle calls, four feeds '
+        're-registered with their recorded parameters, the reporter set seeded '
+        'from oracleReporters.addresses with the admin refused outright, every '
+        'feed set to a quorum of two before any value was carried, and the four '
+        'values restored by two reporter signatures each.'
     ),
 })
 dep['contracts']['oracleAdapter'] = oracle
 dep['superseded'] = history
+
+# The declaration that the tree was ahead of this contract stops being true the
+# moment the replacement is the tree. check-deployment-record refuses a contract
+# that "matches the chain but is still declared as source ahead of it", and it is
+# right to: a declaration that has outlived its divergence is a false statement
+# of its own, and this one would have gone red within a minute of the deploy.
+ahead = dep.get('treeAheadOfLedger') or []
+dropped = [e for e in ahead if e.get('contract') == 'oracleAdapter']
+dep['treeAheadOfLedger'] = [e for e in ahead if e.get('contract') != 'oracleAdapter']
+for e in dropped:
+    print('dropped the treeAheadOfLedger entry for %s, which this deploy settles'
+          % e.get('contract'))
 dep['oracleQuorum'] = (
     'Every feed carries a quorum threshold, defaulting to 1. Above 1, a value '
     'commits only once that many distinct authorized reporters have submitted '
@@ -236,7 +266,15 @@ dep['oracleQuorum'] = (
     'they run. It defends against one compromised or malfunctioning reporter, '
     'not against a colluding majority and not against a reporter set that '
     'honestly agrees on the same wrong upstream source. Testnet runs every feed '
-    'at 1.'
+    'at 2, set before any value is carried across a migration so that the '
+    'round proving two reporters agree is not a round one reporter committed '
+    'at the default. A reporter may move its vote inside a round, which is not '
+    'a second vote: the value it leaves is decremented in the call that '
+    'increments the one it joins, so the sum of a round tally never counts a '
+    'reporter twice however many times it changes its mind. Without that, two '
+    'reporters who disagreed at one timestamp killed the round and a reporter '
+    'that disagreed on every round killed the feed. Lowering a threshold is '
+    'announced and waits 72 hours; raising one is immediate.'
 )
 json.dump(dep, open(path, 'w'), indent=2)
 open(path, 'a').write('\n')
