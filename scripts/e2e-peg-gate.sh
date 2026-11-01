@@ -36,10 +36,16 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 NET=${NET:-testnet}
 SRC=${SRC:-agama-poc}
-REPORTER2_KEY=${REPORTER2_KEY:-agama-oracle-2}
+# Two reporter identities, because every feed runs at a quorum of two and the
+# admin is not one of them. The second was the only one named here, which was
+# enough while the first signature came from $ADMIN and PEGTEST sat at the
+# threshold-1 default.
+REPORTER1_KEY=${REPORTER1_KEY:-agama-oracle-2}
+REPORTER2_KEY=${REPORTER2_KEY:-agama-reporter-2}
 DEP=deployments/testnet.json
 j() { python3 -c "import json;print(json.load(open('$DEP'))$1)"; }
 ADMIN=$(j "['admin']"); USDC=$(j "['contracts']['usdc']"); ORACLE=$(j "['contracts']['oracleAdapter']")
+REPORTER1=$(stellar keys address "$REPORTER1_KEY")
 REPORTER2=$(stellar keys address "$REPORTER2_KEY")
 WHO=$(stellar keys address "${USER_KEY:-agama-user}")
 SHADOW=${SHADOW:-$(python3 -c "
@@ -52,9 +58,15 @@ err() { stellar contract invoke --id "$1" --source "${USER_KEY:-agama-user}" --n
 push() {
   # A minute back: the ledger's close time trails the wall clock and a
   # timestamp in its future is refused with TimestampInFuture, 509.
+  #
+  # Both signatures are reporter keys. The first was $ADMIN, which stopped being
+  # a reporter on 2026-10-31 and returns #503 NotAReporter, and the failure was
+  # swallowed here: one vote landed, the quorum on a fresh PEGTEST is 1 so it
+  # committed anyway, and nothing noticed the suite was running on half the
+  # signatures it claimed.
   local t=$(( $(date -u +%s) - 60 ))
-  stellar contract invoke --id "$ORACLE" --source "$SRC" --network "$NET" -- \
-    submit_nav --reporter "$ADMIN" --feed_id PEGTEST --nav "$1" --timestamp "$t" >/dev/null 2>&1
+  stellar contract invoke --id "$ORACLE" --source "$REPORTER1_KEY" --network "$NET" -- \
+    submit_nav --reporter "$REPORTER1" --feed_id PEGTEST --nav "$1" --timestamp "$t" >/dev/null 2>&1
   stellar contract invoke --id "$ORACLE" --source "$REPORTER2_KEY" --network "$NET" -- \
     submit_nav --reporter "$REPORTER2" --feed_id PEGTEST --nav "$1" --timestamp "$t" >/dev/null 2>&1
 }
@@ -69,14 +81,35 @@ if [ -z "$SHADOW" ]; then
   SHADOW=$(stellar contract deploy --wasm target/wasm32v1-none/release/vault.wasm \
             --source "$SRC" --network "$NET" -- --admin "$ADMIN" --usdc_token "$USDC" 2>&1 | tail -1)
   echo "   $SHADOW"
-  stellar contract invoke --id "$ORACLE" --source "$SRC" --network "$NET" -- \
-    register_feed --admin "$ADMIN" --feed_id PEGTEST --staleness_secs 3600 \
-    --deviation_bps 1000 --min_nav 9000000 --max_nav 11000000 --min_interval_secs 0 >/dev/null 2>&1
-  stellar contract invoke --id "$SHADOW" --source "$SRC" --network "$NET" -- \
-    set_oracle --admin "$ADMIN" --oracle "$ORACLE" --feed_id PC_NAV >/dev/null 2>&1
-  push 10000000
-  stellar contract invoke --id "$SHADOW" --source "$SRC" --network "$NET" -- \
-    set_peg_feed --admin "$ADMIN" --feed_id PEGTEST --tolerance_bps 200 >/dev/null 2>&1
+fi
+
+# The wiring runs every time, not only on the run that deploys the Vault.
+#
+# It used to sit inside the branch above, so a recorded Vault was assumed to be
+# wired to whatever oracle the record names today. That assumption broke the
+# first time the oracle was replaced: on 2026-11-01 the migration repointed the
+# live Vault and the Etherfuse adapter, which are the two contracts that name it
+# in the record, and this demonstration Vault is a third. It went on reading the
+# retired oracle, PEGTEST did not exist on the replacement, and the suite came
+# back 2 passed 9 failed with every deposit refused #511 OracleStale.
+#
+# Each of these is idempotent and each is silenced for the same reason: a feed
+# already registered, a pointer already correct and a tolerance already set all
+# return errors that mean "nothing to do here".
+stellar contract invoke --id "$ORACLE" --source "$SRC" --network "$NET" -- \
+  register_feed --admin "$ADMIN" --feed_id PEGTEST --staleness_secs 3600 \
+  --deviation_bps 1000 --min_nav 9000000 --max_nav 11000000 --min_interval_secs 0 >/dev/null 2>&1
+stellar contract invoke --id "$SHADOW" --source "$SRC" --network "$NET" -- \
+  set_oracle --admin "$ADMIN" --oracle "$ORACLE" --feed_id PC_NAV >/dev/null 2>&1
+stellar contract invoke --id "$SHADOW" --source "$SRC" --network "$NET" -- \
+  set_peg_feed --admin "$ADMIN" --feed_id PEGTEST --tolerance_bps 200 >/dev/null 2>&1
+push 10000000
+# And it is checked rather than assumed, because every call above is silenced.
+if [ -z "$(rd "$ORACLE" get_nav --feed_id PEGTEST)" ]; then
+  echo "   PEGTEST has no value on $ORACLE after the wiring, so there is nothing"
+  echo "   to demonstrate a gate against. Stopping rather than reporting a feed"
+  echo "   that was never there as a gate that did not fire."
+  exit 1
 fi
 
 echo "== 0. the Vault under test"
