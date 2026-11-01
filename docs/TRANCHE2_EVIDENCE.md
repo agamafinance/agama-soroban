@@ -166,17 +166,17 @@ second pass over the same code, run the day this submission was finalised,
 reported here because a finding a reviewer discovers for themselves costs more
 than one we hand them.
 
-**One row in this table reads "open", and it is structural: a staking contract
-with no way to carry a position across generations can be pinned by any holder
-who stops answering.** It is worked around rather than fixed, which the section
-under the table explains in full. Everything else that
-stood open on 2026-11-01, including two criticals, is closed. **Eleven are fixed
+**Nothing in this table reads "open".** The last row to do so was structural, a
+staking contract with no way to carry a position across generations, which meant
+any holder who stopped answering pinned every future fix behind them. It closed
+on 2026-11-01 and the section under the table says how. Everything else that
+stood open on 2026-11-01, including two criticals, is closed. **Twelve are fixed
 in source with a test each**, one was already mitigated on chain and cannot be
 fixed in source because the contract is immutable, one is marked verified bounded
 with the reasoning for why nothing was changed, and the twelfth is the structural
 one on staking generations described below the table.
 
-**Eleven of the eleven are on the ledger** and `treeAheadOfLedger` is empty.
+**Twelve of the twelve are on the ledger** and `treeAheadOfLedger` is empty.
 Three went live with a new Oracle Adapter, `CBJ3OZ4W...`, replacing
 `CAUOHPPN...`: the round deadlock, the quorum floor and the staleness check. The
 fourth with a new CCTP adapter, `CAY4GXTU...`, replacing `CDSO4GJR...`: the
@@ -218,6 +218,33 @@ typed, and the replacement was compared to it field by field afterwards: same
 engine, same vault, same admin, same domain, same recipient, same 10 bps ceiling.
 The getter it lacked is on the replacement, with a comment saying what its
 absence cost.
+
+**The gap that forced that side by side deploy is closed, and the proof is a
+transaction rather than a paragraph.** A staking generation can hand its share
+token and its whole position to a successor now, through `migrate_to` and
+`adopt`. The first use of it went out the same day:
+
+    predecessor CACAGL4Y, before      held 550000000 = NAV 450000000 + owed 100000000
+    successor   CDAWY7KU, after       supply 400000000, NAV 450000000, holds 450000000
+                                      and the same sagUSD, whose SAC admin moved with it
+    predecessor after                 migrated, supply 0, holds 100000000
+    the claim requested beforehand    paid in full, from the retired contract
+    a fresh stake on the predecessor  refused, #821
+    every sagUSD holder               did nothing, holds exactly what they held
+
+The part that needed care was the claim. `request_unstake` prices it and burns
+the shares immediately, leaving the agUSD behind to pay it with, so the balance
+held is the NAV plus everything owed, and nothing added those up. A handover
+without that aggregate would have carried money that is already somebody else's
+and left every pending claim unpayable. `pending_total` counts it, `migrate_to`
+leaves exactly that much behind, and `claim` is deliberately not blocked after a
+handover.
+
+What this does not do is reach backwards. The generation holding the 8.19 sagUSD
+has no `migrate_to`, because it was deployed before this existed, so it still
+has to stay up and `scripts/check-staking-migration-block.sh` still measures it.
+Every generation from here can hand its book on, which is the difference between
+a gap that was closed and one that was worked around.
 
 **The Vault and staking generations went side by side rather than by
 replacement, and nobody was stranded.** `deploy-vault-generation.sh` retires the
@@ -286,7 +313,7 @@ behind it by exactly what the record declares.
 | `staking::distribute_yield` does not check that the share supply is non zero, so a distribution into an empty pool is taken whole by the next staker | high | **closed and deployed 2026-11-01** on `CAQJGNUY...`. Refused with `NoSupply`, before the transfer, so a refused distribution has not moved the admin's money. The test that pinned the old behaviour asserted where the thousand agUSD went; it now asserts the refusal and then that the same distribution lands once a share exists |
 | Nothing stops staking immediately before a distribution and requesting immediately after: the cooldown delays the cash, not the pricing | high | **closed and deployed 2026-11-01** on `CAQJGNUY...`. An exit inside the cooldown is priced at no better than the rate it entered at, and the difference stays in `nav`, so it stays with the holders who were there rather than being burned or skimmed. `EarlyExitPricedAtEntry` carries both numbers. Measured against the deployment's own cooldown and not a new constant: if the protocol's answer to how long is too short to be paid is the cooldown, it is the same number here. Three cases: the sniping flow itself, where the sniper gets back exactly what went in and the whole distribution reaches the holder who stayed; the cap being one sided, so a fall inside the window is still taken at the current rate, because protecting it would be the same unfairness reversed; and a position with no recorded entry being read as staked long ago, so the rule cannot reach back into one that predates it. A top-up re-arms the window for the whole position, which is the conservative direction and is written down rather than discovered |
 | `vault::set_agusd` gates on this vault having taken no deposit, which stopped being the same statement as the token having no supply when agUSD became a classic asset | high | **closed and deployed 2026-11-01** on `CCWZXRSN...`. It now also refuses to point away from a token that still has supply. One that publishes a supply is judged on it, which covers `agusd-core` and the case in `retiredAgusdResidue`, 38000000 stroops outstanding on a contract whose Vault had taken no deposit. A Stellar Asset Contract publishes none that a contract can read, so for one of those the question becomes whether this Vault is its mint authority: if it is, this Vault is what stands behind that token and will not abandon it unable to show nobody is holding it. Handing the mint authority away first is the deliberate route through, and it takes a transaction on the token rather than an assumption in here. Two cases, one per branch. Last of the four checks deliberately, so a call that is also wrong about the incoming token still reports that first |
-| The staking contract has no upgrade path and no way to carry a position across generations, so any holder who stops answering pins every fix behind them. Three dormant accounts hold 8.1939395 sagUSD and `Supply` is writable only by `stake` and `unstake`, which leaves no honest way to seed a replacement | medium, and structural | **open, and worked around rather than fixed**. The seven fixes behind it are deployed, because the new generation went up beside the old one instead of replacing it, which strands nobody and is described above the table. The gap itself is untouched: there is still no way to carry a position across generations, so the next replacement meets the same wall, and the three holders are still the reason a Vault and a staking contract have to stay up. Measured live by `scripts/check-staking-migration-block.sh`, which prints the holders and the four conditions that make their balance unreachable |
+| The staking contract has no upgrade path and no way to carry a position across generations, so any holder who stops answering pins every fix behind them. Three dormant accounts hold 8.1939395 sagUSD and `Supply` is writable only by `stake` and `unstake`, which leaves no honest way to seed a replacement | medium, and structural | **closed and deployed 2026-11-01** on `CDAWY7KU...`, and demonstrated on chain rather than argued. `migrate_to` hands a generation's share token and its whole position to a successor; `adopt` takes it on and re-reads the backing rather than trusting the predecessor for it. A holder does nothing: the sagUSD is the same asset with the same issuer, and a different contract honours it. The first use of it retired `CACAGL4Y...` by carrying 400000000 shares against a NAV of 450000000, and a claim of 100000000 requested *before* the handover stayed behind with its backing to the stroop and was paid in full from the retired contract afterwards, which then refused a fresh stake with `#821`. `scripts/check-staking-migration-block.sh` still measures the 8.19 sagUSD held by three dormant accounts, and that generation still has to stay up, because the generation holding them has no `migrate_to`. Every generation from here can hand its book on |
 | The oracle's staleness window is measured against the timestamp the reporter attests to, and the keeper reposts the value already on the feed, so a feed expires when its reporters stop rather than when the number ages | high, as a control | **closed and deployed 2026-11-01, in both halves**. The on-chain half: `process` refuses a report whose own timestamp is already outside the feed's staleness window, `ReportAlreadyStale` 520, so a reading cannot be stored already expired. The guard was one sided before, refusing a timestamp in the future and accepting one from arbitrarily far in the past. The other half cannot live in the contract, and that is stated rather than worked around: the contract cannot tell a value the reporter re-read from one it reposted unchanged, because an unchanged number is legitimate and common, a peg sitting at par or a deterministic bond price that did not move. So it is the keeper's, and `keeper-reflector.sh` and `keeper-etherfuse.sh` both refuse to submit when their own upstream has stalled. `a_reading_already_outside_its_window_is_refused_on_arrival`. The on-chain half is declared under `treeAheadOfLedger` |
 | The quorum threshold is admin settable with no floor above one, and the admin was also one of the two reporters | high, as a control | **closed and deployed 2026-11-01**, both halves on the ledger. The admin is out of the reporter set on the live instance, verifiable with `is_reporter` on it, which reads `false`, and the deployment scripts seed reporters from `oracleReporters.addresses` and refuse the admin outright, so a redeployment cannot undo it. The floor is fixed in source rather than by a ratchet: raising a threshold is immediate, lowering one is announced, waits `QUORUM_REDUCTION_DELAY_SECS` of 72 hours and is applied by a second call with the same value. A pure upward ratchet was what the finding suggested and it is worse, because a threshold that can only rise turns one lost reporter key into a feed that can never be priced again. Three cases: the delay, a raise cancelling an announced reduction, and a different reduction restarting its own wait rather than inheriting one. Declared under `treeAheadOfLedger` |
 | `cctp::set_destination` lets the admin point the burn at any EVM address while exposure is zero, and `write_down` zeroes exposure with no cash moving | high, admin only | **closed and deployed 2026-11-01** on `CAY4GXTU...`, and the refusal is reproducible on chain: announce a repoint, call again inside the window, get `#715`. A repoint is announced by one call and applied by a second with the same domain and recipient after `DESTINATION_DELAY_SECS` of 72 hours, readable through `pending_destination` and announced in `DestinationAnnounced`. A delay rather than the second role the old comment implied, because a second role on a one-operator deployment is two keys in the same hand and reads as a control without being one; 72 hours in which a depositor can see the address their capital is about to be sent to is not. The exposure lock stays as well, so there are two guards. `writing_the_position_off_opens_the_lock_and_still_does_not_open_the_pointer` walks the exact sequence the finding describes. The allowlist is the other half and is listed under `decisions.crossChainToMainnet` |

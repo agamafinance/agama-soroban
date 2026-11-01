@@ -8,13 +8,13 @@
   "cooldownSeconds": 60,
   "contracts": {
     "usdc": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
-    "staking": "CAQJGNUY3Z4MDQ7SQ6RZICW3SU4MIVU4EWT3TIAA4AFAWXIYDPWFLYSS",
+    "staking": "CDAWY7KUWKLPMWHNHK7NMN6ACWSVFT3FE3Q6TYD4C7NX3J3DUMICY6MI",
     "vault": "CCWZXRSNLCJY3MQKWSC6EHTXEY246RPZHQVLLHM2TIWCHBQZSBMGLCEJ",
-    "allocationEngine": "CBHCK63AKHZLE6ZLFFPJHRGPXS2I33F5RFA2ARBFDMXDNJTWGYGMEPP7",
+    "allocationEngine": "CA4J2PKXW5Y2AZHW2MQ75Q3SUNYFELC27U4KCF4FOC627NTTN45JHL55",
     "oracleAdapter": "CBJ3OZ4W7ZUUMYFVO3T62FAE6H4APV7L4YPETT7VJAHDKEPEWOQQRLCV",
     "agusdCore": "CCTPFK27BDLHDVR3EBLCHC7AR3ON7BNQIPR25KHE4OY4ZHGK7TGRZGNW",
     "cctpAdapter": "CAY4GXTULXLQUQZ3VDFUA4ULEQOKJKLG2RFAXDBF56VSDLI6WT2RHUXS",
-    "stakingShares": "CAHE6IBJLCO6UVLTWAXK5RUZDNHQCWJ44LUW56AVZI7LKMMRZTWEHLDH",
+    "stakingShares": "CAUGUV3LXMWZUQ3CGDQZQD4BX4RHKH3TC3NEVXAKQ3V4OA2QSXXEQLBF",
     "agusd": "CCTPFK27BDLHDVR3EBLCHC7AR3ON7BNQIPR25KHE4OY4ZHGK7TGRZGNW"
   },
   "creditVaults": {
@@ -180,12 +180,12 @@
       "address": "CANDJEHBZUPGBWQMWM567Z3NQR4AHJKJSMWB4LTXPT6SC7GSRKSL2SGS",
       "supersededBy": "allocationEngine",
       "reason": "Stores the Vault it governs at initialize() with no setter, and the Vault it names was superseded, so every cap it enforced was measured against a balance sheet nobody was depositing into any more. This is the contract the whole incident is named after.",
-      "label": "Allocation Engine, first deployment"
+      "label": "allocationEngine, generation 1"
     },
     {
       "contract": "allocationEngine",
       "generation": 2,
-      "label": "Allocation Engine, second deployment",
+      "label": "allocationEngine, generation 2",
       "address": "CBCLMUK4R2CW3YVCX3OQ3GMGAXUNKA6JQWXH2AG3JW7U35FBNFHEAMKE",
       "supersededBy": "allocationEngine",
       "reason": "Replaced by scripts/deploy-rewire.sh. This Allocation Engine carried the counterparty setters but the guards on them were too loose: Vault.set_engine accepted any address, including an ordinary account, which made the pointer that releases the Vault's reserves a one call instruction to hand them over, and the adapters could be repointed at a Vault their own Engine did not govern, which would have misdirected repayments one allocation later. Deployed and replaced the same day, before it held anything but the deploying admin's own working capital."
@@ -193,7 +193,7 @@
     {
       "contract": "allocationEngine",
       "generation": 3,
-      "label": "Allocation Engine, third deployment",
+      "label": "allocationEngine, generation 3",
       "address": "CAFJKWLUGUSYEC7L5ZBNFIFEPSO5MLI7SKDMVVJCGC6Z2TGVP5SZ5HUX",
       "supersededBy": "allocationEngine",
       "reason": "Replaced by scripts/deploy-hardening.sh. This Allocation Engine predates the fixes from the adversarial security review: the Vault delegated the reserve floor entirely to whatever Allocation Engine it pointed at, so a contract that answered vault() correctly could empty it; queued withdrawals were counted as free liquidity by the floor and the caps, so capital could be deployed against money already owed; a stalled head claim froze the withdrawal queue for everyone behind it; a credit loss could not be recognised on-chain at all; sagUSD carried report_nav, a bare setter on the denominator of its own share price; and no contract had admin rotation."
@@ -201,7 +201,7 @@
     {
       "contract": "allocationEngine",
       "generation": 4,
-      "label": "Allocation Engine, fourth deployment",
+      "label": "allocationEngine, generation 4",
       "address": "CAOGJDWH5SZAVPGLBB2NCKGPT4OUFT3YEKUCKEJP6BVN3CR2WUKJDONN",
       "supersededBy": "allocationEngine",
       "reason": "Replaced by scripts/deploy-review2.sh. This Allocation Engine predates the fixes from the second adversarial security review: the reserve floor was a share of net assets, which record_writedown lowers with no cash moving, so alternating allocate and write_down walked the whole of the reserves out of the Vault in slices that were each individually inside the floor; and a withdrawal claim the USDC contract refused to deliver, which for a Stellar Asset Contract means any claimant without a trustline, with a frozen one, or with a limit below the claim, trapped the payout path and froze the whole FIFO queue permanently."
@@ -209,7 +209,7 @@
     {
       "contract": "allocationEngine",
       "generation": 5,
-      "label": "Allocation Engine, fifth deployment",
+      "label": "allocationEngine, generation 5",
       "address": "CA2KUSVWB6G5MTA32XXAGACXNHQQM3ETND3CWVJRVTNPLG2PXIJJ7YAZ",
       "supersededBy": "allocationEngine",
       "reason": "This Allocation Engine was replaced by a later run of scripts/deploy-review2.sh from the same source: byte for byte the contract that superseded it. It was retired because the smoke run left it carrying recognised losses that were experiments rather than credit events, and recognised_losses is deliberately permanent, so a book whose reserve floor is not tightened for good by a test is only reachable through a fresh deployment. The permanence is the fix behaving as designed, and this retirement is the price of it.",
@@ -218,7 +218,7 @@
     {
       "contract": "allocationEngine",
       "generation": 6,
-      "label": "Allocation Engine, sixth deployment",
+      "label": "allocationEngine, generation 6",
       "address": "CB45BH7XYH6QWWSOI67Z4IEK6VYF7TO53OYQIFKLIMJ6ZZOBXJ2EEK4K",
       "supersededBy": "allocationEngine",
       "reason": "This Allocation Engine was replaced by a later run of scripts/deploy-review2.sh from the same source: byte for byte the contract that superseded it. It was retired because the smoke run left it carrying recognised losses that were experiments rather than credit events, and recognised_losses is deliberately permanent, so a book whose reserve floor is not tightened for good by a test is only reachable through a fresh deployment. The permanence is the fix behaving as designed, and this retirement is the price of it.",
@@ -227,7 +227,7 @@
     {
       "contract": "allocationEngine",
       "generation": 7,
-      "label": "Allocation Engine, seventh deployment",
+      "label": "allocationEngine, generation 7",
       "address": "CBM2RACBNQU6YKRQAXWMGVFANCO3AJ4LOQONEY5O7IPMXPUBS6G56HRT",
       "supersededBy": "allocationEngine",
       "reason": "Replaced by scripts/deploy-mediums.sh, which closes the Medium findings of the second adversarial review. Every contract in this generation wires itself through an initialize() that runs in its own transaction after the deploy, which is a public window in which the same call naming a different admin can land first, and which took its counterparties on trust while the setters that repair those same pointers interrogated them. A __constructor replaces it in all seven contracts, so the bytecode of every one of them differs from the source and none of them could be reused. This Allocation Engine also measures its three concentration caps on live exposure alone, which write_down sets to zero while the adapter goes on holding the capital, so a pool could be filled to its cap, written off and filled again without limit; it has no recover, so capital in an adapter with no exposure left cannot be moved by any entry point; and a divergence between its admin and the Vault's surfaces as the Vault trapping four frames down rather than as a named refusal.",
@@ -236,7 +236,7 @@
     {
       "contract": "allocationEngine",
       "generation": 8,
-      "label": "Allocation Engine, eighth deployment",
+      "label": "allocationEngine, generation 8",
       "address": "CAX576TM42RAHPIQVV72JRT23XY6K4RP7UBO5Y4ZSU6QXVW2Y27L4OCG",
       "supersededBy": "allocationEngine",
       "reason": "Replaced by scripts/rewire-engine.sh. In this Engine write_down checks the amount and the pool before it checks that its own admin and the Vault's are still the same address, so an operator whose rotation is half finished is told the amount is wrong, which sends them to look at the position rather than at the rotation. The alignment is a condition on the wiring rather than on the call and now runs first. It is a legibility change and not a security one: the same call is refused either way. Nothing else was redeployed alongside it. The Vault took the replacement through set_engine and both adapters followed through set_counterparties, which is what those setters exist for and the first time a change to one contract has been absorbed by the rest without a redeployment."
@@ -244,7 +244,7 @@
     {
       "contract": "allocationEngine",
       "generation": 9,
-      "label": "Allocation Engine, ninth deployment",
+      "label": "allocationEngine, generation 9",
       "address": "CAOUV6AA632DFRAUZ33J24OS2QNUMWQESH5HVZNOCT52JYCKHEVVULBX",
       "supersededBy": "allocationEngine",
       "reason": "Replaced by scripts/rewire-engine-review3.sh, for the one High finding of the third adversarial review. In this Engine register_pool proves an adapter names this Engine and this Engine's Vault, and nothing re-runs that check afterwards, while set_vault can move the Engine's own end of it. Every pool already registered then names the Vault the Engine has just stopped governing, and the next allocate releases the new Vault's USDC to an adapter that repays the old one, which in this protocol is a superseded Vault where nothing can move USDC at all. The position cannot be unwound either: deallocate sends the cash to the old Vault and asks the new one to confirm it arrived. allocate, deallocate and recover now re-run the check through the same helper register_pool uses. Nothing else was redeployed alongside it: the Vault took the replacement through set_engine and both adapters followed through set_counterparties."
@@ -252,7 +252,7 @@
     {
       "contract": "allocationEngine",
       "generation": 10,
-      "label": "Allocation Engine, tenth deployment",
+      "label": "allocationEngine, generation 10",
       "address": "CAPMQI4UWL3KJ2CCN252EYCRL3XIBHMY3ZTCKSXYYOLBY455LVTXMQYH",
       "supersededBy": "allocationEngine",
       "reason": "Replaced by scripts/rewire-engine-m1.sh, for M1 of the third adversarial review. A pool adapter's recover_surplus may be taken by the adapter's own admin as well as by the Engine, which is how an adapter stuck to superseded counterparties is unstuck without a working Engine. Taken that way the cash reaches the Vault and no book moves, and in this Engine that is terminal: the surplus is gone, so recover gets NothingToRecover from the adapter and reverts, and Vault::record_recovery has no other caller. The write-down stays on recognised_losses for the life of the Vault, freezing the floor's share of it as undeployable reserves, and on the pool's concentration charge for the life of the Engine. book_recovery is recover with the adapter leg removed, bounded by the same unaccounted balance the Vault already checks. Nothing else was redeployed: the Vault took the replacement through set_engine and both adapters followed through set_counterparties."
@@ -260,7 +260,7 @@
     {
       "contract": "allocationEngine",
       "generation": 11,
-      "label": "Allocation Engine, eleventh deployment",
+      "label": "allocationEngine, generation 11",
       "address": "CBDEWCRBSAL3DIVPVQCCBKRMLRCMGKALC6IZ4SOJTWKGBAVEVAA27V4S",
       "supersededBy": "allocationEngine",
       "reason": "Replaced by scripts/rewire-engine-m2.sh, for M2 of the third adversarial review. It has no set_pool_cap and no unregister_pool, so a registered pool's own cap could never move and the registry was a map with no way to remove an entry. A pool whose own figure was the binding one was capped at it for the life of the contract, and because the aggregate caps are built by walking the registry, a defaulted pool consumed its originator's and its jurisdiction's limits with no lever over either. The charging rule is not the finding and did not change: the replacement adds set_pool_cap, whose useful direction is down, since a cap of zero freezes a pool without releasing a stroop of its charge, and unregister_pool, which refuses any pool that still has exposure on either book or a write-off charged against it, so a pool in default is freezable but not delistable and becomes delistable when the loss is recovered rather than when it is forgotten. Nothing else was redeployed."
@@ -268,7 +268,7 @@
     {
       "contract": "allocationEngine",
       "generation": 12,
-      "label": "Allocation Engine, twelfth deployment",
+      "label": "allocationEngine, generation 12",
       "address": "CCSI33BM4HILB5UGTAZPAW6F7EGF57YG2HEYABNASMCQ4YXKPOFHVJCW",
       "supersededBy": "allocationEngine",
       "reason": "Replaced by scripts/rewire-token-edge.sh. register_pool proved an adapter named this Engine and this Engine's Vault, and set_counterparties proved from the other side that the Engine governs the Vault, and neither was about the asset. An adapter stores a token, it was a constructor argument nothing validated against the Vault, and it is the address every transfer in the adapter uses. An adapter with the right pointers and the wrong token is a one way door: settle_allocation sends what the Vault holds so real USDC arrives, deallocate sends back the token the adapter stores and traps, recover_surplus measures its surplus in that token and reports nothing to recover, and a write-down clears all three books while the money stays. Both sides check it now, the adapter at construction and the Engine on every call that moves capital."
@@ -276,7 +276,7 @@
     {
       "contract": "allocationEngine",
       "generation": 13,
-      "label": "Allocation Engine, thirteenth deployment",
+      "label": "allocationEngine, generation 13",
       "address": "CCSZ3QEV3LPZ3CQCHUADR4CLYGO3GHKDS26BKSL2XMV2XPDW3DCAVIMQ",
       "supersededBy": "allocationEngine",
       "reason": "Replaced by scripts/rewire-drop-book-recovery.sh. register_pool proved an adapter named this Engine and this Engine's Vault, and set_counterparties proved from the other side that the Engine governs the Vault, and neither was about the asset. An adapter stores a token, it was a constructor argument nothing validated against the Vault, and it is the address every transfer in the adapter uses. An adapter with the right pointers and the wrong token is a one way door: settle_allocation sends what the Vault holds so real USDC arrives, deallocate sends back the token the adapter stores and traps, recover_surplus measures its surplus in that token and reports nothing to recover, and a write-down clears all three books while the money stays. Both sides check it now, the adapter at construction and the Engine on every call that moves capital."
@@ -602,7 +602,7 @@
     {
       "contract": "allocationEngine",
       "generation": 14,
-      "label": "Allocation Engine, fourteenth deployment",
+      "label": "allocationEngine, generation 14",
       "address": "CAJPGOOYVWYJLUNNPQM645L27KUTYGLM2BTHWT2OVRUNJTVTGZCWSBSG",
       "supersededBy": "allocationEngine",
       "reason": "Replaced by scripts/rewire-engine-one-base.sh, so that the Engine and the Vault measure the reserve floor on one base. This Engine builds its base from Vault::free_reserves(), which reads the real token balance, while the Vault had already moved its own floor onto accounted cash. For any USDC that reached the Vault without its books being told, this Engine's base runs higher by that amount and its free-reserves term runs higher too, so asking for floor_bps of the base leaves it more permissive than the Vault by (1 - floor_bps) of that cash, and get_reserve_ratio reports liquidity the Vault would refuse to release. The direction is safe, settle_allocation re-checking in the same transaction and reverting, but a limit enforced in two places against two different numbers is one limit and one decoration. The replacement reads accounted_free_reserves() and floor_base() off the Vault instead of rebuilding them, which also matters for the clamp: the Vault sums the base unclamped and clamps once at the end, and a rebuild that clamps the cash term first drifts the base down a stroop per deallocation. The concentration caps moved with it, because their denominator is total assets and a larger denominator loosens a cap. Nothing else was redeployed: the Vault took the replacement through set_engine and both adapters followed through set_counterparties, empty at the time as that setter requires. It costs one more cross-contract call per allocation, about 180000 instructions, which moves the pool registry's measured worst case from 277 same-bucket pools to 276."
@@ -610,7 +610,7 @@
     {
       "contract": "allocationEngine",
       "generation": 15,
-      "label": "Allocation Engine, fifteenth deployment",
+      "label": "allocationEngine, generation 15",
       "address": "CCMATPP73XBCT35SSSJREL6DDE3DHN33AUGWWVDSWUNUGTR22ETTSZLW",
       "supersededBy": "allocationEngine",
       "reason": "Replaced by scripts/rewire-engine-one-base.sh to restore book_recovery, which closes M1 of the third adversarial review. This Engine has no way to book a recovery whose cash is already in the Vault. The adapter's recover_surplus may be taken by the adapter's own admin as well as by the Engine, which is how an adapter stuck to superseded counterparties is unstuck without a working Engine, and taken that way the cash reaches the Vault with no book moving: recover then gets NothingToRecover from the adapter and reverts, record_recovery has no other caller, and the write-down sits on recognised_losses and on the pool's concentration charge with nothing able to correct it. book_recovery is recover with the adapter leg removed, bounded by the Vault, which subtracts the balance it can account for from the balance it holds and refuses anything larger, so a recovery stays evidenced rather than asserted. The entry point existed once and was removed because an invariant fuzzer showed it could lower floor_base in four operations while the base read the raw token balance; that basis is gone, both halves are neutral under the accounted base, and the fuzzer now drives the operation with that invariant applied rather than excluded, clean at 1500 cases wide and 300 cases of up to 89 operations. Nothing else was redeployed: the Vault took the replacement through set_engine and both adapters followed through set_counterparties."
@@ -698,7 +698,7 @@
       "address": "CDYT5BFC2ABBK2QWWUTU4AM6JGFN2BP3XHCUGVEI3O5NCCIBUXC5TUFL",
       "supersededBy": "allocationEngine",
       "reason": "Its set_vault refuses while capital is deployed, which it is: 8810023249 stroops across two pools. That guard is right, since repointing an Engine mid-exposure would leave the old Vault's capital governed by an Engine that no longer names it. The old Engine keeps governing the old Vault and those positions.",
-      "label": "Allocation Engine, on the generation 2 Vault"
+      "label": "allocationEngine, generation 16"
     },
     {
       "contract": "poolAdapters.private-credit",
@@ -759,7 +759,7 @@
     {
       "contract": "allocationEngine",
       "generation": 17,
-      "label": "Allocation Engine, generation 17",
+      "label": "allocationEngine, generation 17",
       "address": "CBDVZPMBUQQ6OML3WTT4TP6QIOJDRC4BWYXR7UZQAAZG2LETAVZE6FFD",
       "supersededBy": "allocationEngine",
       "reason": "Replaced by scripts/rewire-engine-four-pools.sh so that the deployed Engine is the one in this repository. No entry point changed and none of this is a feature: the Engine lists the pool adapters as regular dependencies rather than dev ones, so editing an adapter moves the Engine's bytecode while its interface stays identical, and that drift had been declared under treeAheadOfLedger since 2026-10-31. It could not be cleared until 2026-11-01, because this migration refuses to start on a book whose written_off is not zero and the cross chain pool carried a charge until the operator cleared it; see decisions.crossChainWriteOffCleared, which says what that clearing actually was. All four pools were carried with their originators, jurisdictions and caps, read out of this record rather than typed into the script, because the migration this replaces was written for two."
@@ -830,6 +830,38 @@
       "address": "CDSXWL6OT5U56CSDFNENZFZMR4EWDNRZHZCGNYMH3XINE2H3XTUS6HCO",
       "supersededBy": "stakingShares",
       "reason": "Retired the same day it went up, and the reason is the point of this entry. This generation deployed agUSD as agusd_core.wasm, a Soroban contract token. The Vault accepts it and deposits and redemptions both work, so nothing failed loudly. What it cannot do is sit on an orderbook: the SDEX holds classic assets only, and every generation before this one made agUSD a classic asset whose Stellar Asset Contract the Vault administers, for exactly that reason. Swapping in a contract token silently removed the venue the token trades on and left the market maker quoting a retired asset. It was found by check-deployment-record.sh, which asked why the record's agusdClassic.sac was live and absent from the README, not by anything failing. Replaced by a generation whose agUSD and sagUSD are both classic assets again, through scripts/deploy-agusd-classic.sh and scripts/deploy-sagusd-classic.sh."
+    },
+    {
+      "contract": "allocationEngine",
+      "generation": 18,
+      "label": "allocationEngine, generation 18",
+      "address": "CBHCK63AKHZLE6ZLFFPJHRGPXS2I33F5RFA2ARBFDMXDNJTWGYGMEPP7",
+      "supersededBy": "allocationEngine",
+      "reason": "Replaced to carry record_injection, which exists because of a mislabel this repository published rather than because of a dependency drift. Ten USDC were booked through book_recovery on 2026-11-01 to clear the cross chain write-off charge; two of them were a real recovery and eight were fresh operator capital, and the ledger said Recovered for all ten. That is a claim about whether the loans are performing, not about the Vault balance, and no other call existed to make it honestly. record_injection does the same work, is asserted in the tests to leave state that cannot be told apart from book_recovery, and publishes CapitalInjected instead. Nothing else about the interface changed, and the generation before this one went out for the entirely different reason recorded against it."
+    },
+    {
+      "contract": "staking",
+      "generation": 20,
+      "label": "staking, generation 20",
+      "address": "CAQJGNUY3Z4MDQ7SQ6RZICW3SU4MIVU4EWT3TIAA4AFAWXIYDPWFLYSS",
+      "supersededBy": "staking",
+      "reason": "Retired at zero supply, the ordinary way: every share outstanding was held by the operator and was unstaked before this went out. Replaced to carry migrate_to and adopt, which close the one finding that was still open: a generation had no way to hand a position to a successor, so any holder who stopped answering pinned every future fix behind them. See docs/TRANCHE2_EVIDENCE.md."
+    },
+    {
+      "contract": "staking",
+      "generation": 21,
+      "label": "staking, generation 21",
+      "address": "CACAGL4Y5BRV5UMY2DOKKA6HIODLN5Z2LHN2VLT3Y2J4VCYL4MREUHQ7",
+      "supersededBy": "staking",
+      "reason": "Retired by handing its book to CDAWY7KU through migrate_to, which is the first use of that call on chain and the demonstration that the finding is closed. It carried 400000000 shares against a NAV of 450000000 and the same sagUSD asset, whose Stellar Asset Contract admin moved with it. A pending claim of 100000000 that had been requested before the handover stayed here with its backing, to the stroop, and was paid in full from this contract afterwards; it then held zero and refused a fresh stake with #821. Nobody holding sagUSD did anything or needed to."
+    },
+    {
+      "contract": "stakingShares",
+      "generation": 2,
+      "label": "stakingShares, generation 2",
+      "address": "CAHE6IBJLCO6UVLTWAXK5RUZDNHQCWJ44LUW56AVZI7LKMMRZTWEHLDH",
+      "supersededBy": "stakingShares",
+      "reason": "The share token of the generation retired at zero. A Stellar Asset Contract admin can only be handed on by the contract that holds it, and the generation holding this one had no entry point that would, which is the gap migrate_to closes. So this asset stays with its retired contract and the replacement generation issues a new one. Every generation after this can keep its asset instead."
     }
   ],
   "oracleFeedGuards": "The band bounds every report including the first, which a deviation bound cannot reach because a bound on a move needs something to move from. The minimum interval is measured in ledger time between accepted values, not in the timestamps the reporter supplies, because the reporter chooses those. The reference point is persistent, so it cannot expire out from under the checks that read it.",
@@ -886,7 +918,7 @@
     "contracts.agusdCore": "agUSD's Stellar Asset Contract, issuer GAIU5R2IINDZQES77O5Y2ZKHRNQISBAFRGREUPYHLQ523LWMRQB7U6EN. A Stellar Asset Contract is instantiated by the protocol from a classic asset rather than deployed from a wasm in this tree, so there is no local build to compare it against. What is checked instead is that its admin is the Vault, which is what makes the Vault the only address able to mint it. contracts.agusdCore names the same address.",
     "sagusdClassic.sac": "A Stellar Asset Contract carries no uploaded WASM: the host implements it, stellar contract fetch returns nothing, and there is no bytecode to compare against this tree. What can be checked instead is checked, and is what matters: that its admin is the contract that issues it, and that the issuer account's master key weight is zero, so no classic payment can create a unit behind that contract's back. Issued by the staking contract, which holds its admin.",
     "agusdClassic.sac": "A Stellar Asset Contract carries no uploaded WASM: the host implements it, stellar contract fetch returns nothing, and there is no bytecode to compare against this tree. What can be checked instead is checked, and is what matters: that its admin is the contract that issues it, and that the issuer account's master key weight is zero, so no classic payment can create a unit behind that contract's back. Issued by the Vault, which holds its admin.",
-    "contracts.stakingShares": "sagUSD's Stellar Asset Contract, issuer GDEAOTM7D7LI2P3AS4WAJFHO4EJ5TIRKOZAAATFAMMHXZTKTFDRAS5FT. Same reason as agUSD: no wasm here to compare it to. What is checked is that its admin is the staking contract, and its issuer is locked at master weight 0.",
+    "contracts.stakingShares": "sagUSD's Stellar Asset Contract, issuer GDDU5V7CMV3G6FOYKHGYGIAGI6KYKMC5IQGNMRGN32KYG6BDL5MINOLU. Instantiated by the protocol from a classic asset rather than deployed from a wasm here, so there is no local build to compare it against. What is checked is that its admin is the staking contract.",
     "contracts.agusd": "agUSD's Stellar Asset Contract, issuer GAIU5R2IINDZQES77O5Y2ZKHRNQISBAFRGREUPYHLQ523LWMRQB7U6EN. A Stellar Asset Contract is instantiated by the protocol from a classic asset rather than deployed from a wasm in this tree, so there is no local build to compare it against. What is checked instead is that its admin is the Vault, which is what makes the Vault the only address able to mint it. contracts.agusdCore names the same address."
   },
   "queuedForNextDeployment": [
@@ -924,10 +956,10 @@
   },
   "sagusdClassic": {
     "assetCode": "sagUSD",
-    "issuer": "GDEAOTM7D7LI2P3AS4WAJFHO4EJ5TIRKOZAAATFAMMHXZTKTFDRAS5FT",
-    "sac": "CAHE6IBJLCO6UVLTWAXK5RUZDNHQCWJ44LUW56AVZI7LKMMRZTWEHLDH",
+    "issuer": "GDDU5V7CMV3G6FOYKHGYGIAGI6KYKMC5IQGNMRGN32KYG6BDL5MINOLU",
+    "sac": "CAUGUV3LXMWZUQ3CGDQZQD4BX4RHKH3TC3NEVXAKQ3V4OA2QSXXEQLBF",
     "issuerLocked": true,
-    "note": "sagUSD is a classic Stellar asset, the same move agUSD makes, with the staking contract as its Stellar Asset Contract admin instead of the Vault. A share token priced by a contract read belongs on an orderbook rather than in a constant product pool, and an orderbook can only hold a classic asset. Issuer locked at master weight 0 after the handover was verified."
+    "note": "sagUSD is a classic Stellar asset whose Stellar Asset Contract admin is the staking contract, which is what makes that contract the only address able to mint shares, and what lets the asset sit on the SDEX orderbook. The admin moved from CACAGL4Y to CDAWY7KU through migrate_to on 2026-11-01 without any holder acting: a handover is the asset changing hands between generations, not holders changing assets. The issuer is locked at master weight 0 and cannot take the authority back."
   },
   "oracleReporters": {
     "keys": [

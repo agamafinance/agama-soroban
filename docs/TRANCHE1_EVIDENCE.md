@@ -35,10 +35,10 @@ Four further checks the repository carries, all green:
 | Contract | Address | What it does |
 |---|---|---|
 | Vault Contract | [`CCWZXRSN...MGLCEJ`](https://stellar.expert/explorer/testnet/contract/CCWZXRSNLCJY3MQKWSC6EHTXEY246RPZHQVLLHM2TIWCHBQZSBMGLCEJ) | USDC deposits, reserve floor, FIFO withdrawal queue |
-| sagUSD Staking | [`CAQJGNUY...WFLYSS`](https://stellar.expert/explorer/testnet/contract/CAQJGNUY3Z4MDQ7SQ6RZICW3SU4MIVU4EWT3TIAA4AFAWXIYDPWFLYSS) | share price, yield, unstake cooldown |
+| sagUSD Staking | [`CDAWY7KU...ICY6MI`](https://stellar.expert/explorer/testnet/contract/CDAWY7KUWKLPMWHNHK7NMN6ACWSVFT3FE3Q6TYD4C7NX3J3DUMICY6MI) | share price, yield, unstake cooldown |
 | agUSD (SAC) | [`CCTPFK27...GRZGNW`](https://stellar.expert/explorer/testnet/contract/CCTPFK27BDLHDVR3EBLCHC7AR3ON7BNQIPR25KHE4OY4ZHGK7TGRZGNW) | the dollar, as a classic Stellar asset |
-| sagUSD (SAC) | [`CAHE6IBJ...WEHLDH`](https://stellar.expert/explorer/testnet/contract/CAHE6IBJLCO6UVLTWAXK5RUZDNHQCWJ44LUW56AVZI7LKMMRZTWEHLDH) | the share, as a classic Stellar asset, quotable on the SDEX |
-| Allocation Engine | [`CBHCK63A...GMEPP7`](https://stellar.expert/explorer/testnet/contract/CBHCK63AKHZLE6ZLFFPJHRGPXS2I33F5RFA2ARBFDMXDNJTWGYGMEPP7) | pool routing and caps |
+| sagUSD (SAC) | [`CAUGUV3L...XEQLBF`](https://stellar.expert/explorer/testnet/contract/CAUGUV3LXMWZUQ3CGDQZQD4BX4RHKH3TC3NEVXAKQ3V4OA2QSXXEQLBF) | the share, as a classic Stellar asset, quotable on the SDEX |
+| Allocation Engine | [`CA4J2PKX...5JHL55`](https://stellar.expert/explorer/testnet/contract/CA4J2PKXW5Y2AZHW2MQ75Q3SUNYFELC27U4KCF4FOC627NTTN45JHL55) | pool routing and caps |
 | Oracle Adapter | [`CBJ3OZ4W...QQRLCV`](https://stellar.expert/explorer/testnet/contract/CBJ3OZ4W7ZUUMYFVO3T62FAE6H4APV7L4YPETT7VJAHDKEPEWOQQRLCV) | multi source NAV, staleness and deviation guards |
 | CCTP Adapter | [`CAY4GXTU...2RHUXS`](https://stellar.expert/explorer/testnet/contract/CAY4GXTULXLQUQZ3VDFUA4ULEQOKJKLG2RFAXDBF56VSDLI6WT2RHUXS) | cross chain USDC leg |
 | Private credit adapter | [`CDYSHPCK...RZATOJ`](https://stellar.expert/explorer/testnet/contract/CDYSHPCKRZE5CDSXTTZV3KHGFYVPSHDSMRIHMLR3OV3D57I77VRZATOJ) | an off-chain originator behind allocate, deallocate, get_exposure |
