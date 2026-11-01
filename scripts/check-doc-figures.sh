@@ -38,7 +38,7 @@ e2e-etherfuse.sh                24   27    the EF_BOND accrual step, inside the 
 e2e-reconciliation.sh           11   13    the PC_NAV round, inside the hour or not
 e2e-two-originators.sh          13   15
 e2e-oracle-quorum.sh            11   12    11 before it submitted a value the feed did not hold
-e2e-round-deadlock.sh            4    5    one branch depends on the feed's own rate limit
+e2e-round-deadlock.sh            1    6    1 when the feed's own rate limit makes the round uncommittable
 e2e-peg-gate.sh                 11   11
 e2e-cctp-wiring.sh              10   10
 e2e-allocation-guards.sh        10   12
