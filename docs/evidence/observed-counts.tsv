@@ -1,0 +1,41 @@
+# What each suite actually returned, measured, not estimated.
+#
+# scripts/check-doc-figures.sh compares the figures in six documents against an
+# envelope written by hand in that script. That catches a document drifting away
+# from the envelope and nothing else: if the envelope is stale in the same
+# direction as the document, both agree and the check passes. On 2026-11-01 it
+# did exactly that. check-deployment-record.sh had been returning 96 for hours
+# while the envelope said 77..91 and three documents quoted 79, 91 and 81. All
+# three passed.
+#
+# So the envelope is now checked against this file, which holds observations. A
+# count that drifts outside its envelope fails, and the fix is to widen the
+# envelope deliberately and say why, rather than to discover months later that
+# nothing was being compared to reality.
+#
+# Update with: bash scripts/record-observed-counts.sh <sweep-results-file>
+# Columns: script, observed, date observed
+check-advisories.sh	2	2026-11-01
+check-deployment-record.sh	96	2026-11-01
+check-doc-entry-points.sh	11	2026-11-01
+check-refusals.sh	4	2026-11-01
+check-source-invariants.sh	14	2026-11-01
+check-ttl.sh	12	2026-11-01
+e2e-allocation-guards.sh	10	2026-11-01
+e2e-cctp-wiring.sh	10	2026-11-01
+e2e-concentration-caps.sh	10	2026-11-01
+e2e-etherfuse.sh	25	2026-11-01
+e2e-generation3.sh	21	2026-11-01
+e2e-oracle-quorum.sh	12	2026-11-01
+e2e-peg-gate.sh	11	2026-11-01
+e2e-reconciliation.sh	13	2026-11-01
+e2e-round-deadlock.sh	2	2026-11-01
+e2e-test.sh	24	2026-11-01
+e2e-two-originators.sh	13	2026-11-01
+smoke-agusd-core.sh	32	2026-11-01
+smoke-core.sh	12	2026-11-01
+smoke-hardening.sh	62	2026-11-01
+smoke-mediums.sh	64	2026-11-01
+smoke-review2.sh	45	2026-11-01
+smoke-review3.sh	38	2026-11-01
+verify-tranche2.sh	27	2026-11-01

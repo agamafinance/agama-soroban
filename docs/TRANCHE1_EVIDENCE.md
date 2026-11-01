@@ -16,7 +16,7 @@ open or a command to run, not a description.
 
 | Criterion | How to check it | Result |
 |---|---|---|
-| contracts deployed on testnet, transactions publicly verifiable | `bash scripts/check-deployment-record.sh --wasm` | **77 passed, 0 failed** on 19 October and **91 passed, 0 failed** today: four for the second private credit instance and the declarations covering it, and ten comparing every contract's live admin against the key the record names. Every deployed contract rebuilds from this tree byte for byte |
+| contracts deployed on testnet, transactions publicly verifiable | `bash scripts/check-deployment-record.sh --wasm` | **77 passed, 0 failed** on 19 October and **96 passed, 0 failed** today: four for the second private credit instance and the declarations covering it, and ten comparing every contract's live admin against the key the record names. Every deployed contract rebuilds from this tree byte for byte |
 | the full deposit / mint / stake / unstake / redeem flow end to end | `bash scripts/e2e-generation3.sh` | **21 passed, 0 failed** on 19 October, **21 passed, 0 failed** today |
 | sagUSD exchange rate readable through DeFindex assets-per-share | asserted inside the same run, `get_asset_amounts_per_shares` against `exchange_rate` | **PASS**, both return the same figure |
 | unit test suite passing on all core functions | `cargo test --workspace` | **227 passed, 0 failed**, 11 suites |

@@ -27,11 +27,11 @@ cd "$(dirname "$0")/.."
 
 # script                        low  high  why the range, where there is one
 RANGES="
-check-deployment-record.sh      77   91    77 on 2026-10-19, 81 with private-credit-2, 91 with the live admin check
-check-doc-entry-points.sh        9   10    9 on 2026-10-19, 10 since
+check-deployment-record.sh      77   96    77 on 2026-10-19, 81 with private-credit-2, 91 with the live admin check, 96 with the side by side generation
+check-doc-entry-points.sh        9   11    9 on 2026-10-19, 10 since, 11 once the four peg entry points were documented
 check-refusals.sh                4    4
 check-advisories.sh              2    2
-check-ttl.sh                    10   11    10 on 2026-10-19, 11 since
+check-ttl.sh                    10   12    10 on 2026-10-19, 11 since, 12 with the share token
 verify-tranche2.sh              24   27    24 before it read its feed list from the record
 check-source-invariants.sh      14   14
 e2e-etherfuse.sh                22   27    22 when PC_NAV has capital behind two originators, so the keeper refuses to price one off the other
@@ -92,6 +92,40 @@ for doc in sys.argv[2:]:
                     print("  FAIL  %s:%d  %s quotes %r, the envelope is %d..%d"
                           % (doc, line, script, f.group(0).strip(), lo, hi))
                     bad += 1
+# And the envelope itself, against what the suites actually returned.
+#
+# Everything above compares documents to the envelope, and nothing compared the
+# envelope to reality, so a stale envelope and a stale document agreed with each
+# other and both passed. That is not hypothetical: on 2026-11-01
+# check-deployment-record.sh had been returning 96 for hours while this envelope
+# said 77..91 and three documents quoted 79, 91 and 81. All of it passed.
+import os
+OBS = "docs/evidence/observed-counts.tsv"
+if os.path.exists(OBS):
+    print("")
+    print("==> the envelope against observed runs")
+    for raw in open(OBS):
+        if raw.startswith("#") or not raw.strip():
+            continue
+        parts = raw.rstrip("\n").split("\t")
+        if len(parts) != 3:
+            continue
+        script, observed, when = parts[0], int(parts[1]), parts[2]
+        seen += 1
+        if script not in ranges:
+            print("  FAIL  %s was observed at %d and has no envelope entry" % (script, observed))
+            bad += 1
+            continue
+        lo, hi = ranges[script]
+        if lo <= observed <= hi:
+            print("  PASS  %-32s observed %d, inside %d..%d" % (script, observed, lo, hi))
+        else:
+            print("  FAIL  %s was observed at %d on %s, outside its %d..%d envelope"
+                  % (script, observed, when, lo, hi))
+            bad += 1
+else:
+    print("  NOTE  no %s, so the envelope was compared to nothing" % OBS)
+
 print("")
 print("  %d figures checked across %d documents and %d scripts"
       % (seen, len(sys.argv) - 2, len(ranges)))
