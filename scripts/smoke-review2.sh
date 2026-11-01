@@ -560,7 +560,16 @@ fi
 # Make the Vault whole for what was written off, so this run does not leave
 # agUSD nobody can redeem. Nothing in the contracts does this: the write-down
 # recognised a real loss and recognising it is not the same as covering it.
-SHORT=$(( $(q0 "$AGUSD" total_supply) - $(q0 "$VAULT" idle_reserves) ))
+# Queued claims count. request_withdrawal burns the agUSD the moment it is
+# called and turns it into a liability, so a claim waiting in the queue has no
+# supply standing behind it and comparing supply against idle reserves cannot
+# see it. On 2026-11-01 that is exactly what happened: the write-down left 1007
+# USDC in the adapter, every holder had already redeemed so supply was 0, idle
+# was 1, this came out negative, no top-up ran, and the Vault was left owing
+# 1007 USDC on queued claims with one in hand. smoke-review3 and smoke-mediums
+# both failed on it, several steps away, with error codes that pointed nowhere
+# near here.
+SHORT=$(( $(q0 "$AGUSD" total_supply) + $(q0 "$VAULT" outstanding_liabilities) - $(q0 "$VAULT" idle_reserves) ))
 if [ "$SHORT" -gt 0 ]; then
   echo "    operator tops up tx $(tx "$USDC" transfer --from "$ADMIN" --to "$VAULT" --amount "$SHORT")  ($SHORT, the loss, out of the operator's pocket)"
   # A transfer makes the claims payable and leaves the books behind: nothing

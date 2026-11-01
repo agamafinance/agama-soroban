@@ -351,6 +351,21 @@ BEFORE=$(q0 "$VAULT" idle_reserves)
 # balance is more than the floor will release and the allocation comes back
 # refused.
 LIVE_MOVE=$(( $(q0 "$VAULT" accounted_free_reserves) / 4 ))
+# A zero here does not fail, it passes through the wrong guard. allocate checks
+# InvalidAmount before AdapterMismatch, so asserting #414 with an amount of zero
+# gets #406 and reads as the adapter check having broken. That happened on
+# 2026-11-01 when the Vault had been left owing more than it held: free reserves
+# were 0, this was 0, and the finding below could not be demonstrated at all.
+if [ "${LIVE_MOVE:-0}" -le 0 ]; then
+  echo "  SKIP  the Vault has no free reserves, so there is no amount to move and"
+  echo "        nothing below can be asserted. accounted_free_reserves is"
+  echo "        $(q0 "$VAULT" accounted_free_reserves) against $(q0 "$VAULT" outstanding_liabilities)"
+  echo "        owed on queued claims. Top the Vault up and rerun; asserting"
+  echo "        through a zero amount reports the wrong guard."
+  printf '\n== %d passed, %d failed ==\n' "$PASS" "$FAIL"
+  [ "$FAIL" -eq 0 ]
+  exit $?
+fi
 echo ""
 echo "-- The honest path, on the production wiring. Borrowed and handed back."
 # Headroom first. The three caps are measured on charged exposure, which is

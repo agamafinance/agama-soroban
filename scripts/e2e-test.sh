@@ -188,7 +188,21 @@ fi
 echo "  …waiting out the sagUSD cooldown (60s)…"
 sleep 62
 CLAIMED=$(num "$(inv $SAG claim --from $ADMIN)")
-assert_gt "claim after cooldown: payout > principal (yield!)" "$CLAIMED" "30000000"
+# This used to assert the payout came back above the principal, and that
+# assertion was testing a defect. The position above stakes, triggers a
+# distribution, and requests out immediately: the yield lands on shares that
+# were never at risk. That is one of the eleven findings, and the fix deployed on
+# 2026-11-01 prices an exit taken inside the cooldown at no better than the rate
+# it entered at. So the yield stays with the stakers who held through it, and
+# this position comes back at its principal less integer rounding, which is the
+# contract declining to create value out of a division. Asserting the old
+# behaviour would mean asserting that the exploit still works.
+assert_gt "the distribution did raise the rate for whoever held through it" "$SP1" "$SP0"
+if [ "$CLAIMED" -le 30000000 ] && [ "$CLAIMED" -ge 29999900 ]; then
+  ok "an exit inside the cooldown earns no yield ($CLAIMED of 30000000)"
+else
+  bad "an exit inside the cooldown should price at entry: got $CLAIMED against 30000000 less rounding"
+fi
 
 echo ""
 echo "== CREDIT VAULTS (3 Qiro + 3 ABF): 1 USDC each, real USDC =="

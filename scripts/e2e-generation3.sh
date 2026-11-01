@@ -131,7 +131,25 @@ stellar contract invoke --id "$STAKING" --source "$KEY" --network "$NET" -- requ
 ok "this user's shares are all burnt" "$(bal $SAG $E)" "0"
 perl -e 'select(undef,undef,undef,65)'
 stellar contract invoke --id "$STAKING" --source "$KEY" --network "$NET" -- claim --from "$E" >/dev/null 2>&1
-gt "agUSD returned with the yield" "$(bal $AGUSD $E)" "$AG_BEFORE_STAKE"
+# The same correction as in e2e-test, for the same reason. This user stakes, a
+# distribution lands, and the unstake is requested straight afterwards, which is
+# the exploit the 2026-11-01 staking fix closes: an exit taken inside the
+# cooldown prices at no better than the rate it entered at, so the yield stays
+# with whoever held through it. Expecting more back than went in is expecting
+# that exploit to still work. What comes back is the principal less integer
+# rounding, a few stroops, which is the contract refusing to round a division in
+# the holder's favour.
+BACK=$(bal $AGUSD $E)
+if [ "$BACK" -le "$AG_BEFORE_STAKE" ] && [ "$BACK" -ge "$(( AG_BEFORE_STAKE - 100 ))" ]; then
+  # A window rather than an equality: the shortfall is whatever the two divisions
+  # round away, which depends on the rate at the time and not on a figure anybody
+  # can write down in advance. 100 stroops is 0.00001 agUSD.
+  printf '  PASS  %-48s %s\n' "an exit inside the cooldown earns no yield" "$BACK of $AG_BEFORE_STAKE"
+  pass=$((pass+1))
+else
+  printf '  FAIL  %-48s %s against %s\n' "an exit inside the cooldown prices at entry" "$BACK" "$AG_BEFORE_STAKE"
+  fail=$((fail+1))
+fi
 
 echo "== 6. Soroswap, the Tranche 1 Deliverable 2 criterion"
 B=$(bal $USDC $E); DL=$(( $(date +%s) + 3600 ))
