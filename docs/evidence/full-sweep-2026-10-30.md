@@ -84,6 +84,22 @@ thing and is called out as such.
 `smoke-journey.sh` and `smoke-sagusd.sh` exit 2 because they will not unwind
 sagUSD that belongs to other holders: this account holds 313 of a 349 supply,
 and the remainder is somebody else's position. Both print the manual steps. A
+
+**Corrected 2026-11-01, and the correction matters because this number gates a
+migration.** "The remainder is somebody else's position" was measured by
+subtraction and most of the remainder is ours. Reading the holders off Horizon,
+the 352.68 sagUSD outstanding sits in six accounts: the operator with 317.54,
+**three of our own local test identities** with 26.95 between them, `sag-buyer`
+and two `newbie-` throwaways left by earlier runs, and **two accounts we do not
+control** with 8.19. So the position that is genuinely not ours is **2.32%**, not
+the 9.96% subtraction suggests, and the suites were refusing partly on our own
+test dust.
+
+What that changes: `deploy-vault-generation.sh` refuses to start until the
+staking supply is zero, and 8.19 sagUSD in two accounts nobody here can sign for
+is the whole of what stands between this deployment and that migration. Not a
+tenth of the supply. The three identities we hold can be unstaked whenever the
+migration is actually wanted; the two we cannot are the decision.
 suite that declined to touch a stranger's money is working.
 
 `smoke-hardening.sh` exits 2 at its credit-loss finding, and the reason is the
