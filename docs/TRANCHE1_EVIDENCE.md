@@ -38,7 +38,7 @@ Four further checks the repository carries, all green:
 | sagUSD Staking | [`CBOHG5YG...4CACV3`](https://stellar.expert/explorer/testnet/contract/CBOHG5YGAE7ORFDE5GIUN6MYYSXMHYWGLZTH3Y563HZCBBWFVQ4CACV3) | share price, yield, unstake cooldown |
 | agUSD (SAC) | [`CADD22PH...AHH33R`](https://stellar.expert/explorer/testnet/contract/CADD22PHOXWHYVCQ3K5DWIHPUNA5USTHBPOCBE2KDCYNUEBUGFAHH33R) | the dollar, as a classic Stellar asset |
 | sagUSD (SAC) | [`CCQG6FDE...M7NBD5`](https://stellar.expert/explorer/testnet/contract/CCQG6FDEYA52IVWLXQ2IFZ56UTNKKBLOADGG5BASXNLTX53SBSM7NBD5) | the share, as a classic Stellar asset, quotable on the SDEX |
-| Allocation Engine | [`CBDVZPMB...ZE6FFD`](https://stellar.expert/explorer/testnet/contract/CBDVZPMBUQQ6OML3WTT4TP6QIOJDRC4BWYXR7UZQAAZG2LETAVZE6FFD) | pool routing and caps |
+| Allocation Engine | [`CBHCK63A...GMEPP7`](https://stellar.expert/explorer/testnet/contract/CBHCK63AKHZLE6ZLFFPJHRGPXS2I33F5RFA2ARBFDMXDNJTWGYGMEPP7) | pool routing and caps |
 | Oracle Adapter | [`CBJ3OZ4W...QQRLCV`](https://stellar.expert/explorer/testnet/contract/CBJ3OZ4W7ZUUMYFVO3T62FAE6H4APV7L4YPETT7VJAHDKEPEWOQQRLCV) | multi source NAV, staleness and deviation guards |
 | CCTP Adapter | [`CDSO4GJR...WUWFML`](https://stellar.expert/explorer/testnet/contract/CDSO4GJRY7BFVMQ4PYP3ISVOFPQLPA3C7ZFT5HQOUDM3VXTGOUWUWFML) | cross chain USDC leg |
 | Private credit adapter | [`CDYSHPCK...RZATOJ`](https://stellar.expert/explorer/testnet/contract/CDYSHPCKRZE5CDSXTTZV3KHGFYVPSHDSMRIHMLR3OV3D57I77VRZATOJ) | an off-chain originator behind allocate, deallocate, get_exposure |
