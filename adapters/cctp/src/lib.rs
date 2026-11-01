@@ -522,6 +522,24 @@ impl CctpAdapter {
         e.storage().instance().get(&Cfg::PendingDestination)
     }
 
+    /// The ceiling this adapter will let CCTP charge on a crossing, in basis
+    /// points of the amount.
+    ///
+    /// It was stored by the constructor and exposed by nothing, which is a
+    /// safety parameter on an irreversible path that neither a reviewer nor a
+    /// migration could read. That is not a theoretical cost: on 2026-11-01 a
+    /// replacement for this adapter was prepared, and the one thing that
+    /// stopped it going out was that the value in the live contract could not
+    /// be carried across, because there was no call that would say what it is.
+    /// A configuration value with no getter cannot be migrated faithfully and
+    /// cannot be checked at all.
+    pub fn max_fee_bps(e: Env) -> Result<u32, AdapterError> {
+        e.storage()
+            .instance()
+            .get(&Cfg::MaxFeeBps)
+            .ok_or(AdapterError::NotInitialized)
+    }
+
     pub fn set_counterparties(
         e: Env,
         admin: Address,

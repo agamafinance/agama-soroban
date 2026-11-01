@@ -425,3 +425,16 @@ fn metadata_names_the_feed_the_far_book_is_priced_from() {
     assert_eq!(f.adapter.oracle_feed(), symbol_short!("PC_NAV"));
     assert_eq!(f.adapter.settlement_window(), (1, 14));
 }
+
+/// The fee ceiling was stored and exposed by nothing.
+///
+/// It bounds what CCTP may charge on a burn that cannot be undone, and neither a
+/// reviewer nor a migration could read it. That stopped a replacement for this
+/// adapter going out on 2026-11-01: the value in the live contract could not be
+/// carried across, because no call would say what it is.
+#[test]
+fn the_fee_ceiling_can_be_read() {
+    let f = setup();
+    // 10 bps, which is what setup registers it with.
+    assert_eq!(f.adapter.max_fee_bps(), 10u32);
+}
