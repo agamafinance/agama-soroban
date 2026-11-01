@@ -77,6 +77,12 @@ ENGINE=$(j "d['contracts']['allocationEngine']")
 AGUSD=$(j "d['contracts']['agusdCore']")
 PC=$(j "d['poolAdapters']['private-credit']")
 EF=$(j "d['poolAdapters']['etherfuse']")
+# Three more the bytecode loop below needs, and did not have. A declaration the
+# record makes and nothing compares is the same class of claim as the pool list
+# that said three while the Engine said four.
+ORACLE_ID=$(j "d['contracts']['oracleAdapter']")
+STAKING_ID=$(j "d['contracts']['staking']")
+CCTP_ID=$(j "d['contracts']['cctpAdapter']")
 FLOOR=$(j "d['engineConfig']['reserveFloorBps']")
 POOL_CAP=$(j "d['engineConfig']['poolCapBps']")
 ORIG_CAP=$(j "d['engineConfig']['originatorCapBps']")
@@ -618,9 +624,15 @@ refused 606 "and an adapter refuses an Engine that does not govern the Vault off
 # checkable, so it is checked: the code on the ledger is fetched back and
 # compared with what this tree builds.
 echo "  the deployed bytecode against the source it is supposed to be."
+# All eight deployed contracts, not five. staking, oracleAdapter and cctpAdapter
+# were outside this loop, so the interface deltas the record declares for them
+# were asserted by nobody: check-deployment-record only establishes that a
+# declaration exists, and this is the check that establishes it is true.
 for pair in "vault:$VAULT:vault.wasm" "agusd:$AGUSD:agusd_core.wasm" \
             "engine:$ENGINE:allocation_engine.wasm" "private-credit:$PC:private_credit.wasm" \
-            "etherfuse:$EF:etherfuse.wasm"; do
+            "etherfuse:$EF:etherfuse.wasm" "staking:$STAKING_ID:staking.wasm" \
+            "oracleAdapter:$ORACLE_ID:oracle_adapter.wasm" \
+            "cctpAdapter:$CCTP_ID:cctp_adapter.wasm"; do
   name=${pair%%:*}; rest=${pair#*:}; id=${rest%%:*}; wasm=${rest#*:}
   # Cleared first. A failed fetch leaves the previous contract's wasm in place,
   # and then this compares one contract's bytecode against another's source and

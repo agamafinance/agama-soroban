@@ -260,7 +260,7 @@ the code did are corrected above.
 | `bash scripts/smoke-agusd-core.sh` | **32 passed**, 0 failed |
 | `bash scripts/smoke-review2.sh` | **45 passed**, 0 failed |
 | `bash scripts/smoke-review3.sh` | **38 passed**, 0 failed |
-| `bash scripts/smoke-mediums.sh` | **61 passed**, 0 failed |
+| `bash scripts/smoke-mediums.sh` | **61 passed**, 0 failed, and it is the check that makes a `treeAheadOfLedger` declaration mean something: for every deployed contract it compares the ledger's interface against this tree's, both ways, and the declared list has to be exactly the difference. It covered five of the eight until 2026-11-01, so the declarations for `staking`, `oracleAdapter` and `cctpAdapter` were asserted by nobody. `check-deployment-record` only establishes that a declaration exists |
 | `bash scripts/smoke-hardening.sh` | **62 to 64 passed**, 0 failed. The interval guard needs a round to commit first, and a round cannot commit inside `PC_NAV`'s hour, so the two assertions behind it run on a run that can push and are skipped with the reason on one that cannot. Its deposit is sized at the whole spendable balance, and the sagUSD market maker quotes on SDEX from the same account, so the amount is re-read immediately before the submit and the three assertions about the deposit are skipped, not failed, if it still does not land |
 | `bash scripts/keeper-reflector.sh` | `USDC_USD` from Reflector, checked against its own clock |
 | `bash scripts/keeper-etherfuse.sh` | `EF_BOND` from Etherfuse's USTRY, five sources agreeing around their median |
